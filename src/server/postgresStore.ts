@@ -547,7 +547,7 @@ export async function upsertRepos(
   const pool = getPool();
 
   for (const repo of repos) {
-    await pool.query(
+    const result = await pool.query(
       `insert into repos
         (id, github_id, full_name, owner, name, html_url, description, primary_language,
          topics_json, stars, forks, open_issues, pushed_at, updated_at, archived, fork, data_level,
@@ -575,7 +575,8 @@ export async function upsertRepos(
            when repos.data_level = 'L1' or excluded.data_level = 'L1' then 'L1'
            else 'L0'
          end,
-         last_seen_at=now()`,
+         last_seen_at=now()
+       returning id`,
       [
         repo.id,
         repo.githubId ?? null,
@@ -596,6 +597,12 @@ export async function upsertRepos(
         dataLevel
       ]
     );
+    const repoId = result.rows[0]?.id as string | undefined;
+    if (!repoId) {
+      throw new Error(`Failed to persist repository ${repo.fullName}`);
+    }
+
+    repo.id = repoId;
 
     await pool.query(
       `insert into repo_snapshots
@@ -603,7 +610,7 @@ export async function upsertRepos(
        values ($1,$2,$3,$4,$5,$6,$7)`,
       [
         crypto.randomUUID(),
-        repo.id,
+        repoId,
         repo.stars,
         repo.forks,
         repo.stars,
@@ -614,12 +621,33 @@ export async function upsertRepos(
   }
 }
 
+async function resolvePersistedRepoId(
+  repo: Pick<RepoSummary, "id" | "fullName">
+): Promise<string | undefined> {
+  const result = await getPool().query(
+    `select id
+     from repos
+     where id=$1 or full_name=$2
+     order by case when id=$1 then 0 else 1 end
+     limit 1`,
+    [repo.id, repo.fullName]
+  );
+
+  return result.rows[0]?.id as string | undefined;
+}
+
 export async function upsertRecommendations(
   recommendations: Recommendation[]
 ): Promise<void> {
   const pool = getPool();
 
   for (const recommendation of recommendations) {
+    const repoId = await resolvePersistedRepoId(recommendation.repo);
+    if (!repoId) {
+      await upsertRepos([recommendation.repo], "L3");
+    }
+    const persistedRepoId = repoId ?? recommendation.repo.id;
+
     const reasonsPayload = JSON.stringify({
       reasons: recommendation.reasons,
       risks: recommendation.risks,
@@ -645,7 +673,7 @@ export async function upsertRecommendations(
          calculated_at=excluded.calculated_at`,
       [
         `score-${recommendation.id}`,
-        recommendation.repo.id,
+        persistedRepoId,
         recommendation.profileId,
         recommendation.scores.rule,
         recommendation.scores.githubContextFit,
@@ -669,7 +697,7 @@ export async function upsertRecommendations(
       [
         recommendation.id,
         recommendation.profileId,
-        recommendation.repo.id,
+        persistedRepoId,
         recommendation.rank,
         recommendation.scores.final,
         reasonsPayload,
@@ -687,6 +715,12 @@ export async function enqueueCandidates(
   const pool = getPool();
 
   for (const candidate of candidates) {
+    let repoId = await resolvePersistedRepoId(candidate.repo);
+    if (!repoId) {
+      await upsertRepos([candidate.repo], "L1");
+      repoId = candidate.repo.id;
+    }
+
     await pool.query(
       `insert into candidate_queue
         (id, job_id, repo_id, priority_score, stage, status, attempts, queued_at)
@@ -698,7 +732,7 @@ export async function enqueueCandidates(
       [
         crypto.randomUUID(),
         jobId,
-        candidate.repo.id,
+        repoId,
         candidate.priorityScore,
         candidate.stage ?? "profile"
       ]
@@ -713,6 +747,11 @@ export async function upgradeRepoDataLevel(
   const pool = getPool();
 
   for (const repo of repos) {
+    const repoId = await resolvePersistedRepoId(repo);
+    if (!repoId) {
+      continue;
+    }
+
     await pool.query(
       `update repos
        set data_level = case
@@ -724,8 +763,9 @@ export async function upgradeRepoDataLevel(
        end,
        last_seen_at=now()
        where id=$1`,
-      [repo.id, dataLevel]
+      [repoId, dataLevel]
     );
+    repo.id = repoId;
   }
 }
 
