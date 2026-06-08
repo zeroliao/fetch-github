@@ -1,3 +1,4 @@
+import "@/server/loadEnv";
 import { runNextScanJob } from "@/server/scanRunner";
 import { getQueueStats, listProfiles, listScanJobs } from "@/server/store";
 

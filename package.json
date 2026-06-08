@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "db:init": "node scripts/init-db.mjs",
     "worker:dev": "tsx src/worker/index.ts",
+    "worker:start": "tsx src/worker/index.ts",
     "setup:local": "node scripts/init-db.mjs"
   },
   "dependencies": {

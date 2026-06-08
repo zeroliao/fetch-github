@@ -1,7 +1,10 @@
 import { readFile } from "node:fs/promises";
 import pg from "pg";
+import { loadLocalEnv } from "./load-env.mjs";
 
 const { Client } = pg;
+
+loadLocalEnv();
 
 const databaseUrl =
   process.env.DATABASE_URL ??

@@ -18,6 +18,7 @@
 | Build | `pnpm build` |
 | Typecheck | `pnpm typecheck` |
 | Worker dev | `pnpm worker:dev` |
+| Worker start | `pnpm worker:start` |
 | Start database | `docker compose up -d postgres` |
 | Apply database schema | `pnpm db:init` |
 | Local setup | `pnpm setup:local` |
