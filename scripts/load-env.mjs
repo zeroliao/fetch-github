@@ -3,7 +3,7 @@ import path from "node:path";
 
 const defaultEnvFiles = [".env.local", ".env"];
 
-export function loadLocalEnv(cwd = process.cwd()) {
+export function loadLocalEnv(cwd = process.cwd(), options = {}) {
   for (const fileName of defaultEnvFiles) {
     const filePath = path.join(cwd, fileName);
     if (!existsSync(filePath)) {
@@ -23,7 +23,12 @@ export function loadLocalEnv(cwd = process.cwd()) {
       }
 
       const key = line.slice(0, separator).trim();
-      if (!/^[A-Z0-9_]+$/.test(key) || process.env[key] !== undefined) {
+      if (!/^[A-Z0-9_]+$/.test(key)) {
+        continue;
+      }
+
+      const currentValue = process.env[key];
+      if (currentValue !== undefined && (currentValue !== "" || !options.overrideEmpty)) {
         continue;
       }
 

@@ -1,4 +1,4 @@
-import "@/server/loadEnv";
+import { loadLocalEnv } from "@/server/loadEnv";
 import { runNextScanJob } from "@/server/scanRunner";
 import { getQueueStats, listProfiles, listScanJobs } from "@/server/store";
 
@@ -17,6 +17,8 @@ async function main() {
   console.log(`profiles=${profiles.length} jobs=${jobs.length}`);
 
   while (!stopping) {
+    loadLocalEnv(process.cwd(), { overrideEmpty: true });
+
     const job = await runNextScanJob({
       maxPages: 3,
       maxProfileBatches: 3

@@ -3,13 +3,13 @@ import path from "node:path";
 
 const defaultEnvFiles = [".env.local", ".env"];
 
-export function loadLocalEnv(cwd = process.cwd()) {
+export function loadLocalEnv(cwd = process.cwd(), options: { overrideEmpty?: boolean } = {}) {
   for (const fileName of defaultEnvFiles) {
-    loadEnvFile(path.join(cwd, fileName));
+    loadEnvFile(path.join(cwd, fileName), options);
   }
 }
 
-function loadEnvFile(filePath: string) {
+function loadEnvFile(filePath: string, options: { overrideEmpty?: boolean }) {
   if (!existsSync(filePath)) {
     return;
   }
@@ -27,7 +27,12 @@ function loadEnvFile(filePath: string) {
     }
 
     const key = line.slice(0, separator).trim();
-    if (!/^[A-Z0-9_]+$/.test(key) || process.env[key] !== undefined) {
+    if (!/^[A-Z0-9_]+$/.test(key)) {
+      continue;
+    }
+
+    const currentValue = process.env[key];
+    if (currentValue !== undefined && (currentValue !== "" || !options.overrideEmpty)) {
       continue;
     }
 

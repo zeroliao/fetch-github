@@ -641,6 +641,34 @@ function GitHubPanel({
   const [includeOwned, setIncludeOwned] = useState(true);
   const [includeStarred, setIncludeStarred] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [githubToken, setGithubToken] = useState("");
+  const [isSavingToken, setIsSavingToken] = useState(false);
+
+  async function saveGithubToken() {
+    if (!githubToken.trim()) {
+      setMessage("请先填写 GitHub Token。");
+      return;
+    }
+
+    setIsSavingToken(true);
+    try {
+      const response = await fetch("/api/github-context/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: githubToken.trim() })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setMessage(body.error ?? "GitHub Token 保存失败。");
+        return;
+      }
+
+      setGithubToken("");
+      setMessage("GitHub Token 已保存，可以同步 GitHub。");
+    } finally {
+      setIsSavingToken(false);
+    }
+  }
 
   async function syncGithub() {
     setIsSyncing(true);
@@ -704,6 +732,22 @@ function GitHubPanel({
           <div className="action-row wrap">
             <label className="checkbox-row"><input type="checkbox" checked={includeOwned} onChange={(event) => setIncludeOwned(event.target.checked)} /> owned</label>
             <label className="checkbox-row"><input type="checkbox" checked={includeStarred} onChange={(event) => setIncludeStarred(event.target.checked)} /> starred</label>
+          </div>
+        </div>
+        <div className="row-item">
+          <strong>GitHub Token</strong>
+          <span className="muted">仅写入服务器 .env.local，不会入库或展示明文。</span>
+          <div className="action-row wrap">
+            <input
+              className="input"
+              type="password"
+              value={githubToken}
+              onChange={(event) => setGithubToken(event.target.value)}
+              placeholder="ghp_... 或 github_pat_..."
+            />
+            <button className="button" type="button" disabled={isSavingToken} onClick={saveGithubToken}>
+              保存 Token
+            </button>
           </div>
         </div>
         {repos.length === 0 ? (
