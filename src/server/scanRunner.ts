@@ -79,8 +79,7 @@ async function runScanJobInternal(
   }
   if (
     ["completed", "failed"].includes(job.status) ||
-    (!allowPaused &&
-      ["paused_by_user", "paused_by_runtime"].includes(job.status))
+    (!allowPaused && job.status === "paused_by_user")
   ) {
     return job;
   }
@@ -101,10 +100,11 @@ async function runScanJobInternal(
     });
   }
 
-  const shouldResumeFromQueue = ["retry_later", "paused_by_memory"].includes(job.status);
+  const shouldResumeFromQueue = ["retry_later", "paused_by_memory", "paused_by_runtime"].includes(job.status);
   let current = shouldResumeFromQueue
     ? (await updateScanJob(job.id, {
         status: "running",
+        startedAt: new Date().toISOString(),
         statusReason: undefined,
         errorMessage: undefined
       })) ?? job

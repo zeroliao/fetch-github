@@ -325,7 +325,7 @@ export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
   const state = await loadState();
   return state.jobs
     .filter((job) =>
-      ["pending", "running", "throttled", "retry_later", "paused_by_memory"].includes(job.status)
+      ["pending", "running", "throttled", "retry_later", "paused_by_memory", "paused_by_runtime"].includes(job.status)
     )
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .slice(0, limit);

@@ -450,7 +450,7 @@ export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
     `select id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
             analyzed_count, started_at, finished_at, error_message, created_at
      from discovery_jobs
-     where status in ('pending', 'running', 'throttled', 'retry_later', 'paused_by_memory')
+     where status in ('pending', 'running', 'throttled', 'retry_later', 'paused_by_memory', 'paused_by_runtime')
      order by created_at asc
      limit $1`,
     [limit]
