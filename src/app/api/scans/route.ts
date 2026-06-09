@@ -3,6 +3,7 @@ import { z } from "zod";
 import { runScanJob } from "@/server/scanRunner";
 import {
   createScanJob,
+  findActiveScanJobByProfile,
   getAiProvider,
   listProfiles,
   listScanJobs,
@@ -37,6 +38,11 @@ export async function POST(request: Request) {
   const aiValidation = await validateScanAiProviders(profile.config.ai);
   if (aiValidation) {
     return NextResponse.json({ error: aiValidation }, { status: 409 });
+  }
+
+  const activeJob = await findActiveScanJobByProfile(parsed.data.profileId);
+  if (activeJob) {
+    return NextResponse.json(activeJob, { status: 200 });
   }
 
   const job = await createScanJob(parsed.data.profileId);

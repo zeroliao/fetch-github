@@ -23,6 +23,7 @@ import {
   seedRecommendations
 } from "@/lib/seed";
 import { normalizeDiscoverySources } from "@/lib/discoverySources";
+import { calculateFinalScore } from "@/lib/scoring";
 import { getPool } from "./db";
 
 interface RepoDocumentInput {
@@ -60,6 +61,15 @@ export async function ensureSeedData() {
       `create table if not exists app_state (
         key text primary key,
         value_json jsonb not null default '{}'::jsonb,
+        updated_at timestamptz not null default now()
+      )`
+    );
+    await client.query(
+      `create table if not exists scan_schedule_state (
+        profile_id text primary key references discovery_profiles(id) on delete cascade,
+        last_checked_at timestamptz,
+        last_scheduled_at timestamptz,
+        last_job_id text,
         updated_at timestamptz not null default now()
       )`
     );
@@ -440,7 +450,7 @@ export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
     `select id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
             analyzed_count, started_at, finished_at, error_message, created_at
      from discovery_jobs
-     where status in ('pending', 'running', 'throttled', 'retry_later')
+     where status in ('pending', 'running', 'throttled', 'retry_later', 'paused_by_memory')
      order by created_at asc
      limit $1`,
     [limit]
@@ -449,13 +459,69 @@ export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
   return result.rows.map(mapJobRow);
 }
 
-export async function createScanJob(profileId: string): Promise<ScanJob> {
+export async function findActiveScanJobByProfile(profileId: string): Promise<ScanJob | undefined> {
+  const result = await getPool().query(
+    `select id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
+            analyzed_count, started_at, finished_at, error_message, created_at
+     from discovery_jobs
+     where profile_id=$1
+       and status in ('pending', 'running', 'throttled', 'retry_later', 'paused_by_memory', 'paused_by_runtime')
+     order by created_at desc
+     limit 1`,
+    [profileId]
+  );
+
+  return result.rows[0] ? mapJobRow(result.rows[0]) : undefined;
+}
+
+export async function getScheduleState(profileId: string) {
+  const result = await getPool().query(
+    `select last_checked_at, last_scheduled_at, last_job_id
+     from scan_schedule_state
+     where profile_id=$1`,
+    [profileId]
+  );
+  const row = result.rows[0];
+  if (!row) {
+    return undefined;
+  }
+
+  return {
+    lastCheckedAt: row.last_checked_at ? toIso(row.last_checked_at) : undefined,
+    lastScheduledAt: row.last_scheduled_at ? toIso(row.last_scheduled_at) : undefined,
+    lastJobId: row.last_job_id as string | undefined
+  };
+}
+
+export async function touchScheduleState(input: {
+  profileId: string;
+  checkedAt: string;
+  scheduledAt?: string;
+  jobId?: string;
+}) {
+  await getPool().query(
+    `insert into scan_schedule_state
+      (profile_id, last_checked_at, last_scheduled_at, last_job_id, updated_at)
+     values ($1,$2,$3,$4,now())
+     on conflict (profile_id) do update set
+       last_checked_at=excluded.last_checked_at,
+       last_scheduled_at=coalesce(excluded.last_scheduled_at, scan_schedule_state.last_scheduled_at),
+       last_job_id=coalesce(excluded.last_job_id, scan_schedule_state.last_job_id),
+       updated_at=now()`,
+    [input.profileId, input.checkedAt, input.scheduledAt ?? null, input.jobId ?? null]
+  );
+}
+
+export async function createScanJob(
+  profileId: string,
+  type: ScanJob["type"] = "manual_scan"
+): Promise<ScanJob> {
   const profile = (await listProfiles()).find((item) => item.id === profileId);
   const now = new Date().toISOString();
   const job: ScanJob = {
     id: crypto.randomUUID(),
     profileId,
-    type: "manual_scan",
+    type,
     status: "pending",
     stage: "collect",
     maxCandidates: profile?.config.limits.maxCandidates ?? 0,
@@ -912,6 +978,71 @@ export async function upsertRepoEmbedding(input: {
   );
 }
 
+export async function getRepoEmbeddingSimilarity(input: {
+  repoId: string;
+  providerId: string;
+  queryVector: number[];
+}) {
+  const result = await getPool().query(
+    `select 1 - (vector <=> $3::vector) as similarity
+     from repo_embeddings
+     where repo_id=$1 and provider_id=$2
+     order by created_at desc
+     limit 1`,
+    [input.repoId, input.providerId, `[${input.queryVector.join(",")}]`]
+  );
+
+  return result.rows[0]?.similarity === undefined
+    ? undefined
+    : Number(result.rows[0].similarity);
+}
+
+export async function rerankRecommendationsWithSemanticFit(input: {
+  profileId: string;
+  providerId: string;
+  queryVector: number[];
+}) {
+  const recommendations = await listRecommendations();
+  const target = recommendations.filter((item) => item.profileId === input.profileId);
+  const reranked = [];
+
+  for (const recommendation of target) {
+    const similarity = await getRepoEmbeddingSimilarity({
+      repoId: recommendation.repo.id,
+      providerId: input.providerId,
+      queryVector: input.queryVector
+    });
+    const semanticFit =
+      similarity === undefined
+        ? recommendation.scores.githubContextFit
+        : Math.max(0, Math.min(1, similarity));
+
+    const scores = {
+      ...recommendation.scores,
+      githubContextFit: Math.max(recommendation.scores.githubContextFit, semanticFit)
+    };
+    scores.final = calculateFinalScore({
+      ruleScore: scores.rule,
+      githubContextFit: scores.githubContextFit,
+      llmMatchScore: scores.llmMatch,
+      feedbackScore: scores.feedback
+    });
+
+    reranked.push({
+      ...recommendation,
+      scores
+    });
+  }
+
+  reranked.sort((a, b) => b.scores.final - a.scores.final);
+  await upsertRecommendations(
+    reranked.map((recommendation, index) => ({
+      ...recommendation,
+      rank: index + 1
+    }))
+  );
+}
+
 export async function createLlmJob(input: {
   repoId: string;
   jobType: string;
@@ -966,14 +1097,54 @@ export async function upsertLlmResult(input: LlmResultInput) {
   );
 }
 
-export async function getLatestLlmResult(repoId: string, jobType: string) {
+export async function getLatestLlmResult(
+  repoId: string,
+  jobType: string,
+  options: {
+    providerId?: string;
+    model?: string;
+    promptVersion?: string;
+    inputHash?: string;
+  } = {}
+) {
+  const conditions = ["repo_id=$1", "job_type=$2"];
+  const values: unknown[] = [repoId, jobType];
+
+  if (options.providerId) {
+    values.push(options.providerId);
+    conditions.push(`provider_id=$${values.length}`);
+  }
+  if (options.model) {
+    values.push(options.model);
+    conditions.push(`model=$${values.length}`);
+  }
+  if (options.promptVersion) {
+    values.push(options.promptVersion);
+    conditions.push(`prompt_version=$${values.length}`);
+  }
+  if (options.inputHash) {
+    values.push(options.inputHash);
+    conditions.push(
+      `exists (
+        select 1 from llm_jobs job
+        where job.repo_id=llm_results.repo_id
+          and job.job_type=llm_results.job_type
+          and job.provider_id=llm_results.provider_id
+          and job.model=llm_results.model
+          and job.prompt_version=llm_results.prompt_version
+          and job.input_hash=$${values.length}
+          and job.status='completed'
+      )`
+    );
+  }
+
   const result = await getPool().query(
     `select structured_json
      from llm_results
-     where repo_id=$1 and job_type=$2
+     where ${conditions.join(" and ")}
      order by created_at desc
      limit 1`,
-    [repoId, jobType]
+    values
   );
 
   return result.rows[0]?.structured_json as Record<string, unknown> | undefined;
@@ -1355,7 +1526,7 @@ export async function claimQueuedRepoBatch(
   jobId: string,
   stage = "profile",
   limit = 10
-): Promise<Array<{ queueId: string; priorityScore: number; repo: RepoSummary }>> {
+): Promise<Array<{ queueId: string; priorityScore: number; attempts: number; repo: RepoSummary }>> {
   const result = await getPool().query(
     `with picked as (
        select id
@@ -1374,10 +1545,10 @@ export async function claimQueuedRepoBatch(
            attempts=attempts + 1
        from picked
        where q.id = picked.id
-       returning q.id, q.repo_id, q.priority_score
+       returning q.id, q.repo_id, q.priority_score, q.attempts
      )
      select
-       updated.id as queue_id, updated.priority_score,
+       updated.id as queue_id, updated.priority_score, updated.attempts,
        repo.id as repo_id, repo.github_id, repo.full_name, repo.owner, repo.name, repo.html_url,
        repo.description, repo.primary_language, repo.topics_json, repo.stars, repo.forks,
        repo.open_issues, repo.pushed_at, repo.updated_at, repo.archived, repo.fork
@@ -1390,6 +1561,7 @@ export async function claimQueuedRepoBatch(
   return result.rows.map((row) => ({
     queueId: row.queue_id as string,
     priorityScore: Number(row.priority_score),
+    attempts: Number(row.attempts),
     repo: mapRepoRow(row)
   }));
 }
@@ -1409,6 +1581,39 @@ export async function requeueRunningCandidates(jobId: string, stage?: string) {
        ${stageSql}
        and status='running'`,
     values
+  );
+}
+
+export async function failCandidate(
+  id: string,
+  reason: string,
+  retryAfterSeconds?: number
+) {
+  const nextRunAt =
+    retryAfterSeconds && retryAfterSeconds > 0
+      ? new Date(Date.now() + retryAfterSeconds * 1000).toISOString()
+      : null;
+
+  await getPool().query(
+    `update candidate_queue
+     set status='failed',
+         next_run_at=$2
+     where id=$1`,
+    [id, nextRunAt]
+  );
+
+  void reason;
+}
+
+export async function retryCandidate(id: string, retryAfterSeconds: number) {
+  const nextRunAt = new Date(Date.now() + Math.max(1, retryAfterSeconds) * 1000).toISOString();
+
+  await getPool().query(
+    `update candidate_queue
+     set status='pending',
+         next_run_at=$2
+     where id=$1`,
+    [id, nextRunAt]
   );
 }
 

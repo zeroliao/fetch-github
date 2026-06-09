@@ -97,6 +97,14 @@ CREATE TABLE IF NOT EXISTS scan_schedules (
   enabled BOOLEAN NOT NULL DEFAULT TRUE
 );
 
+CREATE TABLE IF NOT EXISTS scan_schedule_state (
+  profile_id TEXT PRIMARY KEY REFERENCES discovery_profiles(id) ON DELETE CASCADE,
+  last_checked_at TIMESTAMPTZ,
+  last_scheduled_at TIMESTAMPTZ,
+  last_job_id TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS discovery_jobs (
   id TEXT PRIMARY KEY,
   profile_id TEXT NOT NULL REFERENCES discovery_profiles(id) ON DELETE CASCADE,

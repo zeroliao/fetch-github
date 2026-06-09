@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { mkdir, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
 import type { Recommendation } from "@/lib/types";
 import {
   listKnowledgeSyncs,
@@ -54,14 +56,20 @@ export async function runKnowledgeSync(options: {
     }
 
     await upgradeRepoDataLevel([recommendation.repo], "L4");
+    const externalDocId = await writeOptionalAiKnowledgeBaseDoc(
+      recommendation,
+      markdown,
+      contentHash
+    );
     syncedCount += 1;
     syncs.push(
       await upsertKnowledgeSync({
         repoId: recommendation.repo.id,
-          repoFullName: recommendation.repo.fullName,
-          target,
-          datasetId,
-        externalDocId: `fetchgithub:${recommendation.repo.id}:${contentHash.slice(0, 12)}`,
+        repoFullName: recommendation.repo.fullName,
+        target,
+        datasetId,
+        externalDocId:
+          externalDocId ?? `fetchgithub:${recommendation.repo.id}:${contentHash.slice(0, 12)}`,
         contentHash,
         status: "synced",
         syncedAt: new Date().toISOString()
@@ -119,4 +127,28 @@ function isL4Candidate(recommendation: Recommendation, minScore: number) {
 
 function hashText(text: string) {
   return crypto.createHash("sha256").update(text).digest("hex");
+}
+
+async function writeOptionalAiKnowledgeBaseDoc(
+  recommendation: Recommendation,
+  markdown: string,
+  contentHash: string
+) {
+  const baseDir = path.resolve(process.cwd(), "../ai-knowledge-base");
+  try {
+    const info = await stat(baseDir);
+    if (!info.isDirectory()) {
+      return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+
+  const outputDir = path.join(baseDir, "derived", "fetchGithub");
+  await mkdir(outputDir, { recursive: true });
+  const safeName = recommendation.repo.fullName.replace(/[\\/]/g, "__");
+  const fileName = `${safeName}-${contentHash.slice(0, 12)}.md`;
+  const filePath = path.join(outputDir, fileName);
+  await writeFile(filePath, markdown, "utf8");
+  return `ai-knowledge-base:${path.relative(baseDir, filePath).replace(/\\/g, "/")}`;
 }

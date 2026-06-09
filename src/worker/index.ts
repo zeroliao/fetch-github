@@ -1,5 +1,6 @@
 import { loadLocalEnv } from "@/server/loadEnv";
 import { runNextScanJob } from "@/server/scanRunner";
+import { scheduleDueScanJobs } from "@/server/scheduler";
 import { getQueueStats, listProfiles, listScanJobs } from "@/server/store";
 
 async function main() {
@@ -19,6 +20,11 @@ async function main() {
   while (!stopping) {
     loadLocalEnv(process.cwd(), { overrideEmpty: true });
 
+    const scheduled = await scheduleDueScanJobs();
+    if (scheduled.length) {
+      console.log(`scheduled_jobs=${scheduled.map((job) => job.id).join(",")}`);
+    }
+
     const job = await runNextScanJob({
       maxPages: 3,
       maxProfileBatches: 3
@@ -30,6 +36,9 @@ async function main() {
       );
       if (job.statusReason || job.errorMessage) {
         console.log(`reason=${job.statusReason ?? job.errorMessage}`);
+      }
+      if (["retry_later", "throttled", "paused_by_memory"].includes(job.status)) {
+        await delay(10_000);
       }
       continue;
     }

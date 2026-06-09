@@ -393,6 +393,10 @@ function ProfilesPanel({
   const [chatProviderId, setChatProviderId] = useState(selectedProfile?.config.ai.chatProviderId ?? "");
   const [embeddingProviderId, setEmbeddingProviderId] = useState(selectedProfile?.config.ai.embeddingProviderId ?? "");
   const [sources, setSources] = useState(normalizeDiscoverySources(selectedProfile?.config.sources));
+  const [schedule, setSchedule] = useState(selectedProfile?.config.schedule);
+  const [limits, setLimits] = useState(selectedProfile?.config.limits);
+  const [preferences, setPreferences] = useState(selectedProfile?.config.preferences);
+  const [resourcePolicy, setResourcePolicy] = useState(selectedProfile?.config.resourcePolicy);
   const chatProviders = providers.filter((provider) => provider.kind === "chat" && provider.enabled);
   const embeddingProviders = providers.filter((provider) => provider.kind === "embedding" && provider.enabled);
 
@@ -402,6 +406,10 @@ function ProfilesPanel({
     setChatProviderId(selectedProfile.config.ai.chatProviderId);
     setEmbeddingProviderId(selectedProfile.config.ai.embeddingProviderId);
     setSources(normalizeDiscoverySources(selectedProfile.config.sources));
+    setSchedule(selectedProfile.config.schedule);
+    setLimits(selectedProfile.config.limits);
+    setPreferences(selectedProfile.config.preferences);
+    setResourcePolicy(selectedProfile.config.resourcePolicy);
   }, [selectedProfile]);
 
   function updateSource(id: string, patch: { enabled?: boolean; weight?: number }) {
@@ -411,9 +419,13 @@ function ProfilesPanel({
   }
 
   async function saveProfile() {
-    if (!selectedProfile) return;
+    if (!selectedProfile || !schedule || !limits || !preferences || !resourcePolicy) return;
     const nextConfig = {
       ...selectedProfile.config,
+      schedule,
+      limits,
+      preferences,
+      resourcePolicy,
       sources,
       ai: {
         chatProviderId,
@@ -488,16 +500,125 @@ function ProfilesPanel({
               </div>
             </div>
           )}
+          {selectedProfile && schedule && limits && preferences && resourcePolicy && (
+            <div className="form-grid">
+              <Field label="调度类型">
+                <select className="select" value={schedule.type} onChange={(event) => setSchedule({ ...schedule, type: event.target.value as "cron" | "interval" })}>
+                  <option value="cron">cron</option>
+                  <option value="interval">interval</option>
+                </select>
+              </Field>
+              <Field label="Cron">
+                <input className="input" value={schedule.cron ?? ""} onChange={(event) => setSchedule({ ...schedule, cron: event.target.value })} />
+              </Field>
+              <Field label="间隔小时">
+                <input className="input" type="number" min={1} value={schedule.intervalHours ?? 24} onChange={(event) => setSchedule({ ...schedule, intervalHours: Number(event.target.value) })} />
+              </Field>
+              <Field label="时区">
+                <input className="input" value={schedule.timezone} onChange={(event) => setSchedule({ ...schedule, timezone: event.target.value })} />
+              </Field>
+              <Field label="开始时间">
+                <input className="input" value={schedule.startAt ?? ""} onChange={(event) => setSchedule({ ...schedule, startAt: event.target.value })} />
+              </Field>
+              <Field label="最大运行分钟">
+                <input className="input" type="number" min={1} value={schedule.maxRuntimeMinutes} onChange={(event) => setSchedule({ ...schedule, maxRuntimeMinutes: Number(event.target.value) })} />
+              </Field>
+              <Field label="单查询数量">
+                <input className="input" type="number" min={1} max={100} value={limits.sourceLimitPerQuery} onChange={(event) => setLimits({ ...limits, sourceLimitPerQuery: Number(event.target.value) })} />
+              </Field>
+              <Field label="最大候选">
+                <input className="input" type="number" min={1} value={limits.maxCandidates} onChange={(event) => setLimits({ ...limits, maxCandidates: Number(event.target.value) })} />
+              </Field>
+              <Field label="规则 Top K">
+                <input className="input" type="number" min={1} value={limits.ruleFilterTopK} onChange={(event) => setLimits({ ...limits, ruleFilterTopK: Number(event.target.value) })} />
+              </Field>
+              <Field label="详情 Top K">
+                <input className="input" type="number" min={1} value={limits.detailFetchTopK} onChange={(event) => setLimits({ ...limits, detailFetchTopK: Number(event.target.value) })} />
+              </Field>
+              <Field label="Embedding Top K">
+                <input className="input" type="number" min={1} value={limits.embeddingTopK} onChange={(event) => setLimits({ ...limits, embeddingTopK: Number(event.target.value) })} />
+              </Field>
+              <Field label="LLM Top K">
+                <input className="input" type="number" min={1} value={limits.llmAnalyzeTopK} onChange={(event) => setLimits({ ...limits, llmAnalyzeTopK: Number(event.target.value) })} />
+              </Field>
+              <Field label="最终推荐 Top K">
+                <input className="input" type="number" min={1} value={limits.finalReportTopK} onChange={(event) => setLimits({ ...limits, finalReportTopK: Number(event.target.value) })} />
+              </Field>
+              <Field label="关键词">
+                <input className="input" value={preferences.keywords.join(", ")} onChange={(event) => setPreferences({ ...preferences, keywords: splitCsv(event.target.value) })} />
+              </Field>
+              <Field label="Topics">
+                <input className="input" value={preferences.topics.join(", ")} onChange={(event) => setPreferences({ ...preferences, topics: splitCsv(event.target.value) })} />
+              </Field>
+              <Field label="语言权重">
+                <input className="input" value={formatLanguageWeights(preferences.languages)} onChange={(event) => setPreferences({ ...preferences, languages: parseLanguageWeights(event.target.value) })} />
+              </Field>
+              <Field label="排除关键词">
+                <input className="input" value={preferences.excludeKeywords.join(", ")} onChange={(event) => setPreferences({ ...preferences, excludeKeywords: splitCsv(event.target.value) })} />
+              </Field>
+              <Field label="最低 Stars">
+                <input className="input" type="number" min={0} value={preferences.minStars} onChange={(event) => setPreferences({ ...preferences, minStars: Number(event.target.value) })} />
+              </Field>
+              <Field label="最近推送天数">
+                <input className="input" type="number" min={1} value={preferences.pushedWithinDays} onChange={(event) => setPreferences({ ...preferences, pushedWithinDays: Number(event.target.value) })} />
+              </Field>
+              <label className="field checkbox-field">
+                <span>过滤规则</span>
+                <span className="checkbox-row">
+                  <input type="checkbox" checked={preferences.excludeArchived} onChange={(event) => setPreferences({ ...preferences, excludeArchived: event.target.checked })} />
+                  排除 archived
+                </span>
+                <span className="checkbox-row">
+                  <input type="checkbox" checked={preferences.excludeForks} onChange={(event) => setPreferences({ ...preferences, excludeForks: event.target.checked })} />
+                  排除 fork
+                </span>
+              </label>
+              <Field label="资源模式">
+                <select className="select" value={resourcePolicy.mode} onChange={(event) => setResourcePolicy({ ...resourcePolicy, mode: event.target.value as DiscoveryProfile["config"]["resourcePolicy"]["mode"] })}>
+                  <option value="complete_low_memory">complete_low_memory</option>
+                  <option value="balanced">balanced</option>
+                  <option value="fast">fast</option>
+                </select>
+              </Field>
+              <Field label="目标可用内存 MB">
+                <input className="input" type="number" min={1} value={resourcePolicy.memory.targetAvailableMb} onChange={(event) => setResourcePolicy({ ...resourcePolicy, memory: { ...resourcePolicy.memory, targetAvailableMb: Number(event.target.value) } })} />
+              </Field>
+              <Field label="最低可用内存 MB">
+                <input className="input" type="number" min={1} value={resourcePolicy.memory.minAvailableMb} onChange={(event) => setResourcePolicy({ ...resourcePolicy, memory: { ...resourcePolicy.memory, minAvailableMb: Number(event.target.value) } })} />
+              </Field>
+              <Field label="临界可用内存 MB">
+                <input className="input" type="number" min={1} value={resourcePolicy.memory.criticalAvailableMb} onChange={(event) => setResourcePolicy({ ...resourcePolicy, memory: { ...resourcePolicy.memory, criticalAvailableMb: Number(event.target.value) } })} />
+              </Field>
+              <Field label="批量大小">
+                <input className="input" type="number" min={1} value={resourcePolicy.execution.batchSize} onChange={(event) => setResourcePolicy({ ...resourcePolicy, execution: { ...resourcePolicy.execution, batchSize: Number(event.target.value) } })} />
+              </Field>
+              <Field label="并发数">
+                <input className="input" type="number" min={1} value={resourcePolicy.execution.maxConcurrency} onChange={(event) => setResourcePolicy({ ...resourcePolicy, execution: { ...resourcePolicy.execution, maxConcurrency: Number(event.target.value) } })} />
+              </Field>
+              <Field label="Checkpoint 间隔">
+                <input className="input" type="number" min={1} value={resourcePolicy.execution.checkpointEveryItems} onChange={(event) => setResourcePolicy({ ...resourcePolicy, execution: { ...resourcePolicy.execution, checkpointEveryItems: Number(event.target.value) } })} />
+              </Field>
+              <label className="field checkbox-field">
+                <span>内存压力</span>
+                <span className="checkbox-row">
+                  <input type="checkbox" checked={resourcePolicy.execution.pauseOnPressure} onChange={(event) => setResourcePolicy({ ...resourcePolicy, execution: { ...resourcePolicy.execution, pauseOnPressure: event.target.checked } })} />
+                  压力过高时暂停
+                </span>
+              </label>
+            </div>
+          )}
           {selectedProfile && (
             <div className="source-grid">
               {discoverySourceCatalog.map((definition) => {
                 const source = sources.find((item) => item.id === definition.id);
+                const implemented = definition.capability === "implemented";
                 return (
                   <div className="source-item" key={definition.id}>
                     <label className="checkbox-row">
                       <input
                         type="checkbox"
-                        checked={source?.enabled ?? false}
+                        checked={implemented && (source?.enabled ?? false)}
+                        disabled={!implemented}
                         onChange={(event) => updateSource(definition.id, { enabled: event.target.checked })}
                       />
                       <strong>{definition.label}</strong>
@@ -998,6 +1119,30 @@ function ListSection({ title, items }: { title: string; items: string[] }) {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return <label className="field"><span>{label}</span>{children}</label>;
+}
+
+function splitCsv(value: string) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function formatLanguageWeights(value: Record<string, number>) {
+  return Object.entries(value)
+    .map(([language, weight]) => `${language}:${weight}`)
+    .join(", ");
+}
+
+function parseLanguageWeights(value: string) {
+  return Object.fromEntries(
+    splitCsv(value)
+      .map((item) => {
+        const [language, rawWeight] = item.split(":").map((part) => part.trim());
+        return [language, Number(rawWeight ?? 1)];
+      })
+      .filter(([language, weight]) => language && Number.isFinite(weight as number))
+  ) as Record<string, number>;
 }
 
 function SimpleStatsTable({ rows, emptyText }: { rows: string[][]; emptyText: string }) {

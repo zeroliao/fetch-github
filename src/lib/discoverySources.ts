@@ -95,7 +95,7 @@ export const discoverySourceCatalog: DiscoverySourceDefinition[] = [
 export function defaultDiscoverySources(): DiscoverySourceConfig[] {
   return discoverySourceCatalog.map((source) => ({
     id: source.id,
-    enabled: ["implemented", "quality_signal"].includes(source.capability),
+    enabled: source.capability === "implemented",
     weight: source.defaultWeight
   }));
 }
@@ -108,7 +108,10 @@ export function normalizeDiscoverySources(
     const source = byId.get(definition.id);
     return {
       id: definition.id,
-      enabled: source?.enabled ?? ["implemented", "quality_signal"].includes(definition.capability),
+      enabled:
+        definition.capability === "implemented"
+          ? source?.enabled ?? true
+          : false,
       weight: source?.weight ?? definition.defaultWeight
     };
   });

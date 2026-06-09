@@ -11,6 +11,7 @@ import {
   completeCandidate,
   createLlmJob,
   enqueueCandidates,
+  failCandidate,
   finishLlmJob,
   getAiProvider,
   getJobQueueCount,
@@ -23,6 +24,8 @@ import {
   listProfiles,
   listRunnableScanJobs,
   requeueRunningCandidates,
+  rerankRecommendationsWithSemanticFit,
+  retryCandidate,
   trimRecommendations,
   upgradeRepoDataLevel,
   updateScanJob,
@@ -33,6 +36,8 @@ import {
   upsertRepos,
   upsertScanCheckpoint
 } from "./store";
+
+const MAX_AI_CANDIDATE_ATTEMPTS = 3;
 
 interface RunScanJobOptions {
   jobId: string;
@@ -75,9 +80,7 @@ async function runScanJobInternal(
   if (
     ["completed", "failed"].includes(job.status) ||
     (!allowPaused &&
-      ["paused_by_user", "paused_by_memory", "paused_by_runtime"].includes(
-      job.status
-    ))
+      ["paused_by_user", "paused_by_runtime"].includes(job.status))
   ) {
     return job;
   }
@@ -98,8 +101,14 @@ async function runScanJobInternal(
     });
   }
 
-  let current =
-    job.startedAt || job.status !== "pending"
+  const shouldResumeFromQueue = allowPaused && ["retry_later", "paused_by_memory"].includes(job.status);
+  let current = shouldResumeFromQueue
+    ? (await updateScanJob(job.id, {
+        status: "running",
+        statusReason: undefined,
+        errorMessage: undefined
+      })) ?? job
+    : job.startedAt || job.status !== "pending"
       ? job
       : await updateScanJob(job.id, {
           status: "running",
@@ -378,6 +387,7 @@ async function runDocumentStage(
     const queued = await claimQueuedRepoBatch(job.id, "document", ready.batchSize);
     if (queued.length === 0) break;
 
+    let embeddedEnqueued = 0;
     for (const item of queued) {
       const readme = await fetchRepositoryReadme(item.repo);
       const contentHash = hashText(readme.content || item.repo.description || item.repo.fullName);
@@ -390,13 +400,16 @@ async function runDocumentStage(
         summary: readme.content.slice(0, 500)
       });
       await upgradeRepoDataLevel([item.repo], "L2");
-      await enqueueCandidates(job.id, [
-        {
-          repo: item.repo,
-          priorityScore: item.priorityScore,
-          stage: "embed"
-        }
-      ]);
+      if (currentJob.analyzedCount + embeddedEnqueued < profile.config.limits.embeddingTopK) {
+        await enqueueCandidates(job.id, [
+          {
+            repo: item.repo,
+            priorityScore: item.priorityScore,
+            stage: "embed"
+          }
+        ]);
+        embeddedEnqueued += 1;
+      }
       await completeCandidate(item.queueId);
     }
 
@@ -435,12 +448,17 @@ async function runEmbedStage(
     const queued = await claimQueuedRepoBatch(job.id, "embed", ready.batchSize);
     if (queued.length === 0) break;
 
-    try {
-      for (const item of queued) {
+    let succeeded = 0;
+    let failed = 0;
+    for (const item of queued) {
+      try {
         const document = await getLatestRepoDocument(item.repo.id, "readme");
         const text = buildEmbeddingInput(item.repo, document?.rawContent ?? "");
         const contentHash = document?.contentHash ?? hashText(text);
         const [vector] = await callEmbedding(provider, text);
+        if (!vector?.length) {
+          throw new Error("Embedding provider returned an empty vector.");
+        }
         await upsertRepoEmbedding({
           repoId: item.repo.id,
           providerId: provider.id,
@@ -457,21 +475,24 @@ async function runEmbedStage(
           }
         ]);
         await completeCandidate(item.queueId);
+        succeeded += 1;
+      } catch (error) {
+        const reason = normalizeAiStageError(error);
+        if (item.attempts < MAX_AI_CANDIDATE_ATTEMPTS) {
+          await retryCandidate(item.queueId, retryDelaySeconds(item.attempts));
+        } else {
+          await failCandidate(item.queueId, reason);
+          failed += 1;
+        }
       }
-    } catch (error) {
-      await requeueRunningCandidates(job.id, "embed");
-      return updateScanJob(job.id, {
-        status: "retry_later",
-        statusReason: normalizeAiStageError(error)
-      });
     }
 
     currentJob =
       (await updateScanJob(job.id, {
-        analyzedCount: currentJob.analyzedCount + queued.length,
+        analyzedCount: currentJob.analyzedCount + succeeded,
         stage: "embed",
         status: ready.status,
-        statusReason: ready.reason
+        statusReason: failed ? `Embedding 阶段跳过 ${failed} 个连续失败候选。` : ready.reason
       })) ?? currentJob;
   }
 
@@ -503,32 +524,53 @@ async function runLlmStage(
     const queued = await claimQueuedRepoBatch(job.id, "llm", ready.batchSize);
     if (queued.length === 0) break;
 
-    try {
-      const recommendations = [];
-      for (const item of queued.slice(0, Math.max(0, profile.config.limits.llmAnalyzeTopK - currentJob.analyzedCount))) {
+    const recommendations = [];
+    let succeeded = 0;
+    let failed = 0;
+    const allowed = Math.max(0, profile.config.limits.llmAnalyzeTopK - currentJob.analyzedCount);
+    const selected = queued.slice(0, allowed);
+    const overLimit = queued.slice(allowed);
+    for (const item of overLimit) {
+      await completeCandidate(item.queueId);
+    }
+
+    for (const item of selected) {
+      let llmJobId: string | undefined;
+      try {
         const document = await getLatestRepoDocument(item.repo.id, "readme");
         const readme = document?.rawContent ?? item.repo.description;
         const inputHash = hashText(`${item.repo.fullName}\n${readme}`);
-        const llmJobId = await createLlmJob({
-          repoId: item.repo.id,
-          jobType: "repo_analysis",
-          status: "running",
-          inputHash,
+        const cached = await getLatestLlmResult(item.repo.id, "repo_analysis", {
           providerId: provider.id,
           model: provider.model,
-          promptVersion: REPO_ANALYSIS_PROMPT_VERSION
-        });
-        const analysis = await analyzeRepoWithLlm({ repo: item.repo, profile, readme });
-        await upsertLlmResult({
-          repoId: item.repo.id,
-          providerId: provider.id,
-          model: provider.model,
-          jobType: "repo_analysis",
           promptVersion: REPO_ANALYSIS_PROMPT_VERSION,
-          structured: analysis as unknown as Record<string, unknown>,
-          rawResponse: JSON.stringify(analysis)
+          inputHash
         });
-        await finishLlmJob(llmJobId, "completed");
+        let analysis: RepoAnalysisResult;
+        if (cached) {
+          analysis = cached as unknown as RepoAnalysisResult;
+        } else {
+          llmJobId = await createLlmJob({
+            repoId: item.repo.id,
+            jobType: "repo_analysis",
+            status: "running",
+            inputHash,
+            providerId: provider.id,
+            model: provider.model,
+            promptVersion: REPO_ANALYSIS_PROMPT_VERSION
+          });
+          analysis = await analyzeRepoWithLlm({ repo: item.repo, profile, readme });
+          await upsertLlmResult({
+            repoId: item.repo.id,
+            providerId: provider.id,
+            model: provider.model,
+            jobType: "repo_analysis",
+            promptVersion: REPO_ANALYSIS_PROMPT_VERSION,
+            structured: analysis as unknown as Record<string, unknown>,
+            rawResponse: JSON.stringify(analysis)
+          });
+          await finishLlmJob(llmJobId, "completed");
+        }
         await upgradeRepoDataLevel([item.repo], "L3");
         recommendations.push(
           buildRecommendation(
@@ -541,25 +583,31 @@ async function runLlmStage(
           )
         );
         await completeCandidate(item.queueId);
+        succeeded += 1;
+      } catch (error) {
+        const reason = normalizeAiStageError(error);
+        if (llmJobId) {
+          await finishLlmJob(llmJobId, "failed");
+        }
+        if (item.attempts < MAX_AI_CANDIDATE_ATTEMPTS) {
+          await retryCandidate(item.queueId, retryDelaySeconds(item.attempts));
+        } else {
+          await failCandidate(item.queueId, reason);
+          failed += 1;
+        }
       }
+    }
 
-      if (recommendations.length) {
-        await upsertRecommendations(recommendations);
-      }
-    } catch (error) {
-      await requeueRunningCandidates(job.id, "llm");
-      return updateScanJob(job.id, {
-        status: "retry_later",
-        statusReason: normalizeAiStageError(error)
-      });
+    if (recommendations.length) {
+      await upsertRecommendations(recommendations);
     }
 
     currentJob =
       (await updateScanJob(job.id, {
-        analyzedCount: currentJob.analyzedCount + queued.length,
+        analyzedCount: currentJob.analyzedCount + succeeded,
         stage: "llm",
         status: ready.status,
-        statusReason: ready.reason
+        statusReason: failed ? `LLM 阶段跳过 ${failed} 个连续失败候选。` : ready.reason
       })) ?? currentJob;
   }
 
@@ -567,6 +615,23 @@ async function runLlmStage(
 }
 
 async function runRankStage(job: ScanJob, profile: DiscoveryProfile) {
+  const provider = await getAiProvider(profile.config.ai.embeddingProviderId);
+  if (provider) {
+    try {
+      const [queryVector] = await callEmbedding(provider, buildProfileEmbeddingInput(profile));
+      if (queryVector?.length) {
+        await rerankRecommendationsWithSemanticFit({
+          profileId: profile.id,
+          providerId: provider.id,
+          queryVector
+        });
+      }
+    } catch (error) {
+      await updateScanJob(job.id, {
+        statusReason: `语义重排跳过：${normalizeAiStageError(error)}`
+      });
+    }
+  }
   await trimRecommendations(profile.id, profile.config.limits.finalReportTopK);
   return updateScanJob(job.id, {
     status: "completed",
@@ -574,6 +639,23 @@ async function runRankStage(job: ScanJob, profile: DiscoveryProfile) {
     statusReason: undefined,
     finishedAt: new Date().toISOString()
   });
+}
+
+function buildProfileEmbeddingInput(profile: DiscoveryProfile) {
+  const { preferences } = profile.config;
+  return [
+    profile.name,
+    preferences.keywords.join(", "),
+    preferences.topics.join(", "),
+    Object.entries(preferences.languages)
+      .map(([language, weight]) => `${language}:${weight}`)
+      .join(", "),
+    preferences.excludeKeywords.length
+      ? `exclude: ${preferences.excludeKeywords.join(", ")}`
+      : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 async function prepareStage(
@@ -642,7 +724,19 @@ async function moveWhenStageDrained(
     });
   }
 
+  if (remaining > 0 && running === 0) {
+    return updateScanJob(job.id, {
+      status: "retry_later",
+      stage,
+      statusReason: `${stage} 阶段有 ${remaining} 个候选等待退避后重试。`
+    });
+  }
+
   return job;
+}
+
+function retryDelaySeconds(attempts: number) {
+  return Math.min(300, 15 * 2 ** Math.max(0, attempts - 1));
 }
 
 async function isCollectComplete(jobId: string, profile: DiscoveryProfile) {

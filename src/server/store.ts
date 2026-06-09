@@ -325,15 +325,62 @@ export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
   const state = await loadState();
   return state.jobs
     .filter((job) =>
-      ["pending", "running", "throttled", "retry_later"].includes(job.status)
+      ["pending", "running", "throttled", "retry_later", "paused_by_memory"].includes(job.status)
     )
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .slice(0, limit);
 }
 
-export async function createScanJob(profileId: string): Promise<ScanJob> {
+export async function findActiveScanJobByProfile(profileId: string): Promise<ScanJob | undefined> {
   if (await isDatabaseAvailable()) {
-    return postgresStore.createScanJob(profileId);
+    return postgresStore.findActiveScanJobByProfile(profileId);
+  }
+
+  const state = await loadState();
+  return state.jobs
+    .filter(
+      (job) =>
+        job.profileId === profileId &&
+        ["pending", "running", "throttled", "retry_later", "paused_by_memory", "paused_by_runtime"].includes(job.status)
+    )
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+}
+
+export async function getScheduleState(profileId: string): Promise<
+  | {
+      lastCheckedAt?: string;
+      lastScheduledAt?: string;
+      lastJobId?: string;
+    }
+  | undefined
+> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.getScheduleState(profileId);
+  }
+
+  void profileId;
+  return undefined;
+}
+
+export async function touchScheduleState(input: {
+  profileId: string;
+  checkedAt: string;
+  scheduledAt?: string;
+  jobId?: string;
+}) {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.touchScheduleState(input);
+  }
+
+  void input;
+}
+
+export async function createScanJob(
+  profileId: string,
+  type: ScanJob["type"] = "manual_scan"
+): Promise<ScanJob> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.createScanJob(profileId, type);
   }
 
   const state = await loadState();
@@ -342,7 +389,7 @@ export async function createScanJob(profileId: string): Promise<ScanJob> {
   const job: ScanJob = {
     id: crypto.randomUUID(),
     profileId,
-    type: "manual_scan",
+    type,
     status: "pending",
     stage: "collect",
     maxCandidates: profile?.config.limits.maxCandidates ?? 0,
@@ -637,32 +684,6 @@ export async function rebuildRecommendationScores(profileId: string) {
   await saveState(state);
 }
 
-function calculateRecommendationFeedbackScore(
-  repo: Recommendation["repo"],
-  signals: PreferenceSignal[]
-) {
-  if (signals.length === 0) {
-    return 0;
-  }
-
-  const topics = new Set(repo.topics.map((topic) => topic.toLowerCase()));
-  const text = `${repo.fullName} ${repo.description}`.toLowerCase();
-  const total = signals.reduce((sum, signal) => {
-    if (signal.signalType === "language" && signal.value === repo.primaryLanguage) {
-      return sum + signal.weight;
-    }
-    if (signal.signalType === "topic" && topics.has(signal.value.toLowerCase())) {
-      return sum + signal.weight;
-    }
-    if (signal.signalType === "keyword" && text.includes(signal.value.toLowerCase())) {
-      return sum + signal.weight;
-    }
-    return sum;
-  }, 0);
-
-  return Math.max(0, Math.min(1, (total + 1) / 2));
-}
-
 export async function listPreferenceSignals(profileId: string): Promise<PreferenceSignal[]> {
   if (await isDatabaseAvailable()) {
     return postgresStore.listPreferenceSignals(profileId);
@@ -885,6 +906,29 @@ export async function completeCandidate(id: string) {
   }
 }
 
+export async function retryCandidate(id: string, retryAfterSeconds: number) {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.retryCandidate(id, retryAfterSeconds);
+  }
+
+  void id;
+  void retryAfterSeconds;
+}
+
+export async function failCandidate(
+  id: string,
+  reason: string,
+  retryAfterSeconds?: number
+) {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.failCandidate(id, reason, retryAfterSeconds);
+  }
+
+  void id;
+  void reason;
+  void retryAfterSeconds;
+}
+
 export async function recordResourceEvent(
   event: Omit<ResourceEvent, "id" | "createdAt">
 ): Promise<ResourceEvent> {
@@ -982,6 +1026,18 @@ export async function upsertRepoEmbedding(input: {
   void input;
 }
 
+export async function rerankRecommendationsWithSemanticFit(input: {
+  profileId: string;
+  providerId: string;
+  queryVector: number[];
+}) {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.rerankRecommendationsWithSemanticFit(input);
+  }
+
+  void input;
+}
+
 export async function createLlmJob(input: {
   repoId: string;
   jobType: string;
@@ -1030,9 +1086,18 @@ export async function upsertLlmResult(input: {
   await saveState(state);
 }
 
-export async function getLatestLlmResult(repoId: string, jobType: string) {
+export async function getLatestLlmResult(
+  repoId: string,
+  jobType: string,
+  options: {
+    providerId?: string;
+    model?: string;
+    promptVersion?: string;
+    inputHash?: string;
+  } = {}
+) {
   if (await isDatabaseAvailable()) {
-    return postgresStore.getLatestLlmResult(repoId, jobType);
+    return postgresStore.getLatestLlmResult(repoId, jobType, options);
   }
 
   const state = await loadState();
