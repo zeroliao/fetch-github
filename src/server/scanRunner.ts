@@ -101,7 +101,7 @@ async function runScanJobInternal(
     });
   }
 
-  const shouldResumeFromQueue = allowPaused && ["retry_later", "paused_by_memory"].includes(job.status);
+  const shouldResumeFromQueue = ["retry_later", "paused_by_memory"].includes(job.status);
   let current = shouldResumeFromQueue
     ? (await updateScanJob(job.id, {
         status: "running",
