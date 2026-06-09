@@ -18,7 +18,7 @@ async function main() {
 
   const profiles = await listProfiles();
   const jobs = await listScanJobs();
-  const recovered = await requeueStaleRunningCandidates(1);
+  const recovered = await requeueStaleRunningCandidates(0);
 
   console.log("fetchGithub worker bootstrap");
   console.log(`profiles=${profiles.length} jobs=${jobs.length}`);

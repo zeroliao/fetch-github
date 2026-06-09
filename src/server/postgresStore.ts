@@ -1588,28 +1588,44 @@ export async function requeueRunningCandidates(jobId: string, stage?: string) {
   );
 }
 
-export async function requeueStaleRunningCandidates(staleAfterMinutes = 5) {
-  const staleMinutes = Math.max(1, Math.floor(staleAfterMinutes));
+export async function requeueStaleRunningCandidates(staleAfterMinutes = 5): Promise<
+  Array<{ jobId: string; stage: string; count: number; total: number }>
+> {
+  const runningCandidates = await getPool().query(
+    `select job_id, stage, count(*)::int as count
+     from candidate_queue
+     where status='running'
+     group by job_id, stage`
+  );
+
   const result = await getPool().query(
     `update candidate_queue
      set status='pending',
          next_run_at=now(),
          updated_at=now()
      where status='running'
-       and updated_at < now() - ($1::text || ' minutes')::interval
-     returning job_id, stage`,
-    [String(staleMinutes)]
+     returning job_id, stage`
   );
 
-  const byStage = new Map<string, number>();
-  for (const row of result.rows) {
-    const key = `${row.job_id}:${row.stage}`;
-    byStage.set(key, (byStage.get(key) ?? 0) + 1);
+  const countByStage = new Map<string, number>();
+  for (const row of runningCandidates.rows) {
+    countByStage.set(`${row.job_id}:${row.stage}`, Number(row.count));
   }
 
-  return [...byStage.entries()].map(([key, count]) => {
+  const recovered = new Map<string, number>();
+  for (const row of result.rows) {
+    const key = `${row.job_id}:${row.stage}`;
+    recovered.set(key, (recovered.get(key) ?? 0) + 1);
+  }
+
+  return [...recovered.entries()].map(([key, count]) => {
     const [jobId, stage] = key.split(":");
-    return { jobId, stage, count };
+    return {
+      jobId,
+      stage,
+      count,
+      total: countByStage.get(key) ?? count
+    };
   });
 }
 
