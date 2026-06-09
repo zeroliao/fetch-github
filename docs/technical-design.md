@@ -205,6 +205,7 @@ discovery_jobs
 - started_at
 - finished_at
 - error_message
+- archived_at
 ```
 
 ```text
@@ -398,6 +399,7 @@ running
 throttled
 paused_by_memory
 paused_by_runtime
+paused_by_user
 retry_later
 completed
 failed
@@ -430,6 +432,8 @@ Rules:
 - Store checkpoints frequently.
 - Split long README content into chunks and persist each step.
 - Pause or throttle when memory crosses configured thresholds.
+- On worker startup, requeue stale `running` candidates and continue resumable scan jobs.
+- Completed and failed scan jobs can be soft-archived with `archived_at`; archived jobs are hidden from default task lists but retained for audit.
 
 Example policy:
 
@@ -471,6 +475,8 @@ ai:
 ```
 
 The API key value must never be stored in the database. Store only the environment variable name.
+
+Provider records store `base_url`, `api_key_env`, `model`, `dimensions`, `enabled`, timeout and rate-limit metadata in one place. The API key value can be written to `.env.local` through the UI, but the database only stores the environment variable name.
 
 ## LLM Structured Output
 
@@ -516,22 +522,24 @@ fetchGithub L4 repository
 
 Only content hash changes should trigger resync.
 
+MVP implementation writes a `local-derived-index` sync record and content hash to `knowledge_syncs`. A real FastGPT or `../ai-knowledge-base` adapter remains optional and must not replace `fetchGithub` as the source of truth.
+
 ## Observability
 
 Track:
 
 - Scan progress by job and stage.
-- GitHub API request count and rate limit events.
-- AI token usage and estimated cost.
+- GitHub API request count, timeout events, and rate limit events.
+- AI token usage, timeout events, cache hit ratio, and estimated cost.
 - Memory resource events.
 - Queue depth.
 - Recommendation save/hide ratio.
 - Knowledge sync success/failure.
 
-## Open Implementation Decisions
+## Current Implementation Status
 
-- Exact GitHub authentication flow.
-- Whether to store encrypted tokens locally or use external secret storage.
-- Exact UI component library.
-- Exact FastGPT sync API shape.
-- Deployment target and resource limits.
+- GitHub context uses `GITHUB_TOKEN` from environment or `.env.local`; plaintext tokens are not stored in the database.
+- AI providers use OpenAI-compatible third-party APIs with separate chat and embedding provider records.
+- UI is implemented with Next.js client components, project CSS, and `lucide-react` icons.
+- Production deployment currently runs web and worker systemd services behind `github.zero007.chat`.
+- FastGPT / `../ai-knowledge-base` write adapter, cost dashboard, richer context-match audit table, and automated API tests remain future work.

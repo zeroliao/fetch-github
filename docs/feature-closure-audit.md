@@ -1,10 +1,10 @@
 # 功能闭环审计
 
-更新时间：2026-06-08
+更新时间：2026-06-09
 
 ## 审计结论
 
-当前项目已经具备可运行的发现工作台闭环：配置、扫描、推荐、反馈、AI 配置、GitHub 上下文同步、知识库派生同步均可操作并持久化。后续优化主要集中在外部知识库真实写入适配器、更丰富的上下文匹配算法、调度器 cron 化和生产级观测。
+当前项目已经具备可运行的发现工作台闭环：配置、扫描、推荐、反馈、AI 配置、GitHub 上下文同步、知识库派生同步、长任务恢复和历史任务归档均可操作并持久化。生产环境已部署到 `github.zero007.chat`。后续优化主要集中在外部知识库真实写入适配器、更丰富的上下文匹配算法、成本/日志观测和自动化测试。
 
 ## 已修复的闭环问题
 
@@ -30,6 +30,7 @@
 - 发现配置支持权威来源启停和权重：GitHub Search、Topics、高 Star、近期活跃已接入扫描；GitHub Trending、Explore、OSS Insight、GH Archive、OpenSSF、ecosyste.ms 已作为来源配置/质量信号预留。
 - 扫描前校验发现配置是否存在、是否启用、AI 绑定是否有效。
 - 扫描后刷新任务、队列和推荐列表。
+- 已完成或失败的历史扫描任务支持归档，默认任务列表不再显示已归档记录，但数据库保留审计数据。
 - GitHub 限流或 token 错误会显示更明确的提示。
 - repository 链接和 GitHub 按钮会在新标签打开，并使用 `rel="noopener noreferrer"`。
 
@@ -57,8 +58,10 @@
 ### 数据一致性
 
 - `repos.full_name` 冲突更新时不再更新 `repos.id`，避免破坏已存在的外键引用。
+- 修复 `repo_snapshots` 外键问题：仓库 upsert 后使用数据库返回的真实 `repos.id` 写入快照。
 - 新增 `GET /api/dashboard` 作为一次性刷新快照接口。
 - Seed 数据初始化使用数据库 advisory lock 串行化，避免首次并发访问时重复建表或重复初始化。
+- `llm_results.input_hash` 已补齐迁移和线上历史数据回填，便于后续复用 LLM 缓存。
 
 ### 前端交互
 
@@ -80,6 +83,7 @@
 - GitHub Search 分页按 checkpoint 写入 `scan_checkpoints`。
 - 候选仓库进入 `candidate_queue`，worker 分阶段推进。
 - 支持 pause/resume、runtime pause、memory pressure pause。
+- worker 启动时会恢复 stale `running` 候选，并自动继续 `retry_later`、`throttled`、`paused_by_memory`、`paused_by_runtime` 任务。
 - `ResourceGovernor` 会根据可用内存调整 batch size，并写入 `resource_events`。
 
 ### README、Embedding 和 LLM 分析
@@ -88,6 +92,7 @@
 - Embedding 阶段调用独立 embedding provider，并写入 `repo_embeddings`。
 - LLM 阶段调用独立 chat provider，结构化结果写入 `llm_results`。
 - LLM 结果会参与 recommendation 摘要、原因、风险和匹配偏好。
+- GitHub、Embedding 和 Chat API 请求均设置超时，避免第三方服务长时间挂起导致 worker 卡死。
 
 ### 偏好学习
 
@@ -110,9 +115,8 @@
 ## 后续优化项
 
 - 增加 `../ai-knowledge-base` 或 FastGPT 的真实写入 adapter，但保持可选依赖。
-- 将 profile schedule 从配置展示推进到自动 cron/interval 调度。
 - 为 `repo_context_matches` 增加独立持久化计算表，便于审计每个关联原因。
-- 增加 scan/AI/knowledge sync 的失败重试策略和操作日志页面。
+- 增加 scan/AI/knowledge sync 的操作日志页面和成本统计页面。
 - 为关键 API 增加自动化测试。
 
 ## 已验证
@@ -121,5 +125,7 @@
 - `pnpm db:init`
 - `pnpm build`
 - worker bootstrap 和 queue stats 输出
+- 线上执行 `pnpm db:init` 并重启 `fetchgithub-web.service`、`fetchgithub-worker.service`。
+- `https://github.zero007.chat/api/scans` 和 `https://github.zero007.chat/api/dashboard` 可正常返回。
 - Playwright 打开 `http://localhost:3020`，验证推荐、发现配置、我的 GitHub、知识库同步页面。
 - Playwright 点击 `同步 L4`，确认写入同步记录。

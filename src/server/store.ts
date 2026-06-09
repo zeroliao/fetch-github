@@ -305,7 +305,9 @@ export async function listScanJobs(): Promise<ScanJob[]> {
   }
 
   const state = await loadState();
-  return state.jobs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return state.jobs
+    .filter((job) => !job.archivedAt)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export async function getScanJob(jobId: string): Promise<ScanJob | undefined> {
@@ -317,6 +319,30 @@ export async function getScanJob(jobId: string): Promise<ScanJob | undefined> {
   return state.jobs.find((job) => job.id === jobId);
 }
 
+export async function archiveScanJob(jobId: string): Promise<ScanJob | undefined> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.archiveScanJob(jobId);
+  }
+
+  const state = await loadState();
+  let archived: ScanJob | undefined;
+
+  state.jobs = state.jobs.map((job) => {
+    if (job.id !== jobId || !["completed", "failed"].includes(job.status)) {
+      return job;
+    }
+
+    archived = {
+      ...job,
+      archivedAt: new Date().toISOString()
+    };
+    return archived;
+  });
+
+  await saveState(state);
+  return archived;
+}
+
 export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
   if (await isDatabaseAvailable()) {
     return postgresStore.listRunnableScanJobs(limit);
@@ -325,6 +351,7 @@ export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
   const state = await loadState();
   return state.jobs
     .filter((job) =>
+      !job.archivedAt &&
       ["pending", "running", "throttled", "retry_later", "paused_by_memory", "paused_by_runtime"].includes(job.status)
     )
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
@@ -341,6 +368,7 @@ export async function findActiveScanJobByProfile(profileId: string): Promise<Sca
     .filter(
       (job) =>
         job.profileId === profileId &&
+        !job.archivedAt &&
         ["pending", "running", "throttled", "retry_later", "paused_by_memory", "paused_by_runtime"].includes(job.status)
     )
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];

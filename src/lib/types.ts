@@ -177,6 +177,7 @@ export interface ScanJob {
   startedAt?: string;
   finishedAt?: string;
   errorMessage?: string;
+  archivedAt?: string;
   createdAt: string;
 }
 

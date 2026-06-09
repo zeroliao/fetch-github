@@ -194,6 +194,7 @@ export function DashboardClient({ initialData }: { initialData: DashboardSnapsho
             queueStats={queueStats}
             onRefresh={refreshJobsAndQueue}
             onJobUpdated={(job) => setJobs((current) => current.map((item) => (item.id === job.id ? job : item)))}
+            onJobArchived={(jobId) => setJobs((current) => current.filter((item) => item.id !== jobId))}
           />
         )}
         {activeSection === "github" && (
@@ -214,12 +215,12 @@ export function DashboardClient({ initialData }: { initialData: DashboardSnapsho
             profiles={profiles}
             onChanged={(provider) =>
               setProviders((current) => {
-                if (provider.id.startsWith("deleted-")) return current.filter((item) => item.id !== provider.id.replace("deleted-", ""));
                 return current.some((item) => item.id === provider.id)
                   ? current.map((item) => (item.id === provider.id ? provider : item))
                   : [...current, provider];
               })
             }
+            onDeleted={(providerId) => setProviders((current) => current.filter((item) => item.id !== providerId))}
           />
         )}
         {activeSection === "knowledge" && (
@@ -652,12 +653,14 @@ function JobsPanel({
   jobs,
   queueStats,
   onRefresh,
-  onJobUpdated
+  onJobUpdated,
+  onJobArchived
 }: {
   jobs: ScanJob[];
   queueStats: DashboardSnapshot["queueStats"];
   onRefresh: () => Promise<void>;
   onJobUpdated: (job: ScanJob) => void;
+  onJobArchived: (jobId: string) => void;
 }) {
   const [message, setMessage] = useState("");
   const [busyJobId, setBusyJobId] = useState("");
@@ -673,6 +676,23 @@ function JobsPanel({
         await onRefresh();
       } else {
         setMessage(body.error ?? "扫描任务操作失败。");
+      }
+    } finally {
+      setBusyJobId("");
+    }
+  }
+
+  async function archiveJob(jobId: string) {
+    setBusyJobId(jobId);
+    try {
+      const response = await fetch(`/api/scans/${jobId}`, { method: "DELETE" });
+      const body = await response.json().catch(() => ({}));
+      if (response.ok) {
+        onJobArchived(jobId);
+        setMessage("扫描任务已归档。");
+        await onRefresh();
+      } else {
+        setMessage(body.error ?? "扫描任务归档失败。");
       }
     } finally {
       setBusyJobId("");
@@ -734,6 +754,7 @@ function JobsPanel({
                       <div className="action-row">
                         {canPauseJob(job.status) && <button className="button" disabled={busyJobId === job.id} onClick={() => updateJob(job.id, "pause")} type="button">暂停</button>}
                         {canResumeJob(job.status) && <button className="button" disabled={busyJobId === job.id} onClick={() => updateJob(job.id, "resume")} type="button">恢复</button>}
+                        {canArchiveJob(job.status) && <button className="button" disabled={busyJobId === job.id} onClick={() => archiveJob(job.id)} type="button">归档</button>}
                       </div>
                     </td>
                   </tr>
@@ -896,11 +917,13 @@ function GitHubPanel({
 function ProvidersPanel({
   providers,
   profiles,
-  onChanged
+  onChanged,
+  onDeleted
 }: {
   providers: AiProvider[];
   profiles: DiscoveryProfile[];
   onChanged: (provider: AiProvider) => void;
+  onDeleted: (providerId: string) => void;
 }) {
   const [kind, setKind] = useState<"chat" | "embedding">("chat");
   const [name, setName] = useState("新建 Chat 配置");
@@ -913,8 +936,14 @@ function ProvidersPanel({
 
   function switchKind(nextKind: "chat" | "embedding") {
     setKind(nextKind);
+    resetProviderForm(nextKind);
+  }
+
+  function resetProviderForm(nextKind = kind) {
     setName(nextKind === "chat" ? "新建 Chat 配置" : "新建 Embedding 配置");
+    setBaseUrl("https://api.example.com/v1");
     setApiKeyEnv(nextKind === "chat" ? "CHAT_API_KEY" : "EMBEDDING_API_KEY");
+    setApiKeyValue("");
     setModel(nextKind === "chat" ? "chat-model" : "embedding-model");
     setDimensions(nextKind === "embedding" ? 4096 : 1536);
   }
@@ -929,7 +958,7 @@ function ProvidersPanel({
     if (response.ok) {
       onChanged(body);
       setMessage("AI 配置已创建。");
-      setApiKeyValue("");
+      resetProviderForm();
     } else {
       setMessage(body.error ?? "创建失败。");
     }
@@ -954,7 +983,7 @@ function ProvidersPanel({
     const response = await fetch(`/api/ai-providers/${provider.id}`, { method: "DELETE" });
     const body = await response.json().catch(() => ({}));
     if (response.ok) {
-      onChanged({ ...provider, id: `deleted-${provider.id}` });
+      onDeleted(provider.id);
       setMessage("AI 配置已删除。");
     } else {
       setMessage(body.error ?? "删除失败。");
@@ -1162,6 +1191,10 @@ function canPauseJob(status: string) {
 
 function canResumeJob(status: string) {
   return ["paused_by_user", "paused_by_memory", "paused_by_runtime", "retry_later"].includes(status);
+}
+
+function canArchiveJob(status: string) {
+  return ["completed", "failed"].includes(status);
 }
 
 function providerName(providers: AiProvider[], id: string) {

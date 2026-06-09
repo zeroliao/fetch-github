@@ -82,6 +82,10 @@ export async function ensureSeedData() {
       `alter table llm_results
        add column if not exists input_hash text`
     );
+    await client.query(
+      `alter table discovery_jobs
+       add column if not exists archived_at timestamptz`
+    );
 
     const seedState = await client.query(
       `select value_json from app_state where key = 'seed_data_initialized'`
@@ -433,8 +437,9 @@ export async function deleteAiProvider(id: string): Promise<{
 export async function listScanJobs(): Promise<ScanJob[]> {
   const result = await getPool().query(
     `select id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
-            analyzed_count, started_at, finished_at, error_message, created_at
+            analyzed_count, started_at, finished_at, error_message, archived_at, created_at
      from discovery_jobs
+     where archived_at is null
      order by created_at desc
      limit 100`
   );
@@ -445,9 +450,24 @@ export async function listScanJobs(): Promise<ScanJob[]> {
 export async function getScanJob(jobId: string): Promise<ScanJob | undefined> {
   const result = await getPool().query(
     `select id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
-            analyzed_count, started_at, finished_at, error_message, created_at
+            analyzed_count, started_at, finished_at, error_message, archived_at, created_at
      from discovery_jobs
      where id = $1`,
+    [jobId]
+  );
+
+  return result.rows[0] ? mapJobRow(result.rows[0]) : undefined;
+}
+
+export async function archiveScanJob(jobId: string): Promise<ScanJob | undefined> {
+  const result = await getPool().query(
+    `update discovery_jobs
+     set archived_at=now()
+     where id=$1
+       and status in ('completed', 'failed')
+       and archived_at is null
+     returning id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
+               analyzed_count, started_at, finished_at, error_message, archived_at, created_at`,
     [jobId]
   );
 
@@ -457,9 +477,10 @@ export async function getScanJob(jobId: string): Promise<ScanJob | undefined> {
 export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
   const result = await getPool().query(
     `select id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
-            analyzed_count, started_at, finished_at, error_message, created_at
+            analyzed_count, started_at, finished_at, error_message, archived_at, created_at
      from discovery_jobs
      where status in ('pending', 'running', 'throttled', 'retry_later', 'paused_by_memory', 'paused_by_runtime')
+       and archived_at is null
      order by created_at asc
      limit $1`,
     [limit]
@@ -471,10 +492,11 @@ export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
 export async function findActiveScanJobByProfile(profileId: string): Promise<ScanJob | undefined> {
   const result = await getPool().query(
     `select id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
-            analyzed_count, started_at, finished_at, error_message, created_at
+            analyzed_count, started_at, finished_at, error_message, archived_at, created_at
      from discovery_jobs
      where profile_id=$1
        and status in ('pending', 'running', 'throttled', 'retry_later', 'paused_by_memory', 'paused_by_runtime')
+       and archived_at is null
      order by created_at desc
      limit 1`,
     [profileId]
@@ -567,7 +589,7 @@ export async function updateScanJob(
 ): Promise<ScanJob | undefined> {
   const current = await getPool().query(
     `select id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
-            analyzed_count, started_at, finished_at, error_message, created_at
+            analyzed_count, started_at, finished_at, error_message, archived_at, created_at
      from discovery_jobs
      where id = $1`,
     [jobId]
@@ -590,11 +612,13 @@ export async function updateScanJob(
         ? patch.statusReason
         : job.errorMessage;
 
-  await getPool().query(
+  const updated = await getPool().query(
     `update discovery_jobs
      set status=$2, stage=$3, max_candidates=$4, fetched_count=$5, processed_count=$6,
          analyzed_count=$7, started_at=$8, finished_at=$9, error_message=$10
-     where id=$1`,
+     where id=$1
+     returning id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
+               analyzed_count, started_at, finished_at, error_message, archived_at, created_at`,
     [
       job.id,
       job.status,
@@ -609,10 +633,7 @@ export async function updateScanJob(
     ]
   );
 
-  return {
-    ...job,
-    errorMessage: nextErrorMessage ?? undefined
-  };
+  return updated.rows[0] ? mapJobRow(updated.rows[0]) : undefined;
 }
 
 export async function upsertRepos(
@@ -1820,6 +1841,7 @@ function mapJobRow(row: Record<string, any>): ScanJob {
     startedAt: row.started_at ? toIso(row.started_at) : undefined,
     finishedAt: row.finished_at ? toIso(row.finished_at) : undefined,
     errorMessage: row.error_message ?? undefined,
+    archivedAt: row.archived_at ? toIso(row.archived_at) : undefined,
     createdAt: toIso(row.created_at)
   };
 }
