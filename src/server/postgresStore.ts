@@ -42,6 +42,7 @@ interface LlmResultInput {
   model: string;
   jobType: string;
   promptVersion: string;
+  inputHash?: string;
   structured: Record<string, unknown>;
   rawResponse?: string;
 }
@@ -72,6 +73,14 @@ export async function ensureSeedData() {
         last_job_id text,
         updated_at timestamptz not null default now()
       )`
+    );
+    await client.query(
+      `alter table candidate_queue
+       add column if not exists updated_at timestamptz not null default now()`
+    );
+    await client.query(
+      `alter table llm_results
+       add column if not exists input_hash text`
     );
 
     const seedState = await client.query(
@@ -789,12 +798,14 @@ export async function enqueueCandidates(
 
     await pool.query(
       `insert into candidate_queue
-        (id, job_id, repo_id, priority_score, stage, status, attempts, queued_at)
-       values ($1,$2,$3,$4,$5,'pending',0,now())
+        (id, job_id, repo_id, priority_score, stage, status, attempts, queued_at, updated_at)
+       values ($1,$2,$3,$4,$5,'pending',0,now(),now())
        on conflict (job_id, repo_id, stage) do update set
-         priority_score=excluded.priority_score,
-         status='pending',
-         queued_at=now()`,
+          priority_score=excluded.priority_score,
+          status='pending',
+          next_run_at=null,
+          queued_at=now(),
+          updated_at=now()`,
       [
         crypto.randomUUID(),
         jobId,
@@ -1082,8 +1093,8 @@ export async function finishLlmJob(id: string, status: string) {
 export async function upsertLlmResult(input: LlmResultInput) {
   await getPool().query(
     `insert into llm_results
-      (id, repo_id, provider_id, model, job_type, prompt_version, structured_json, raw_response_compressed, created_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,now())`,
+      (id, repo_id, provider_id, model, job_type, prompt_version, input_hash, structured_json, raw_response_compressed, created_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,now())`,
     [
       crypto.randomUUID(),
       input.repoId,
@@ -1091,6 +1102,7 @@ export async function upsertLlmResult(input: LlmResultInput) {
       input.model,
       input.jobType,
       input.promptVersion,
+      input.inputHash ?? null,
       JSON.stringify(input.structured),
       input.rawResponse ? Buffer.from(input.rawResponse, "utf8") : null
     ]
@@ -1124,18 +1136,7 @@ export async function getLatestLlmResult(
   }
   if (options.inputHash) {
     values.push(options.inputHash);
-    conditions.push(
-      `exists (
-        select 1 from llm_jobs job
-        where job.repo_id=llm_results.repo_id
-          and job.job_type=llm_results.job_type
-          and job.provider_id=llm_results.provider_id
-          and job.model=llm_results.model
-          and job.prompt_version=llm_results.prompt_version
-          and job.input_hash=$${values.length}
-          and job.status='completed'
-      )`
-    );
+    conditions.push(`input_hash=$${values.length}`);
   }
 
   const result = await getPool().query(
@@ -1477,7 +1478,8 @@ export async function claimCandidateBatch(stage = "profile", limit = 10) {
      )
      update candidate_queue q
      set status = 'running',
-         attempts = attempts + 1
+        attempts = attempts + 1,
+        updated_at = now()
      from picked
      where q.id = picked.id
      returning q.id, q.job_id, q.repo_id, q.priority_score, q.stage, q.status, q.attempts`,
@@ -1541,8 +1543,9 @@ export async function claimQueuedRepoBatch(
      ),
      updated as (
        update candidate_queue q
-       set status='running',
-           attempts=attempts + 1
+        set status='running',
+            attempts=attempts + 1,
+            updated_at=now()
        from picked
        where q.id = picked.id
        returning q.id, q.repo_id, q.priority_score, q.attempts
@@ -1576,12 +1579,38 @@ export async function requeueRunningCandidates(jobId: string, stage?: string) {
   await getPool().query(
     `update candidate_queue
      set status='pending',
-         next_run_at=now()
+         next_run_at=now(),
+         updated_at=now()
      where job_id=$1
        ${stageSql}
        and status='running'`,
     values
   );
+}
+
+export async function requeueStaleRunningCandidates(staleAfterMinutes = 5) {
+  const staleMinutes = Math.max(1, Math.floor(staleAfterMinutes));
+  const result = await getPool().query(
+    `update candidate_queue
+     set status='pending',
+         next_run_at=now(),
+         updated_at=now()
+     where status='running'
+       and updated_at < now() - ($1::text || ' minutes')::interval
+     returning job_id, stage`,
+    [String(staleMinutes)]
+  );
+
+  const byStage = new Map<string, number>();
+  for (const row of result.rows) {
+    const key = `${row.job_id}:${row.stage}`;
+    byStage.set(key, (byStage.get(key) ?? 0) + 1);
+  }
+
+  return [...byStage.entries()].map(([key, count]) => {
+    const [jobId, stage] = key.split(":");
+    return { jobId, stage, count };
+  });
 }
 
 export async function failCandidate(
@@ -1597,7 +1626,8 @@ export async function failCandidate(
   await getPool().query(
     `update candidate_queue
      set status='failed',
-         next_run_at=$2
+         next_run_at=$2,
+         updated_at=now()
      where id=$1`,
     [id, nextRunAt]
   );
@@ -1611,7 +1641,8 @@ export async function retryCandidate(id: string, retryAfterSeconds: number) {
   await getPool().query(
     `update candidate_queue
      set status='pending',
-         next_run_at=$2
+         next_run_at=$2,
+         updated_at=now()
      where id=$1`,
     [id, nextRunAt]
   );
@@ -1640,7 +1671,7 @@ export async function getJobQueueCount(jobId: string, stage?: string, status?: s
 
 export async function completeCandidate(id: string) {
   await getPool().query(
-    `update candidate_queue set status='done' where id=$1`,
+    `update candidate_queue set status='done', updated_at=now() where id=$1`,
     [id]
   );
 }

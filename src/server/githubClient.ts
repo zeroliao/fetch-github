@@ -67,7 +67,7 @@ export async function searchRepositories(
   url.searchParams.set("sort", options.sort ?? "stars");
   url.searchParams.set("order", options.order ?? "desc");
 
-  const response = await fetch(url, { headers: buildGitHubHeaders() });
+  const response = await fetchGitHub(url);
 
   if (!response.ok) {
     const body = await response.text();
@@ -86,9 +86,8 @@ export async function searchRepositories(
 }
 
 export async function fetchRepositoryReadme(repo: RepoSummary) {
-  const response = await fetch(
-    `https://api.github.com/repos/${repo.owner}/${repo.name}/readme`,
-    { headers: buildGitHubHeaders() }
+  const response = await fetchGitHub(
+    `https://api.github.com/repos/${repo.owner}/${repo.name}/readme`
   );
 
   if (response.status === 404) {
@@ -109,7 +108,7 @@ export async function fetchRepositoryReadme(repo: RepoSummary) {
   if (data.content && data.encoding === "base64") {
     content = Buffer.from(data.content.replace(/\s/g, ""), "base64").toString("utf8");
   } else if (data.download_url) {
-    const raw = await fetch(data.download_url, { headers: buildGitHubHeaders() });
+    const raw = await fetchGitHub(data.download_url);
     if (raw.ok) {
       content = await raw.text();
     }
@@ -122,9 +121,7 @@ export async function fetchRepositoryReadme(repo: RepoSummary) {
 }
 
 export async function getGitHubUserProfile(): Promise<GitHubUserProfile> {
-  const response = await fetch("https://api.github.com/user", {
-    headers: buildGitHubHeaders()
-  });
+  const response = await fetchGitHub("https://api.github.com/user");
 
   if (!response.ok) {
     const body = await response.text();
@@ -150,7 +147,7 @@ export async function listAuthenticatedRepositories(kind: "owned" | "starred") {
     const url = new URL(path);
     url.searchParams.set("per_page", "100");
     url.searchParams.set("page", String(page));
-    const response = await fetch(url, { headers: buildGitHubHeaders() });
+    const response = await fetchGitHub(url);
     if (!response.ok) {
       const body = await response.text();
       throw new Error(`GitHub ${kind} repository list failed: ${response.status} ${response.statusText} ${body}`);
@@ -181,6 +178,31 @@ function buildGitHubHeaders(): Record<string, string> {
   }
 
   return headers;
+}
+
+async function fetchGitHub(input: string | URL, init: RequestInit = {}) {
+  const timeoutMs = 30_000;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const headers = new Headers(buildGitHubHeaders());
+  if (init.headers) {
+    new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+  }
+
+  try {
+    return await fetch(input, {
+      ...init,
+      headers,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("GitHub request timed out after 30s.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function mapGitHubRepo(repo: GitHubRepoItem): RepoSummary {

@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS candidate_queue (
   attempts INTEGER NOT NULL DEFAULT 0,
   next_run_at TIMESTAMPTZ,
   queued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(job_id, repo_id, stage)
 );
 
@@ -197,6 +198,7 @@ CREATE TABLE IF NOT EXISTS llm_results (
   model TEXT NOT NULL,
   job_type TEXT NOT NULL,
   prompt_version TEXT NOT NULL,
+  input_hash TEXT,
   structured_json JSONB NOT NULL,
   raw_response_compressed BYTEA,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -301,4 +303,8 @@ CREATE INDEX IF NOT EXISTS idx_repos_full_name ON repos(full_name);
 CREATE INDEX IF NOT EXISTS idx_repos_stars ON repos(stars DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON discovery_jobs(status, stage);
 CREATE INDEX IF NOT EXISTS idx_candidate_queue_work ON candidate_queue(status, stage, priority_score DESC);
+ALTER TABLE candidate_queue
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE llm_results
+  ADD COLUMN IF NOT EXISTS input_hash TEXT;
 CREATE INDEX IF NOT EXISTS idx_recommendations_profile ON recommendations(profile_id, final_score DESC);

@@ -566,6 +566,7 @@ async function runLlmStage(
             model: provider.model,
             jobType: "repo_analysis",
             promptVersion: REPO_ANALYSIS_PROMPT_VERSION,
+            inputHash,
             structured: analysis as unknown as Record<string, unknown>,
             rawResponse: JSON.stringify(analysis)
           });
@@ -715,12 +716,13 @@ async function moveWhenStageDrained(
 ) {
   const remaining = await getJobQueueCount(job.id, stage, "pending");
   const running = await getJobQueueCount(job.id, stage, "running");
+  const failed = await getJobQueueCount(job.id, stage, "failed");
   if (remaining === 0 && running === 0) {
     return updateScanJob(job.id, {
       status: "running",
       stage: nextStage,
       analyzedCount: 0,
-      statusReason: undefined
+      statusReason: failed > 0 ? `${stage} 阶段跳过 ${failed} 个失败候选。` : undefined
     });
   }
 

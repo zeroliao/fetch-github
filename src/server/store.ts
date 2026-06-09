@@ -889,6 +889,15 @@ export async function requeueRunningCandidates(jobId: string, stage?: string) {
   void stage;
 }
 
+export async function requeueStaleRunningCandidates(staleAfterMinutes = 5) {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.requeueStaleRunningCandidates(staleAfterMinutes);
+  }
+
+  void staleAfterMinutes;
+  return [];
+}
+
 export async function getJobQueueCount(jobId: string, stage?: string, status?: string) {
   if (await isDatabaseAvailable()) {
     return postgresStore.getJobQueueCount(jobId, stage, status);
@@ -1070,6 +1079,7 @@ export async function upsertLlmResult(input: {
   model: string;
   jobType: string;
   promptVersion: string;
+  inputHash?: string;
   structured: Record<string, unknown>;
   rawResponse?: string;
 }) {

@@ -13,16 +13,20 @@ export interface ChatJsonOptions {
 
 export async function callChatJson(options: ChatJsonOptions) {
   assertProviderReady(options.provider, "chat");
-  const response = await fetch(`${trimSlash(options.provider.baseUrl)}/chat/completions`, {
-    method: "POST",
-    headers: buildHeaders(options.provider),
-    body: JSON.stringify({
-      model: options.provider.model,
-      messages: options.messages,
-      temperature: options.temperature ?? 0.2,
-      response_format: { type: "json_object" }
-    })
-  });
+  const response = await fetchWithTimeout(
+    `${trimSlash(options.provider.baseUrl)}/chat/completions`,
+    {
+      method: "POST",
+      headers: buildHeaders(options.provider),
+      body: JSON.stringify({
+        model: options.provider.model,
+        messages: options.messages,
+        temperature: options.temperature ?? 0.2,
+        response_format: { type: "json_object" }
+      })
+    },
+    options.provider
+  );
 
   if (!response.ok) {
     throw new Error(`Chat provider failed: ${response.status} ${await response.text()}`);
@@ -39,14 +43,18 @@ export async function callChatJson(options: ChatJsonOptions) {
 
 export async function callEmbedding(provider: AiProvider, input: string | string[]) {
   assertProviderReady(provider, "embedding");
-  const response = await fetch(`${trimSlash(provider.baseUrl)}/embeddings`, {
-    method: "POST",
-    headers: buildHeaders(provider),
-    body: JSON.stringify({
-      model: provider.model,
-      input
-    })
-  });
+  const response = await fetchWithTimeout(
+    `${trimSlash(provider.baseUrl)}/embeddings`,
+    {
+      method: "POST",
+      headers: buildHeaders(provider),
+      body: JSON.stringify({
+        model: provider.model,
+        input
+      })
+    },
+    provider
+  );
 
   if (!response.ok) {
     throw new Error(`Embedding provider failed: ${response.status} ${await response.text()}`);
@@ -114,4 +122,35 @@ function buildHeaders(provider: AiProvider) {
 
 function trimSlash(value: string) {
   return value.replace(/\/+$/, "");
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  provider: AiProvider
+) {
+  const timeoutSeconds = provider.timeoutSeconds ?? (provider.kind === "chat" ? 60 : 30);
+  const timeoutMs = Math.max(1, timeoutSeconds) * 1000;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error(
+        `${provider.kind === "chat" ? "Chat" : "Embedding"} provider timed out after ${timeoutSeconds}s.`
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
 }
