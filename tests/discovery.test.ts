@@ -3,10 +3,13 @@ import test from "node:test";
 import { defaultDiscoverySources } from "../src/lib/discoverySources";
 import type { DiscoveryProfile } from "../src/lib/types";
 import { buildGitHubSearchQueryPlans } from "../src/server/githubSearch";
+import { buildRecommendationMarkdown } from "../src/server/knowledgeSync";
 import {
   buildDiscoveryPreview,
   heuristicDiscoveryPreferences
 } from "../src/server/naturalLanguageDiscovery";
+import { buildRecommendation } from "../src/server/ranking";
+import { buildSchedulePlan } from "../src/server/scheduler";
 
 const baseProfile: DiscoveryProfile = {
   id: "test-profile",
@@ -108,4 +111,155 @@ test("自然语言预览会限制查询计划数量", () => {
     mode: "merge"
   });
   assert.ok(preview.queryPlans.length <= 40);
+});
+
+test("漏跑策略 skip 只保留当前周期，不会批量补跑", () => {
+  const profile: DiscoveryProfile = {
+    ...baseProfile,
+    config: {
+      ...baseProfile.config,
+      schedule: {
+        ...baseProfile.config.schedule,
+        missedRunPolicy: "skip",
+        timezone: "Asia/Shanghai",
+        cron: "0 9 * * *"
+      }
+    }
+  };
+  const plan = buildSchedulePlan(
+    profile,
+    { lastScheduledAt: "2026-06-08T01:00:00.000Z" },
+    new Date("2026-06-10T02:00:00.000Z")
+  );
+  assert.equal(plan.occurrences.length, 0);
+});
+
+test("漏跑策略 run_once 补最新一次，resume 逐次补最早漏跑周期", () => {
+  const base: DiscoveryProfile = {
+    ...baseProfile,
+    config: {
+      ...baseProfile.config,
+      schedule: {
+        ...baseProfile.config.schedule,
+        timezone: "Asia/Shanghai",
+        cron: "0 9 * * *"
+      }
+    }
+  };
+
+  const runOncePlan = buildSchedulePlan(
+    {
+      ...base,
+      config: {
+        ...base.config,
+        schedule: {
+          ...base.config.schedule,
+          missedRunPolicy: "run_once"
+        }
+      }
+    },
+    { lastScheduledAt: "2026-06-08T01:00:00.000Z" },
+    new Date("2026-06-10T02:00:00.000Z")
+  );
+  assert.equal(runOncePlan.occurrences.length, 1);
+  assert.equal(runOncePlan.occurrences[0].toISOString(), "2026-06-10T01:00:00.000Z");
+
+  const resumePlan = buildSchedulePlan(
+    {
+      ...base,
+      config: {
+        ...base.config,
+        schedule: {
+          ...base.config.schedule,
+          missedRunPolicy: "resume"
+        }
+      }
+    },
+    { lastScheduledAt: "2026-06-08T01:00:00.000Z" },
+    new Date("2026-06-10T02:00:00.000Z")
+  );
+  assert.equal(resumePlan.occurrences.length, 1);
+  assert.equal(resumePlan.occurrences[0].toISOString(), "2026-06-09T01:00:00.000Z");
+});
+
+test("推荐生成会保留关联我的 GitHub 项目的外键", () => {
+  const recommendation = buildRecommendation(
+    {
+      id: "repo-candidate",
+      fullName: "example/candidate",
+      owner: "example",
+      name: "candidate",
+      htmlUrl: "https://github.com/example/candidate",
+      description: "AI workflow developer tool",
+      primaryLanguage: "TypeScript",
+      topics: ["ai", "workflow"],
+      stars: 1200,
+      forks: 100,
+      openIssues: 12,
+      pushedAt: "2026-06-09T00:00:00.000Z",
+      updatedAt: "2026-06-09T00:00:00.000Z",
+      archived: false,
+      fork: false
+    },
+    baseProfile,
+    1,
+    undefined,
+    [],
+    [
+      {
+        id: "user-repo-1",
+        fullName: "me/fetchGithub",
+        description: "GitHub 推荐系统",
+        primaryLanguage: "TypeScript",
+        topics: ["ai", "workflow"],
+        visibility: "public",
+        selectedForContext: true
+      }
+    ]
+  );
+
+  assert.equal(recommendation.relatedUserRepos[0]?.userRepoId, "user-repo-1");
+  assert.equal(recommendation.relatedUserRepos[0]?.fullName, "me/fetchGithub");
+});
+
+test("知识库 Markdown 会包含推荐理由和关联项目解释", () => {
+  const recommendation = buildRecommendation(
+    {
+      id: "repo-doc",
+      fullName: "example/doc-target",
+      owner: "example",
+      name: "doc-target",
+      htmlUrl: "https://github.com/example/doc-target",
+      description: "AI agent documentation target",
+      primaryLanguage: "TypeScript",
+      topics: ["ai", "developer-tools"],
+      stars: 800,
+      forks: 80,
+      openIssues: 4,
+      pushedAt: "2026-06-09T00:00:00.000Z",
+      updatedAt: "2026-06-09T00:00:00.000Z",
+      archived: false,
+      fork: false
+    },
+    baseProfile,
+    1,
+    undefined,
+    [],
+    [
+      {
+        id: "user-repo-doc",
+        fullName: "me/fetchGithub",
+        description: "GitHub 推荐系统",
+        primaryLanguage: "TypeScript",
+        topics: ["ai", "developer-tools"],
+        visibility: "public",
+        selectedForContext: true
+      }
+    ]
+  );
+
+  const markdown = buildRecommendationMarkdown(recommendation);
+  assert.match(markdown, /## Reasons/);
+  assert.match(markdown, /## Related User Repositories/);
+  assert.match(markdown, /me\/fetchGithub/);
 });

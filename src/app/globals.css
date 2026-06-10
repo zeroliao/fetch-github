@@ -180,6 +180,10 @@ button {
   padding: 0 10px;
 }
 
+.compact-input {
+  width: 96px;
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -215,6 +219,11 @@ button {
   grid-template-columns: repeat(4, minmax(160px, 1fr));
   gap: 12px;
   margin-bottom: 16px;
+}
+
+.inline-summary {
+  margin: 0;
+  padding: 16px;
 }
 
 .summary-tile {

@@ -3,6 +3,7 @@
 import {
   Activity,
   Brain,
+  BarChart3,
   Database,
   ExternalLink,
   EyeOff,
@@ -54,7 +55,8 @@ const sectionIcons: Record<Section, React.ComponentType<{ size?: number }>> = {
   jobs: Activity,
   github: GitBranch,
   providers: Brain,
-  knowledge: Database
+  knowledge: Database,
+  operations: BarChart3
 };
 
 const sections = sectionDefinitions.map((section) => ({
@@ -80,6 +82,7 @@ export function DashboardClient({
   const [githubRepos, setGithubRepos] = useState(initialData.githubRepos);
   const [knowledgeSyncs, setKnowledgeSyncs] = useState(initialData.knowledgeSyncs);
   const [queueStats, setQueueStats] = useState(initialData.queueStats);
+  const [operations, setOperations] = useState(initialData.operations);
   const [selectedProfileId, setSelectedProfileId] = useState(initialData.profiles[0]?.id ?? "");
   const [selectedRepo, setSelectedRepo] = useState<Recommendation | null>(null);
   const [isScanning, setIsScanning] = useState(false);
@@ -100,6 +103,11 @@ export function DashboardClient({
     const [jobsResponse, queueResponse] = await Promise.all([fetch("/api/scans"), fetch("/api/queue")]);
     if (jobsResponse.ok) setJobs(await jobsResponse.json());
     if (queueResponse.ok) setQueueStats(await queueResponse.json());
+    const dashboardResponse = await fetch("/api/dashboard");
+    if (dashboardResponse.ok) {
+      const snapshot = await dashboardResponse.json() as DashboardSnapshot;
+      setOperations(snapshot.operations);
+    }
   }
 
   async function refreshRecommendations() {
@@ -269,6 +277,9 @@ export function DashboardClient({
             syncs={knowledgeSyncs}
             onSyncsChanged={setKnowledgeSyncs}
           />
+        )}
+        {activeSection === "operations" && (
+          <OperationsPanel operations={operations} queueStats={queueStats} onRefresh={refreshJobsAndQueue} />
         )}
       </main>
 
@@ -649,6 +660,13 @@ function ProfilesPanel({
               </Field>
               <Field label="最大运行分钟">
                 <input className="input" type="number" min={1} value={schedule.maxRuntimeMinutes} onChange={(event) => setSchedule({ ...schedule, maxRuntimeMinutes: Number(event.target.value) })} />
+              </Field>
+              <Field label="漏跑策略">
+                <select className="select" value={schedule.missedRunPolicy} onChange={(event) => setSchedule({ ...schedule, missedRunPolicy: event.target.value as DiscoveryProfile["config"]["schedule"]["missedRunPolicy"] })}>
+                  <option value="skip">跳过漏跑周期</option>
+                  <option value="run_once">补跑一次</option>
+                  <option value="resume">按漏跑周期补跑</option>
+                </select>
               </Field>
               <Field label="单查询数量">
                 <input className="input" type="number" min={1} max={100} value={limits.sourceLimitPerQuery} onChange={(event) => setLimits({ ...limits, sourceLimitPerQuery: Number(event.target.value) })} />
@@ -1184,9 +1202,11 @@ function KnowledgePanel({
   syncs: KnowledgeSync[];
   onSyncsChanged: (syncs: KnowledgeSync[]) => void;
 }) {
-  const candidates = recommendations.filter((item) => item.status === "saved" || item.status === "tracked" || item.scores.final >= 0.8);
   const [message, setMessage] = useState("");
   const [isSyncing, setIsSyncing] = useState(false);
+  const [target, setTarget] = useState("local-derived-index");
+  const [minScore, setMinScore] = useState(0.8);
+  const candidates = recommendations.filter((item) => item.status === "saved" || item.status === "tracked" || item.scores.final >= minScore);
 
   async function runSync() {
     setIsSyncing(true);
@@ -1194,7 +1214,7 @@ function KnowledgePanel({
       const response = await fetch("/api/knowledge-syncs/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: "local-derived-index", minScore: 0.8 })
+        body: JSON.stringify({ target, minScore })
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -1204,7 +1224,7 @@ function KnowledgePanel({
 
       const syncResponse = await fetch("/api/knowledge-syncs");
       if (syncResponse.ok) onSyncsChanged(await syncResponse.json());
-      setMessage(`同步完成：新增 ${body.syncedCount}，跳过 ${body.skippedCount}。`);
+      setMessage(`同步完成：新增 ${body.syncedCount}，跳过 ${body.skippedCount}，失败 ${body.failedCount ?? 0}。`);
     } finally {
       setIsSyncing(false);
     }
@@ -1215,14 +1235,22 @@ function KnowledgePanel({
       <section className="panel">
         <div className="panel-header">
           <div className="panel-title"><h2>知识库同步</h2><p>当前作为可选派生能力，fetchGithub 仍是发现结果和评分来源。</p></div>
-          <button className="button primary" type="button" disabled={isSyncing} onClick={runSync}>
-            {isSyncing ? <RefreshCw size={15} /> : <Database size={15} />}
-            同步 L4
-          </button>
+          <div className="action-row wrap">
+            <select className="select" value={target} onChange={(event) => setTarget(event.target.value)}>
+              <option value="local-derived-index">本地派生索引</option>
+              <option value="ai-knowledge-base">ai-knowledge-base</option>
+            </select>
+            <input className="input compact-input" type="number" min={0} max={1} step={0.05} value={minScore} onChange={(event) => setMinScore(Number(event.target.value))} />
+            <button className="button primary" type="button" disabled={isSyncing} onClick={runSync}>
+              {isSyncing ? <RefreshCw size={15} /> : <Database size={15} />}
+              同步 L4
+            </button>
+          </div>
         </div>
         <div className="list-panel">
           {message && <div className="notice">{message}</div>}
-          <div className="row-item"><strong>默认同步范围</strong><span className="muted">L4 项目：已收藏、已跟踪，或最终分数不低于 80。</span></div>
+          <div className="row-item"><strong>同步范围</strong><span className="muted">L4 项目：已收藏、已跟踪，或最终分数不低于 {Math.round(minScore * 100)}。</span></div>
+          <div className="row-item"><strong>当前目标</strong><span className="muted">{target === "ai-knowledge-base" ? "写入同级 ai-knowledge-base 派生文档目录" : "仅记录 fetchGithub 派生索引状态"}</span></div>
           <div className="row-item"><strong>当前候选数量</strong><span className="muted">{candidates.length}</span></div>
           <div className="row-item"><strong>已记录同步状态</strong><span className="muted">{syncs.length}</span></div>
         </div>
@@ -1244,14 +1272,104 @@ function KnowledgePanel({
         <div className="panel-header"><div className="panel-title"><h2>同步记录</h2><p>后续接入 ai-knowledge-base 或 FastGPT 时沿用这些状态。</p></div></div>
         <div className="table-wrap">
           <table className="repo-table">
-            <thead><tr><th>项目</th><th>目标</th><th>状态</th><th>同步时间</th></tr></thead>
+            <thead><tr><th>项目</th><th>目标</th><th>状态</th><th>同步时间</th><th>错误</th></tr></thead>
             <tbody>
-              {syncs.length === 0 ? <tr><td colSpan={4} className="muted">暂无同步记录</td></tr> : syncs.map((sync) => (
-                <tr key={sync.id}><td>{sync.repoFullName ?? sync.repoId}</td><td>{sync.target}</td><td>{sync.status}</td><td>{sync.syncedAt ? formatTime(sync.syncedAt) : "-"}</td></tr>
+              {syncs.length === 0 ? <tr><td colSpan={5} className="muted">暂无同步记录</td></tr> : syncs.map((sync) => (
+                <tr key={sync.id}><td>{sync.repoFullName ?? sync.repoId}</td><td>{sync.target}</td><td>{sync.status}</td><td>{sync.syncedAt ? formatTime(sync.syncedAt) : "-"}</td><td className="muted">{sync.errorMessage ?? "-"}</td></tr>
               ))}
             </tbody>
           </table>
         </div>
+      </section>
+    </div>
+  );
+}
+
+function OperationsPanel({
+  operations,
+  queueStats,
+  onRefresh
+}: {
+  operations: DashboardSnapshot["operations"];
+  queueStats: DashboardSnapshot["queueStats"];
+  onRefresh: () => Promise<void>;
+}) {
+  return (
+    <div className="stack">
+      <section className="panel">
+        <div className="panel-header">
+          <div className="panel-title">
+            <h2>运行观测</h2>
+            <p>查看低内存调节、候选队列、AI 作业和估算成本。</p>
+          </div>
+          <button className="button" type="button" onClick={() => void onRefresh()}>
+            <RefreshCw size={15} />
+            刷新
+          </button>
+        </div>
+        <div className="summary-grid inline-summary">
+          <SummaryTile icon={Activity} label="资源事件" value={operations.resourceEvents.length} />
+          <SummaryTile icon={Brain} label="AI 作业" value={operations.aiCostSummary.totalJobs} />
+          <SummaryTile icon={Database} label="Token 用量" value={operations.aiCostSummary.totalTokens.toLocaleString()} />
+          <SummaryTile icon={BarChart3} label="估算成本 USD" value={formatUsd(operations.aiCostSummary.estimatedCostUsd)} />
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <div className="panel-title"><h2>资源调节事件</h2><p>ResourceGovernor 记录的批量大小和内存状态。</p></div>
+        </div>
+        <div className="table-wrap">
+          <table className="repo-table">
+            <thead><tr><th>时间</th><th>任务</th><th>阶段</th><th>状态</th><th>可用 MB</th><th>RSS MB</th><th>批量</th><th>原因</th></tr></thead>
+            <tbody>
+              {operations.resourceEvents.length === 0 ? <tr><td colSpan={8} className="muted">暂无资源事件</td></tr> : operations.resourceEvents.map((event) => (
+                <tr key={event.id}>
+                  <td>{formatTime(event.createdAt)}</td>
+                  <td>{event.jobId}</td>
+                  <td>{event.stage}</td>
+                  <td>{event.status}</td>
+                  <td>{event.availableMb}</td>
+                  <td>{event.rssMb}</td>
+                  <td>{event.batchSize}</td>
+                  <td className="muted">{event.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <div className="panel-title"><h2>AI 作业与成本</h2><p>成本按 provider 可选 pricing 配置估算；未配置价格时为 0。</p></div>
+        </div>
+        <div className="table-wrap">
+          <table className="repo-table">
+            <thead><tr><th>时间</th><th>项目</th><th>Provider</th><th>模型</th><th>状态</th><th>Prompt</th><th>Completion</th><th>成本</th></tr></thead>
+            <tbody>
+              {operations.aiJobs.length === 0 ? <tr><td colSpan={8} className="muted">暂无 AI 作业</td></tr> : operations.aiJobs.map((job) => (
+                <tr key={job.id}>
+                  <td>{formatTime(job.createdAt)}</td>
+                  <td>{job.repoFullName ?? job.repoId}</td>
+                  <td>{job.providerName ?? job.providerId}</td>
+                  <td>{job.model}</td>
+                  <td>{job.status}</td>
+                  <td>{job.promptTokens.toLocaleString()}</td>
+                  <td>{job.completionTokens.toLocaleString()}</td>
+                  <td>{formatUsd(job.estimatedCostUsd)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <div className="panel-title"><h2>候选队列</h2><p>扫描任务在各阶段的待处理、运行和重试数量。</p></div>
+        </div>
+        <SimpleStatsTable rows={queueStats.map((stat) => [stat.stage, stat.status, String(stat.count)])} emptyText="暂无候选队列" />
       </section>
     </div>
   );
@@ -1402,6 +1520,10 @@ function formatTime(value: string) {
   });
 }
 
+function formatUsd(value: number) {
+  return `$${value.toFixed(value >= 1 ? 2 : 4)}`;
+}
+
 function providerUsageText(provider: AiProvider, profiles: DiscoveryProfile[]) {
   const usedBy = profiles.filter((profile) => profile.config.ai.chatProviderId === provider.id || profile.config.ai.embeddingProviderId === provider.id);
   return usedBy.length ? usedBy.map((profile) => profile.name).join(", ") : "未被使用";
@@ -1489,5 +1611,7 @@ function sectionSubtitle(section: Section) {
       return "分别管理 Chat 模型和 Embedding 模型。";
     case "knowledge":
       return "可选将高价值发现结果同步到知识库。";
+    case "operations":
+      return "查看资源调节、队列积压、AI 作业和成本估算。";
   }
 }

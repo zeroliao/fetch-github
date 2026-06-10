@@ -155,6 +155,7 @@ export interface Recommendation {
   risks: string[];
   matchedPreferences: string[];
   relatedUserRepos: Array<{
+    userRepoId?: string;
     fullName: string;
     reason: string;
     score: number;
@@ -205,6 +206,35 @@ export interface ResourceEvent {
   batchSize: number;
   reason: string;
   createdAt: string;
+}
+
+export interface AiJobMetric {
+  id: string;
+  repoId: string;
+  repoFullName?: string;
+  providerId: string;
+  providerName?: string;
+  model: string;
+  jobType: string;
+  status: string;
+  promptVersion: string;
+  attempts: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  createdAt: string;
+  finishedAt?: string;
+}
+
+export interface OperationsSnapshot {
+  resourceEvents: ResourceEvent[];
+  aiJobs: AiJobMetric[];
+  aiCostSummary: {
+    totalJobs: number;
+    totalTokens: number;
+    estimatedCostUsd: number;
+  };
 }
 
 export interface UserGitHubRepo {
@@ -270,6 +300,7 @@ export interface DashboardSnapshot {
   githubRepos: UserGitHubRepo[];
   knowledgeSyncs: KnowledgeSync[];
   queueStats: QueueStat[];
+  operations: OperationsSnapshot;
 }
 
 export interface QueueStat {

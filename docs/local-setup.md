@@ -14,6 +14,7 @@ pnpm auth:hash "your-admin-password"
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD_HASH=
 GITHUB_TOKEN=
+AI_KNOWLEDGE_BASE_DIR=../ai-knowledge-base
 ```
 
 AI 模型在页面 `AI 模型配置` 中统一填写：
@@ -67,4 +68,6 @@ pnpm worker:dev
 - 发现配置会显式绑定一个 Chat provider 和一个 Embedding provider；被发现配置使用中的 provider 不能删除或停用。
 - 如果删除 AI 配置时报“正在被发现配置使用”，先到 `发现配置` 页面把 Chat/Embedding 绑定切换到其他已启用 provider，再删除。
 - `知识库同步` 可以点击 `同步 L4`，系统会生成派生知识内容 hash，并写入 `knowledge_syncs` 状态。
-- 当前知识库同步目标是本地派生状态记录 `local-derived-index`，不会强制写入同级 `../ai-knowledge-base`。
+- 知识库目标选择 `local-derived-index` 时只记录 fetchGithub 派生索引状态。
+- 知识库目标选择 `ai-knowledge-base` 时会写入 `AI_KNOWLEDGE_BASE_DIR/derived/fetchGithub`；未配置目录会记录为失败，不影响 fetchGithub 源数据。
+- `运行观测` 页面可以查看资源调节事件、队列积压、AI 作业和估算成本。

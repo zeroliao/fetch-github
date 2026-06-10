@@ -261,5 +261,14 @@ export const seedSnapshot: DashboardSnapshot = {
   githubAccounts: seedGithubAccounts,
   githubRepos: seedGithubRepos,
   knowledgeSyncs: seedKnowledgeSyncs,
-  queueStats: []
+  queueStats: [],
+  operations: {
+    resourceEvents: [],
+    aiJobs: [],
+    aiCostSummary: {
+      totalJobs: 0,
+      totalTokens: 0,
+      estimatedCostUsd: 0
+    }
+  }
 };

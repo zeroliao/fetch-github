@@ -17,6 +17,7 @@ import type {
   ScanJob,
   GithubAccount,
   KnowledgeSync,
+  OperationsSnapshot,
   UserGitHubRepo
 } from "@/lib/types";
 import { buildRecommendation } from "./ranking";
@@ -43,6 +44,12 @@ interface StoreState extends DashboardSnapshot {
   }>;
   preferenceSignals: PreferenceSignal[];
   knowledgeSyncs: KnowledgeSync[];
+  repoContextMatches: Array<{
+    candidateRepoId: string;
+    userRepoId: string;
+    score: number;
+    reasons: string[];
+  }>;
 }
 
 let cache: StoreState | null = null;
@@ -59,7 +66,8 @@ function createInitialState(): StoreState {
     repoDocuments: [],
     llmResults: [],
     preferenceSignals: [],
-    knowledgeSyncs: []
+    knowledgeSyncs: [],
+    repoContextMatches: []
   };
 }
 
@@ -97,7 +105,9 @@ function normalizeState(state: Partial<StoreState>): StoreState {
     repoDocuments: state.repoDocuments ?? [],
     llmResults: state.llmResults ?? [],
     preferenceSignals: state.preferenceSignals ?? [],
-    knowledgeSyncs: state.knowledgeSyncs ?? seedSnapshot.knowledgeSyncs ?? []
+    knowledgeSyncs: state.knowledgeSyncs ?? seedSnapshot.knowledgeSyncs ?? [],
+    repoContextMatches: state.repoContextMatches ?? [],
+    operations: state.operations ?? seedSnapshot.operations
   };
 }
 
@@ -132,7 +142,20 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
     githubAccounts: state.githubAccounts,
     githubRepos: state.githubRepos,
     knowledgeSyncs: state.knowledgeSyncs,
-    queueStats: state.queueStats
+    queueStats: state.queueStats,
+    operations: buildLocalOperationsSnapshot(state)
+  };
+}
+
+function buildLocalOperationsSnapshot(state: StoreState): OperationsSnapshot {
+  return {
+    resourceEvents: state.resourceEvents.slice(0, 80),
+    aiJobs: [],
+    aiCostSummary: {
+      totalJobs: 0,
+      totalTokens: 0,
+      estimatedCostUsd: 0
+    }
   };
 }
 
@@ -369,7 +392,15 @@ export async function findActiveScanJobByProfile(profileId: string): Promise<Sca
       (job) =>
         job.profileId === profileId &&
         !job.archivedAt &&
-        ["pending", "running", "throttled", "retry_later", "paused_by_memory", "paused_by_runtime"].includes(job.status)
+        [
+          "pending",
+          "running",
+          "throttled",
+          "retry_later",
+          "paused_by_user",
+          "paused_by_memory",
+          "paused_by_runtime"
+        ].includes(job.status)
     )
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 }
@@ -509,6 +540,20 @@ export async function upsertRecommendations(
       ...recommendation,
       status: existing?.status ?? recommendation.status
     });
+
+    state.repoContextMatches = [
+      ...state.repoContextMatches.filter(
+        (item) => item.candidateRepoId !== recommendation.repo.id
+      ),
+      ...recommendation.relatedUserRepos
+        .filter((repo) => repo.userRepoId)
+        .map((repo) => ({
+          candidateRepoId: recommendation.repo.id,
+          userRepoId: repo.userRepoId as string,
+          score: repo.score,
+          reasons: [repo.reason]
+        }))
+    ];
   }
 
   state.recommendations = [...byId.values()].sort((a, b) => b.scores.final - a.scores.final);
@@ -1092,13 +1137,18 @@ export async function createLlmJob(input: {
   return crypto.randomUUID();
 }
 
-export async function finishLlmJob(id: string, status: string) {
+export async function finishLlmJob(
+  id: string,
+  status: string,
+  tokenUsage: Record<string, unknown> = {}
+) {
   if (await isDatabaseAvailable()) {
-    return postgresStore.finishLlmJob(id, status);
+    return postgresStore.finishLlmJob(id, status, tokenUsage);
   }
 
   void id;
   void status;
+  void tokenUsage;
 }
 
 export async function upsertLlmResult(input: {

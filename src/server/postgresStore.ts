@@ -6,6 +6,7 @@ import type {
   FeedbackAction,
   GithubAccount,
   KnowledgeSync,
+  OperationsSnapshot,
   PreferenceSignal,
   Recommendation,
   RepoDataLevel,
@@ -244,7 +245,8 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
     githubAccounts,
     githubRepos,
     knowledgeSyncs,
-    queueStats: await getQueueStats()
+    queueStats: await getQueueStats(),
+    operations: await getOperationsSnapshot()
   };
 }
 
@@ -503,7 +505,7 @@ export async function findActiveScanJobByProfile(profileId: string): Promise<Sca
             analyzed_count, started_at, finished_at, error_message, archived_at, created_at
      from discovery_jobs
      where profile_id=$1
-       and status in ('pending', 'running', 'throttled', 'retry_later', 'paused_by_memory', 'paused_by_runtime')
+       and status in ('pending', 'running', 'throttled', 'retry_later', 'paused_by_user', 'paused_by_memory', 'paused_by_runtime')
        and archived_at is null
      order by created_at desc
      limit 1`,
@@ -864,6 +866,58 @@ export async function upsertRecommendations(
         recommendation.createdAt
       ]
     );
+
+    await upsertRepoContextMatches(
+      persistedRepoId,
+      recommendation.relatedUserRepos
+    );
+  }
+}
+
+async function upsertRepoContextMatches(
+  candidateRepoId: string,
+  relatedUserRepos: Recommendation["relatedUserRepos"]
+) {
+  const pool = getPool();
+  const userRepoIds = relatedUserRepos
+    .map((repo) => repo.userRepoId)
+    .filter((id): id is string => Boolean(id));
+
+  if (userRepoIds.length === 0) {
+    await pool.query(`delete from repo_context_matches where candidate_repo_id=$1`, [
+      candidateRepoId
+    ]);
+    return;
+  }
+
+  await pool.query(
+    `delete from repo_context_matches
+     where candidate_repo_id=$1
+       and user_repo_id <> all($2::text[])`,
+    [candidateRepoId, userRepoIds]
+  );
+
+  for (const repo of relatedUserRepos) {
+    if (!repo.userRepoId) {
+      continue;
+    }
+
+    await pool.query(
+      `insert into repo_context_matches
+        (id, candidate_repo_id, user_repo_id, match_score, match_reasons_json, calculated_at)
+       values ($1,$2,$3,$4,$5,now())
+       on conflict (candidate_repo_id, user_repo_id) do update set
+         match_score=excluded.match_score,
+         match_reasons_json=excluded.match_reasons_json,
+         calculated_at=excluded.calculated_at`,
+      [
+        crypto.randomUUID(),
+        candidateRepoId,
+        repo.userRepoId,
+        repo.score,
+        JSON.stringify([repo.reason])
+      ]
+    );
   }
 }
 
@@ -1167,11 +1221,38 @@ export async function createLlmJob(input: {
   return id;
 }
 
-export async function finishLlmJob(id: string, status: string) {
+export async function finishLlmJob(
+  id: string,
+  status: string,
+  tokenUsage: Record<string, unknown> = {}
+) {
   await getPool().query(
-    `update llm_jobs set status=$2, finished_at=now() where id=$1`,
-    [id, status]
+    `update llm_jobs
+     set status=$2, token_usage_json=$3, finished_at=now()
+     where id=$1`,
+    [id, status, JSON.stringify(tokenUsage)]
   );
+}
+
+export async function getOperationsSnapshot(): Promise<OperationsSnapshot> {
+  const [resourceEvents, aiJobs] = await Promise.all([
+    listRecentResourceEvents(),
+    listAiJobMetrics()
+  ]);
+  const aiCostSummary = aiJobs.reduce(
+    (summary, job) => ({
+      totalJobs: summary.totalJobs + 1,
+      totalTokens: summary.totalTokens + job.totalTokens,
+      estimatedCostUsd: summary.estimatedCostUsd + job.estimatedCostUsd
+    }),
+    { totalJobs: 0, totalTokens: 0, estimatedCostUsd: 0 }
+  );
+
+  return {
+    resourceEvents,
+    aiJobs,
+    aiCostSummary
+  };
 }
 
 export async function upsertLlmResult(input: LlmResultInput) {
@@ -1244,10 +1325,25 @@ export async function listRecommendations(): Promise<Recommendation[]> {
        repo.description, repo.primary_language, repo.topics_json, repo.stars, repo.forks,
        repo.open_issues, repo.pushed_at, repo.updated_at, repo.archived, repo.fork,
        score.rule_score, score.github_context_fit, score.llm_match_score, score.feedback_score,
-       score.score_version
+       score.score_version,
+       coalesce(context_matches.matches_json, '[]'::jsonb) as context_matches_json
      from recommendations rec
      join repos repo on repo.id = rec.repo_id
      left join repo_scores score on score.id = concat('score-', rec.id)
+     left join lateral (
+       select jsonb_agg(
+         jsonb_build_object(
+           'userRepoId', user_repo.id,
+           'fullName', user_repo.full_name,
+           'reason', coalesce(match.match_reasons_json->>0, '与当前发现偏好存在关联。'),
+           'score', match.match_score
+         )
+         order by match.match_score desc, user_repo.full_name asc
+       ) as matches_json
+       from repo_context_matches match
+       join user_repos user_repo on user_repo.id = match.user_repo_id
+       where match.candidate_repo_id = repo.id
+     ) context_matches on true
      order by rec.final_score desc, rec.rank asc
      limit 100`
   );
@@ -1822,6 +1918,72 @@ export async function recordResourceEvent(
   return mapResourceEventRow(result.rows[0]);
 }
 
+async function listRecentResourceEvents(limit = 80): Promise<ResourceEvent[]> {
+  const result = await getPool().query(
+    `select id, job_id, stage, status, available_mb, rss_mb, heap_used_mb, total_mb,
+            batch_size, reason, created_at
+     from resource_events
+     order by created_at desc
+     limit $1`,
+    [limit]
+  );
+
+  return result.rows.map(mapResourceEventRow);
+}
+
+async function listAiJobMetrics(limit = 80): Promise<OperationsSnapshot["aiJobs"]> {
+  const result = await getPool().query(
+    `select
+       job.id, job.repo_id, repo.full_name, job.provider_id, provider.name as provider_name,
+       provider.config_json, job.model, job.job_type, job.status, job.prompt_version,
+       job.attempts, job.token_usage_json, job.created_at, job.finished_at
+     from llm_jobs job
+     left join repos repo on repo.id = job.repo_id
+     left join ai_providers provider on provider.id = job.provider_id
+     order by job.created_at desc
+     limit $1`,
+    [limit]
+  );
+
+  return result.rows.map((row) => {
+    const tokenUsage = normalizeJsonObject(row.token_usage_json);
+    const providerConfig = normalizeJsonObject(row.config_json);
+    const promptTokens = Number(tokenUsage.prompt_tokens ?? tokenUsage.promptTokens ?? 0);
+    const completionTokens = Number(tokenUsage.completion_tokens ?? tokenUsage.completionTokens ?? 0);
+    const totalTokens = Number(tokenUsage.total_tokens ?? tokenUsage.totalTokens ?? promptTokens + completionTokens);
+
+    return {
+      id: row.id,
+      repoId: row.repo_id,
+      repoFullName: row.full_name ?? undefined,
+      providerId: row.provider_id,
+      providerName: row.provider_name ?? undefined,
+      model: row.model,
+      jobType: row.job_type,
+      status: row.status,
+      promptVersion: row.prompt_version,
+      attempts: Number(row.attempts ?? 0),
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      estimatedCostUsd: estimateAiJobCostUsd(providerConfig, promptTokens, completionTokens),
+      createdAt: toIso(row.created_at),
+      finishedAt: row.finished_at ? toIso(row.finished_at) : undefined
+    };
+  });
+}
+
+function estimateAiJobCostUsd(
+  providerConfig: Record<string, unknown>,
+  promptTokens: number,
+  completionTokens: number
+) {
+  const pricing = normalizeJsonObject(providerConfig.pricing);
+  const inputPerMillion = Number(pricing.inputPerMillionTokens ?? 0);
+  const outputPerMillion = Number(pricing.outputPerMillionTokens ?? 0);
+  return (promptTokens / 1_000_000) * inputPerMillion + (completionTokens / 1_000_000) * outputPerMillion;
+}
+
 let seedPromise: Promise<void> | null = null;
 
 async function ensureSeedDataOnce() {
@@ -1998,12 +2160,34 @@ function mapRecommendationRow(row: Record<string, any>): Recommendation {
     reasons: normalizeStringArray(reasonsJson.reasons),
     risks: normalizeStringArray(reasonsJson.risks),
     matchedPreferences: normalizeStringArray(reasonsJson.matchedPreferences),
-    relatedUserRepos: Array.isArray(reasonsJson.relatedUserRepos)
-      ? (reasonsJson.relatedUserRepos as Recommendation["relatedUserRepos"])
-      : [],
+    relatedUserRepos: parseRelatedUserRepos(
+      row.context_matches_json,
+      reasonsJson.relatedUserRepos
+    ),
     status: row.status,
     createdAt: toIso(row.created_at)
   };
+}
+
+function parseRelatedUserRepos(
+  persistedMatches: unknown,
+  fallbackMatches: unknown
+): Recommendation["relatedUserRepos"] {
+  const matches = Array.isArray(persistedMatches) && persistedMatches.length > 0
+    ? persistedMatches
+    : Array.isArray(fallbackMatches)
+      ? fallbackMatches
+      : [];
+
+  return matches
+    .map((item) => normalizeJsonObject(item))
+    .map((item) => ({
+      userRepoId: typeof item.userRepoId === "string" ? item.userRepoId : undefined,
+      fullName: String(item.fullName ?? ""),
+      reason: String(item.reason ?? ""),
+      score: Number(item.score ?? 0)
+    }))
+    .filter((item) => item.fullName);
 }
 
 function mapKnowledgeSyncRow(row: Record<string, any>): KnowledgeSync {

@@ -254,6 +254,7 @@ function findRelatedUserRepos(
       ].filter(Boolean);
 
       return {
+        userRepoId: userRepo.id,
         fullName: userRepo.fullName,
         reason: reasons.join("；") || "与当前发现偏好存在弱相关。",
         score

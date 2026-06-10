@@ -11,6 +11,7 @@ import {
 
 const DEFAULT_TARGET = "local-derived-index";
 const DEFAULT_DATASET_ID = "default";
+const AI_KNOWLEDGE_BASE_TARGET = "ai-knowledge-base";
 
 export async function runKnowledgeSync(options: {
   target?: string;
@@ -32,6 +33,7 @@ export async function runKnowledgeSync(options: {
 
   let syncedCount = 0;
   let skippedCount = 0;
+  let failedCount = 0;
   const syncs = [];
 
   for (const recommendation of recommendations) {
@@ -55,26 +57,41 @@ export async function runKnowledgeSync(options: {
       continue;
     }
 
-    await upgradeRepoDataLevel([recommendation.repo], "L4");
-    const externalDocId = await writeOptionalAiKnowledgeBaseDoc(
-      recommendation,
-      markdown,
-      contentHash
-    );
-    syncedCount += 1;
-    syncs.push(
-      await upsertKnowledgeSync({
-        repoId: recommendation.repo.id,
-        repoFullName: recommendation.repo.fullName,
-        target,
-        datasetId,
-        externalDocId:
-          externalDocId ?? `fetchgithub:${recommendation.repo.id}:${contentHash.slice(0, 12)}`,
+    try {
+      await upgradeRepoDataLevel([recommendation.repo], "L4");
+      const externalDocId = await syncRecommendationToTarget({
+        recommendation,
+        markdown,
         contentHash,
-        status: "synced",
-        syncedAt: new Date().toISOString()
-      })
-    );
+        target
+      });
+      syncedCount += 1;
+      syncs.push(
+        await upsertKnowledgeSync({
+          repoId: recommendation.repo.id,
+          repoFullName: recommendation.repo.fullName,
+          target,
+          datasetId,
+          externalDocId,
+          contentHash,
+          status: "synced",
+          syncedAt: new Date().toISOString()
+        })
+      );
+    } catch (error) {
+      failedCount += 1;
+      syncs.push(
+        await upsertKnowledgeSync({
+          repoId: recommendation.repo.id,
+          repoFullName: recommendation.repo.fullName,
+          target,
+          datasetId,
+          contentHash,
+          status: "failed",
+          errorMessage: error instanceof Error ? error.message : String(error)
+        })
+      );
+    }
   }
 
   return {
@@ -83,8 +100,26 @@ export async function runKnowledgeSync(options: {
     candidateCount: recommendations.length,
     syncedCount,
     skippedCount,
+    failedCount,
     syncs
   };
+}
+
+async function syncRecommendationToTarget(input: {
+  recommendation: Recommendation;
+  markdown: string;
+  contentHash: string;
+  target: string;
+}) {
+  if (input.target === AI_KNOWLEDGE_BASE_TARGET) {
+    return writeAiKnowledgeBaseDoc(
+      input.recommendation,
+      input.markdown,
+      input.contentHash
+    );
+  }
+
+  return `fetchgithub:${input.recommendation.repo.id}:${input.contentHash.slice(0, 12)}`;
 }
 
 export function buildRecommendationMarkdown(recommendation: Recommendation) {
@@ -129,19 +164,23 @@ function hashText(text: string) {
   return crypto.createHash("sha256").update(text).digest("hex");
 }
 
-async function writeOptionalAiKnowledgeBaseDoc(
+async function writeAiKnowledgeBaseDoc(
   recommendation: Recommendation,
   markdown: string,
   contentHash: string
 ) {
-  const baseDir = path.resolve(process.cwd(), "../ai-knowledge-base");
+  if (!process.env.AI_KNOWLEDGE_BASE_DIR) {
+    throw new Error("未配置 AI_KNOWLEDGE_BASE_DIR，无法写入 ai-knowledge-base。");
+  }
+
+  const baseDir = path.resolve(process.env.AI_KNOWLEDGE_BASE_DIR);
   try {
     const info = await stat(baseDir);
     if (!info.isDirectory()) {
-      return undefined;
+      throw new Error("AI_KNOWLEDGE_BASE_DIR 不是有效目录。");
     }
   } catch {
-    return undefined;
+    throw new Error(`未找到 ai-knowledge-base 目录：${baseDir}`);
   }
 
   const outputDir = path.join(baseDir, "derived", "fetchGithub");
