@@ -212,8 +212,9 @@ export function DashboardClient({
               {isScanning ? <RefreshCw size={16} /> : <Play size={16} />}
               <span>立即扫描</span>
             </button>
-            <button className="button icon" onClick={() => setShowPasswordDialog(true)} type="button" title="修改密码" aria-label="修改密码">
+            <button className="button" onClick={() => setShowPasswordDialog(true)} type="button" title="修改密码" aria-label="修改密码">
               <LockKeyhole size={16} />
+              <span>修改密码</span>
             </button>
             <button className="button icon" onClick={logout} type="button" title="退出登录" aria-label="退出登录">
               <LogOut size={16} />
