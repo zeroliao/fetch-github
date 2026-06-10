@@ -407,6 +407,29 @@ button {
   background: rgba(17, 24, 39, 0.35);
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  background: rgba(17, 24, 39, 0.38);
+  padding: 20px;
+}
+
+.modal-panel {
+  width: min(520px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.password-grid {
+  grid-template-columns: 1fr;
+}
+
 .drawer {
   width: min(560px, 100vw);
   height: 100%;

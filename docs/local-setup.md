@@ -64,6 +64,7 @@ pnpm worker:dev
 - `我的 GitHub` 可以点击 `同步 GitHub`，同步 owned/starred repositories；私有仓库默认不参与推荐上下文。
 - `发现配置` 可以启用/停用权威扫描源，并调整来源权重；当前已接入扫描的是 GitHub Search、Topics、高 Star 和近期活跃查询。
 - AI 配置集中在页面里完成，密钥值只保存在本地 `.env.local`。
+- 登录后可以点击右上角锁形按钮修改管理员密码；新密码会更新 `.env.local` 中的 `ADMIN_PASSWORD_HASH`。
 - Chat 模型和 Embedding 模型分开配置，但都在同一个 `AI 模型配置` 页面管理。
 - 发现配置会显式绑定一个 Chat provider 和一个 Embedding provider；被发现配置使用中的 provider 不能删除或停用。
 - 如果删除 AI 配置时报“正在被发现配置使用”，先到 `发现配置` 页面把 Chat/Embedding 绑定切换到其他已启用 provider，再删除。

@@ -9,6 +9,7 @@ import {
   EyeOff,
   GitBranch,
   LogOut,
+  LockKeyhole,
   Play,
   RefreshCw,
   Save,
@@ -85,6 +86,7 @@ export function DashboardClient({
   const [operations, setOperations] = useState(initialData.operations);
   const [selectedProfileId, setSelectedProfileId] = useState(initialData.profiles[0]?.id ?? "");
   const [selectedRepo, setSelectedRepo] = useState<Recommendation | null>(null);
+  const [showPasswordDialog, setShowPasswordDialog] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -210,6 +212,9 @@ export function DashboardClient({
               {isScanning ? <RefreshCw size={16} /> : <Play size={16} />}
               <span>立即扫描</span>
             </button>
+            <button className="button icon" onClick={() => setShowPasswordDialog(true)} type="button" title="修改密码" aria-label="修改密码">
+              <LockKeyhole size={16} />
+            </button>
             <button className="button icon" onClick={logout} type="button" title="退出登录" aria-label="退出登录">
               <LogOut size={16} />
             </button>
@@ -284,6 +289,84 @@ export function DashboardClient({
       </main>
 
       {selectedRepo && <RepoDrawer recommendation={selectedRepo} onClose={() => setSelectedRepo(null)} onFeedback={sendFeedback} />}
+      {showPasswordDialog && <PasswordDialog onClose={() => setShowPasswordDialog(false)} />}
+    </div>
+  );
+}
+
+function PasswordDialog({ onClose }: { onClose: () => void }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [message, setMessage] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  async function submitPassword(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("");
+
+    if (newPassword.length < 8) {
+      setMessage("新密码至少需要 8 位。");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setMessage("两次输入的新密码不一致。");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const response = await fetch("/api/auth/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword, newPassword })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setMessage(body.error ?? "密码修改失败。");
+        return;
+      }
+
+      setMessage("密码已修改，请退出后使用新密码重新登录。");
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <form className="modal-panel" onSubmit={submitPassword}>
+        <div className="panel-header">
+          <div className="panel-title">
+            <h2>修改管理员密码</h2>
+            <p>新密码会更新到服务器 `.env.local` 的 `ADMIN_PASSWORD_HASH`。</p>
+          </div>
+          <button className="button icon" type="button" onClick={onClose} title="关闭" aria-label="关闭">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="form-grid password-grid">
+          {message && <div className="notice">{message}</div>}
+          <Field label="当前密码">
+            <input className="input" type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
+          </Field>
+          <Field label="新密码">
+            <input className="input" type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+          </Field>
+          <Field label="确认新密码">
+            <input className="input" type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+          </Field>
+          <div className="form-actions">
+            <button className="button" type="button" onClick={onClose}>关闭</button>
+            <button className="button primary" type="submit" disabled={isSubmitting}>
+              {isSubmitting ? "保存中" : "保存密码"}
+            </button>
+          </div>
+        </div>
+      </form>
     </div>
   );
 }

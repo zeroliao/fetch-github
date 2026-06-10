@@ -4,6 +4,7 @@ import path from "node:path";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { getPool, isDatabaseAvailable } from "./db";
+import { writeLocalEnvValue } from "./envFile";
 
 export const AUTH_COOKIE_NAME = "fetchgithub_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -48,6 +49,20 @@ export async function loginAdmin(username: string, password: string): Promise<Lo
   });
 
   return { ok: true, session };
+}
+
+export async function verifyAdminPassword(password: string) {
+  const passwordHash = process.env.ADMIN_PASSWORD_HASH;
+  if (!passwordHash) {
+    return false;
+  }
+
+  return verifyPassword(password, passwordHash);
+}
+
+export async function updateAdminPassword(password: string) {
+  const passwordHash = await hashPassword(password);
+  await writeLocalEnvValue("ADMIN_PASSWORD_HASH", passwordHash);
 }
 
 export async function getCurrentUser(): Promise<AuthUser | null> {
@@ -221,6 +236,12 @@ function scrypt(password: string, salt: Buffer, keyLength: number) {
       resolve(derivedKey);
     });
   });
+}
+
+async function hashPassword(password: string) {
+  const salt = crypto.randomBytes(16);
+  const key = await scrypt(password, salt, 64);
+  return `scrypt:${salt.toString("base64url")}:${key.toString("base64url")}`;
 }
 
 function timingSafeEqualText(a: string, b: string) {
