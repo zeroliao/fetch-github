@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { requireAuth } from "@/server/auth";
 import { updateGithubRepoContext } from "@/server/store";
 
 const patchSchema = z.object({
@@ -10,6 +11,9 @@ export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireAuth();
+  if (auth.response) return auth.response;
+
   const { id } = await context.params;
   const parsed = patchSchema.safeParse(await request.json());
 

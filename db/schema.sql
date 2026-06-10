@@ -6,6 +6,13 @@ CREATE TABLE IF NOT EXISTS app_state (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS discovery_profiles (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,

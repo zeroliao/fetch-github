@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { requireAuth } from "@/server/auth";
 import { runKnowledgeSync } from "@/server/knowledgeSync";
 
 const runSchema = z.object({
@@ -9,6 +10,9 @@ const runSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const auth = await requireAuth();
+  if (auth.response) return auth.response;
+
   const parsed = runSchema.safeParse(await request.json().catch(() => ({})));
 
   if (!parsed.success) {

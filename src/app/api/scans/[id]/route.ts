@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
+import { requireAuth } from "@/server/auth";
 import { archiveScanJob, getScanJob } from "@/server/store";
 
 export async function GET(
   _request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireAuth();
+  if (auth.response) return auth.response;
+
   const { id } = await context.params;
   const job = await getScanJob(id);
 
@@ -19,6 +23,9 @@ export async function DELETE(
   _request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireAuth();
+  if (auth.response) return auth.response;
+
   const { id } = await context.params;
   const existing = await getScanJob(id);
 

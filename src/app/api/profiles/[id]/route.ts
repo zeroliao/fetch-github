@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { profileSchema } from "@/lib/validation";
+import { requireAuth } from "@/server/auth";
 import { getAiProvider, updateProfile } from "@/server/store";
 
 const patchSchema = profileSchema.partial();
@@ -8,6 +9,9 @@ export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireAuth();
+  if (auth.response) return auth.response;
+
   const { id } = await context.params;
   const parsed = patchSchema.safeParse(await request.json());
 

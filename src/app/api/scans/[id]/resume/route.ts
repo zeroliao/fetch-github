@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireAuth } from "@/server/auth";
 import { resumeScanJob } from "@/server/scanRunner";
 import { getScanJob, requeueRunningCandidates, updateScanJob } from "@/server/store";
 
@@ -6,6 +7,9 @@ export async function POST(
   _request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireAuth();
+  if (auth.response) return auth.response;
+
   const { id } = await context.params;
   const existing = await getScanJob(id);
   if (!existing) {

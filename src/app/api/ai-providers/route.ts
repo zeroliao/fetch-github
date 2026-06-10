@@ -1,13 +1,20 @@
 import { NextResponse } from "next/server";
 import { providerSchema } from "@/lib/validation";
+import { requireAuth } from "@/server/auth";
 import { writeLocalEnvValue } from "@/server/envFile";
 import { createAiProvider, listAiProviders } from "@/server/store";
 
 export async function GET() {
+  const auth = await requireAuth();
+  if (auth.response) return auth.response;
+
   return NextResponse.json(await listAiProviders());
 }
 
 export async function POST(request: Request) {
+  const auth = await requireAuth();
+  if (auth.response) return auth.response;
+
   const parsed = providerSchema.safeParse(await request.json());
 
   if (!parsed.success) {
@@ -18,7 +25,7 @@ export async function POST(request: Request) {
 
   if (providerInput.kind === "embedding" && !providerInput.dimensions) {
     return NextResponse.json(
-      { error: "Embedding providers require dimensions." },
+      { error: "Embedding 配置必须填写向量维度。" },
       { status: 400 }
     );
   }

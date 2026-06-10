@@ -2,9 +2,17 @@
 
 ## 你需要提供的信息
 
-你需要在 `.env.local` 里填入 GitHub token：
+你需要先生成管理员密码哈希：
+
+```powershell
+pnpm auth:hash "your-admin-password"
+```
+
+然后在 `.env.local` 里填入管理员账号、密码哈希和 GitHub token：
 
 ```env
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD_HASH=
 GITHUB_TOKEN=
 ```
 
@@ -37,6 +45,8 @@ pnpm dev
 http://localhost:3020
 ```
 
+首次访问会跳转到 `/login`。使用 `.env.local` 中的 `ADMIN_USERNAME` 和生成哈希时使用的明文密码登录。
+
 ## 验证命令
 
 ```powershell
@@ -48,6 +58,8 @@ pnpm worker:dev
 ## 页面操作
 
 - `GITHUB_TOKEN` 用来避免 GitHub API 匿名限流。
+- `发现配置` 可以用自然语言生成发现条件。系统会先把中文需求解析为关键词、Topics、语言权重、排除词、最低 stars 和活跃时间，再由代码生成合法 GitHub Search 查询。
+- 同一条 GitHub Search query 中多个普通关键词通常会缩小召回范围；系统默认把多个关键词拆成多条 query，提高候选召回，再通过规则分、上下文分、LLM 分和反馈分排序。
 - `我的 GitHub` 可以点击 `同步 GitHub`，同步 owned/starred repositories；私有仓库默认不参与推荐上下文。
 - `发现配置` 可以启用/停用权威扫描源，并调整来源权重；当前已接入扫描的是 GitHub Search、Topics、高 Star 和近期活跃查询。
 - AI 配置集中在页面里完成，密钥值只保存在本地 `.env.local`。

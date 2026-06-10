@@ -7,6 +7,7 @@ import {
   ExternalLink,
   EyeOff,
   GitBranch,
+  LogOut,
   Play,
   RefreshCw,
   Save,
@@ -17,8 +18,11 @@ import {
   ThumbsUp,
   X
 } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { discoverySourceCatalog, normalizeDiscoverySources } from "@/lib/discoverySources";
+import { sectionDefinitions, sectionFromPath, sectionLabel, sectionPath, type Section } from "@/lib/navigation";
+import type { GitHubSearchQueryPlan } from "@/server/githubSearch";
 import type {
   AiProvider,
   DashboardSnapshot,
@@ -31,19 +35,43 @@ import type {
   UserGitHubRepo
 } from "@/lib/types";
 
-type Section = "recommendations" | "profiles" | "jobs" | "github" | "providers" | "knowledge";
+type GeneratedPreferences = DiscoveryProfile["config"]["preferences"] & {
+  notes?: string[];
+};
 
-const sections: Array<{ id: Section; label: string; icon: React.ComponentType<{ size?: number }> }> = [
-  { id: "recommendations", label: "项目推荐", icon: Search },
-  { id: "profiles", label: "发现配置", icon: Settings },
-  { id: "jobs", label: "扫描任务", icon: Activity },
-  { id: "github", label: "我的 GitHub", icon: GitBranch },
-  { id: "providers", label: "AI 模型配置", icon: Brain },
-  { id: "knowledge", label: "知识库同步", icon: Database }
-];
+type NaturalLanguagePreview = {
+  generated: GeneratedPreferences;
+  preview: {
+    preferences: DiscoveryProfile["config"]["preferences"];
+    queryPlans: GitHubSearchQueryPlan[];
+  };
+  mode: "merge" | "replace";
+};
 
-export function DashboardClient({ initialData }: { initialData: DashboardSnapshot }) {
-  const [activeSection, setActiveSection] = useState<Section>("recommendations");
+const sectionIcons: Record<Section, React.ComponentType<{ size?: number }>> = {
+  recommendations: Search,
+  profiles: Settings,
+  jobs: Activity,
+  github: GitBranch,
+  providers: Brain,
+  knowledge: Database
+};
+
+const sections = sectionDefinitions.map((section) => ({
+  ...section,
+  icon: sectionIcons[section.id]
+}));
+
+export function DashboardClient({
+  initialData,
+  initialSection = "recommendations"
+}: {
+  initialData: DashboardSnapshot;
+  initialSection?: Section;
+}) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const activeSection = sectionFromPath(pathname) ?? initialSection;
   const [profiles, setProfiles] = useState(initialData.profiles);
   const [providers, setProviders] = useState(initialData.aiProviders);
   const [recommendations, setRecommendations] = useState(initialData.recommendations);
@@ -122,6 +150,15 @@ export function DashboardClient({ initialData }: { initialData: DashboardSnapsho
     await refreshRecommendations();
   }
 
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  }
+
+  function navigateSection(section: Section) {
+    router.push(sectionPath(section));
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -136,7 +173,7 @@ export function DashboardClient({ initialData }: { initialData: DashboardSnapsho
               <button
                 key={section.id}
                 className={`nav-button ${activeSection === section.id ? "active" : ""}`}
-                onClick={() => setActiveSection(section.id)}
+                onClick={() => navigateSection(section.id)}
                 type="button"
               >
                 <Icon size={17} />
@@ -164,6 +201,9 @@ export function DashboardClient({ initialData }: { initialData: DashboardSnapsho
             <button className="button primary" disabled={!selectedProfileId || isScanning} onClick={startScan} type="button">
               {isScanning ? <RefreshCw size={16} /> : <Play size={16} />}
               <span>立即扫描</span>
+            </button>
+            <button className="button icon" onClick={logout} type="button" title="退出登录" aria-label="退出登录">
+              <LogOut size={16} />
             </button>
           </div>
         </div>
@@ -293,7 +333,7 @@ function RecommendationsPanel({
                     <span>{recommendation.repo.fullName}</span>
                     <ExternalLink size={14} />
                   </a>
-                  <div className="muted">{recommendation.repo.description}</div>
+                  <div className="muted">{recommendation.summary}</div>
                 </td>
                 <td>
                   <div className="score">
@@ -352,7 +392,7 @@ function RepoDrawer({
               <span>{recommendation.repo.fullName}</span>
               <ExternalLink size={15} />
             </a>
-            <p className="muted">{recommendation.repo.description}</p>
+            <p className="muted">{recommendation.summary}</p>
           </div>
           <button className="button icon" onClick={onClose} type="button" aria-label="关闭">
             <X size={16} />
@@ -369,7 +409,11 @@ function RepoDrawer({
             <button className="button" onClick={() => onFeedback(recommendation, "hide")} type="button">隐藏</button>
           </div>
           <DetailSection title="项目摘要">{recommendation.summary}</DetailSection>
+          {recommendation.repo.description && (
+            <DetailSection title="GitHub 原始描述">{recommendation.repo.description}</DetailSection>
+          )}
           <ListSection title="推荐原因" items={recommendation.reasons} />
+          <ListSection title="匹配信号" items={buildMatchSignals(recommendation)} />
           <ListSection title="风险点" items={recommendation.risks} />
           <ListSection title="关联我的项目" items={recommendation.relatedUserRepos.map((repo) => `${repo.fullName}: ${repo.reason}`)} />
         </div>
@@ -398,6 +442,10 @@ function ProfilesPanel({
   const [limits, setLimits] = useState(selectedProfile?.config.limits);
   const [preferences, setPreferences] = useState(selectedProfile?.config.preferences);
   const [resourcePolicy, setResourcePolicy] = useState(selectedProfile?.config.resourcePolicy);
+  const [naturalLanguagePrompt, setNaturalLanguagePrompt] = useState("");
+  const [naturalLanguageMode, setNaturalLanguageMode] = useState<"merge" | "replace">("merge");
+  const [naturalLanguagePreview, setNaturalLanguagePreview] = useState<NaturalLanguagePreview | null>(null);
+  const [isGeneratingPreferences, setIsGeneratingPreferences] = useState(false);
   const chatProviders = providers.filter((provider) => provider.kind === "chat" && provider.enabled);
   const embeddingProviders = providers.filter((provider) => provider.kind === "embedding" && provider.enabled);
 
@@ -411,6 +459,7 @@ function ProfilesPanel({
     setLimits(selectedProfile.config.limits);
     setPreferences(selectedProfile.config.preferences);
     setResourcePolicy(selectedProfile.config.resourcePolicy);
+    setNaturalLanguagePreview(null);
   }, [selectedProfile]);
 
   function updateSource(id: string, patch: { enabled?: boolean; weight?: number }) {
@@ -445,6 +494,42 @@ function ProfilesPanel({
     } else {
       setMessage(body.error ?? "发现配置更新失败。");
     }
+  }
+
+  async function generatePreferencesFromText() {
+    if (!selectedProfile || !naturalLanguagePrompt.trim()) return;
+    setIsGeneratingPreferences(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/profiles/${selectedProfile.id}/natural-language`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: naturalLanguagePrompt,
+          mode: naturalLanguageMode
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setMessage(body.error ?? "生成发现条件失败。");
+        return;
+      }
+      setNaturalLanguagePreview(body);
+      setMessage("已生成发现条件预览，确认后可应用到当前表单。");
+    } finally {
+      setIsGeneratingPreferences(false);
+    }
+  }
+
+  function applyGeneratedPreferences(mode: "merge" | "replace") {
+    if (!naturalLanguagePreview || !preferences) return;
+    const nextPreferences =
+      mode === naturalLanguagePreview.mode
+        ? naturalLanguagePreview.preview.preferences
+        : mergePreferenceState(preferences, naturalLanguagePreview.generated, mode);
+    setPreferences(nextPreferences);
+    setNaturalLanguageMode(mode);
+    setMessage(mode === "merge" ? "已合并生成条件，请保存发现配置。" : "已覆盖为生成条件，请保存发现配置。");
   }
 
   return (
@@ -502,6 +587,47 @@ function ProfilesPanel({
             </div>
           )}
           {selectedProfile && schedule && limits && preferences && resourcePolicy && (
+            <div className="stack">
+            <section className="sub-panel">
+              <div className="panel-header compact-header">
+                <div className="panel-title">
+                  <h3>AI 生成发现条件</h3>
+                  <p>用中文描述想找的 GitHub 项目，系统会转换成关键词、topic、语言和过滤条件。</p>
+                </div>
+              </div>
+              <div className="form-grid">
+                <Field label="自然语言需求">
+                  <textarea
+                    className="input textarea"
+                    value={naturalLanguagePrompt}
+                    onChange={(event) => setNaturalLanguagePrompt(event.target.value)}
+                    placeholder="例如：找最近半年活跃、适合做 AI agent 工作流编排的 TypeScript 项目，不要加密货币相关项目，stars 超过 500"
+                  />
+                </Field>
+                <Field label="应用方式">
+                  <select className="select" value={naturalLanguageMode} onChange={(event) => setNaturalLanguageMode(event.target.value as "merge" | "replace")}>
+                    <option value="merge">合并到当前配置</option>
+                    <option value="replace">覆盖当前配置</option>
+                  </select>
+                </Field>
+                <div className="form-actions">
+                  <button className="button primary" type="button" disabled={isGeneratingPreferences || !naturalLanguagePrompt.trim()} onClick={generatePreferencesFromText}>
+                    {isGeneratingPreferences ? <RefreshCw size={15} /> : <Brain size={15} />}
+                    生成条件
+                  </button>
+                </div>
+              </div>
+              {naturalLanguagePreview && (
+                <div className="preview-block">
+                  <PreferencePreview preferences={naturalLanguagePreview.preview.preferences} notes={naturalLanguagePreview.generated.notes ?? []} />
+                  <QueryPlanPreview plans={naturalLanguagePreview.preview.queryPlans} />
+                  <div className="action-row wrap">
+                    <button className="button" type="button" onClick={() => applyGeneratedPreferences("merge")}>合并应用</button>
+                    <button className="button" type="button" onClick={() => applyGeneratedPreferences("replace")}>覆盖应用</button>
+                  </div>
+                </div>
+              )}
+            </section>
             <div className="form-grid">
               <Field label="调度类型">
                 <select className="select" value={schedule.type} onChange={(event) => setSchedule({ ...schedule, type: event.target.value as "cron" | "interval" })}>
@@ -606,6 +732,7 @@ function ProfilesPanel({
                   压力过高时暂停
                 </span>
               </label>
+            </div>
             </div>
           )}
           {selectedProfile && (
@@ -1138,12 +1265,80 @@ function TagList({ items }: { items: string[] }) {
   return <div className="tags">{items.filter(Boolean).map((item, index) => <span className="tag" key={`${item}-${index}`}>{item}</span>)}</div>;
 }
 
+function PreferencePreview({
+  preferences,
+  notes
+}: {
+  preferences: DiscoveryProfile["config"]["preferences"];
+  notes: string[];
+}) {
+  return (
+    <div className="preview-grid">
+      <PreviewItem label="关键词" value={preferences.keywords.join(", ") || "-"} />
+      <PreviewItem label="Topics" value={preferences.topics.join(", ") || "-"} />
+      <PreviewItem label="语言权重" value={formatLanguageWeights(preferences.languages) || "-"} />
+      <PreviewItem label="排除关键词" value={preferences.excludeKeywords.join(", ") || "-"} />
+      <PreviewItem label="最低 Stars" value={String(preferences.minStars)} />
+      <PreviewItem label="最近推送天数" value={String(preferences.pushedWithinDays)} />
+      <PreviewItem label="过滤" value={`${preferences.excludeArchived ? "排除 archived" : "允许 archived"}；${preferences.excludeForks ? "排除 fork" : "允许 fork"}`} />
+      {notes.length > 0 && <PreviewItem label="说明" value={notes.join("；")} />}
+    </div>
+  );
+}
+
+function QueryPlanPreview({ plans }: { plans: GitHubSearchQueryPlan[] }) {
+  return (
+    <div className="query-preview">
+      <div className="preview-heading">
+        <strong>GitHub Search 查询计划</strong>
+        <span className="muted">同一条 query 中多个普通关键词偏 AND；系统会拆成多条 query 提高召回。</span>
+      </div>
+      <div className="query-list">
+        {plans.length === 0 ? (
+          <span className="muted">暂无查询计划</span>
+        ) : (
+          plans.slice(0, 12).map((plan, index) => (
+            <div className="query-row" key={`${plan.sourceId}-${plan.query}-${index}`}>
+              <span>{plan.sourceLabel}</span>
+              <code>{plan.query}</code>
+              <small>{plan.sort} / 权重 {plan.weight}</small>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PreviewItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="preview-item">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
 function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
   return <section className="detail-section"><h3>{title}</h3><p>{children}</p></section>;
 }
 
 function ListSection({ title, items }: { title: string; items: string[] }) {
   return <section className="detail-section"><h3>{title}</h3>{items.length === 0 ? <p>暂无</p> : <ul>{items.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul>}</section>;
+}
+
+function buildMatchSignals(recommendation: Recommendation) {
+  return [
+    recommendation.matchedPreferences.length
+      ? `命中偏好：${recommendation.matchedPreferences.join("、")}`
+      : "",
+    `主要语言：${recommendation.repo.primaryLanguage}`,
+    `Stars：${recommendation.repo.stars.toLocaleString()}`,
+    recommendation.repo.pushedAt
+      ? `最近推送：${new Date(recommendation.repo.pushedAt).toLocaleDateString("zh-CN")}`
+      : "",
+    `规则分：${Math.round(recommendation.scores.rule * 100)}，上下文分：${Math.round(recommendation.scores.githubContextFit * 100)}，LLM 分：${Math.round(recommendation.scores.llmMatch * 100)}`
+  ].filter(Boolean);
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -1239,7 +1434,45 @@ function sourceCapabilityText(capability: string) {
 }
 
 function sectionTitle(section: Section) {
-  return sections.find((item) => item.id === section)?.label ?? "fetchGithub";
+  return sectionLabel(section);
+}
+
+function mergePreferenceState(
+  current: DiscoveryProfile["config"]["preferences"],
+  generated: GeneratedPreferences,
+  mode: "merge" | "replace"
+): DiscoveryProfile["config"]["preferences"] {
+  if (mode === "replace") {
+    return {
+      keywords: uniqueStrings(generated.keywords).slice(0, 10),
+      topics: uniqueStrings(generated.topics).slice(0, 10),
+      languages: limitLanguages(generated.languages),
+      excludeKeywords: uniqueStrings(generated.excludeKeywords).slice(0, 10),
+      minStars: generated.minStars,
+      pushedWithinDays: generated.pushedWithinDays,
+      excludeArchived: generated.excludeArchived,
+      excludeForks: generated.excludeForks
+    };
+  }
+
+  return {
+    keywords: uniqueStrings([...current.keywords, ...generated.keywords]).slice(0, 10),
+    topics: uniqueStrings([...current.topics, ...generated.topics]).slice(0, 10),
+    languages: limitLanguages({ ...current.languages, ...generated.languages }),
+    excludeKeywords: uniqueStrings([...current.excludeKeywords, ...generated.excludeKeywords]).slice(0, 10),
+    minStars: generated.minStars || current.minStars,
+    pushedWithinDays: generated.pushedWithinDays || current.pushedWithinDays,
+    excludeArchived: generated.excludeArchived,
+    excludeForks: generated.excludeForks
+  };
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function limitLanguages(values: Record<string, number>) {
+  return Object.fromEntries(Object.entries(values).slice(0, 6));
 }
 
 function sectionSubtitle(section: Section) {

@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 import { feedbackSchema } from "@/lib/validation";
+import { requireAuth } from "@/server/auth";
 import { recordFeedback, rebuildRecommendationScores } from "@/server/store";
 
 export async function POST(
   request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireAuth();
+  if (auth.response) return auth.response;
+
   const { id } = await context.params;
   const parsed = feedbackSchema.safeParse(await request.json());
 

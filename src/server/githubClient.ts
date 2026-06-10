@@ -197,7 +197,7 @@ async function fetchGitHub(input: string | URL, init: RequestInit = {}) {
     });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error("GitHub request timed out after 30s.");
+      throw new Error("GitHub 请求超过 30 秒未响应。");
     }
     throw error;
   } finally {

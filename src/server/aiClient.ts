@@ -35,7 +35,7 @@ export async function callChatJson(options: ChatJsonOptions) {
   const data = await response.json();
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content !== "string") {
-    throw new Error("Chat provider returned no message content.");
+    throw new Error("Chat 模型没有返回可用内容。");
   }
 
   return JSON.parse(content) as unknown;
@@ -80,7 +80,7 @@ export async function testProvider(provider: AiProvider) {
       messages: [
         {
           role: "system",
-          content: "Return JSON only."
+          content: "只返回 JSON。"
         },
         {
           role: "user",
@@ -142,7 +142,7 @@ async function fetchWithTimeout(
   } catch (error) {
     if (isAbortError(error)) {
       throw new Error(
-        `${provider.kind === "chat" ? "Chat" : "Embedding"} provider timed out after ${timeoutSeconds}s.`
+        `${provider.kind === "chat" ? "Chat" : "Embedding"} 模型请求超过 ${timeoutSeconds} 秒未响应。`
       );
     }
     throw error;

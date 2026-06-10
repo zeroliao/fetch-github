@@ -121,15 +121,14 @@ export function buildRecommendation(
       final: finalScore,
       scoreVersion: SCORE_VERSION
     },
-    summary:
-      analysis?.summary || repo.description || "Repository metadata matched the configured discovery profile.",
+    summary: analysis?.summary || buildChineseSummary(repo, profile),
     reasons: analysis?.recommendation_reason
       ? [analysis.recommendation_reason, ...score.reasons]
       : score.reasons,
     risks: analysis?.risks.length
       ? analysis.risks
       : repo.openIssues > 500
-        ? ["High open issue count may need closer review."]
+        ? ["当前未关闭 issue 数较高，采用前需要进一步评估维护压力。"]
         : [],
     matchedPreferences: analysis?.matched_preferences.length
       ? analysis.matched_preferences
@@ -169,16 +168,23 @@ function buildReasons(
   topicHits: number
 ): string[] {
   const reasons = [
-    `Matched ${keywordHits} configured keywords and ${topicHits} configured topics.`,
-    `${repo.primaryLanguage} language signal with ${repo.stars.toLocaleString()} stars.`,
-    `Recently pushed at ${new Date(repo.pushedAt).toLocaleDateString()}.`
+    `命中 ${keywordHits} 个关键词和 ${topicHits} 个主题。`,
+    `${repo.primaryLanguage} 技术栈信号明显，当前有 ${repo.stars.toLocaleString()} 个 stars。`,
+    `最近推送时间为 ${new Date(repo.pushedAt).toLocaleDateString("zh-CN")}。`
   ];
 
   if (profile.config.preferences.languages[repo.primaryLanguage]) {
-    reasons.push(`Language ${repo.primaryLanguage} is weighted in this profile.`);
+    reasons.push(`${repo.primaryLanguage} 是当前发现配置中加权关注的语言。`);
   }
 
   return reasons;
+}
+
+function buildChineseSummary(repo: RepoSummary, profile: DiscoveryProfile) {
+  const matched = inferMatchedPreferences(repo, profile).slice(0, 4);
+  const matchedText = matched.length ? `，与 ${matched.join("、")} 等偏好相关` : "";
+  const description = repo.description ? `原始描述：${repo.description}` : "仓库暂未提供详细描述";
+  return `${repo.fullName} 是一个 ${repo.primaryLanguage} 项目${matchedText}。${description}。`;
 }
 
 function inferMatchedPreferences(repo: RepoSummary, profile: DiscoveryProfile): string[] {

@@ -15,7 +15,7 @@ const now = new Date().toISOString();
 export const seedProviders: AiProvider[] = [
   {
     id: "default_chat",
-    name: "Default Chat",
+    name: "默认 Chat 模型",
     kind: "chat",
     type: "openai_compatible",
     baseUrl: "https://api.example.com/v1",
@@ -32,7 +32,7 @@ export const seedProviders: AiProvider[] = [
   },
   {
     id: "default_embedding",
-    name: "Default Embedding",
+    name: "默认 Embedding 模型",
     kind: "embedding",
     type: "openai_compatible",
     baseUrl: "https://api.example.com/v1",
@@ -116,11 +116,11 @@ export const seedGithubRepos: UserGitHubRepo[] = [
     id: "user-fetchgithub",
     githubAccountId: "github-account-demo",
     fullName: "your-name/fetchGithub",
-    description: "GitHub repository discovery and recommendation system.",
+    description: "GitHub 仓库发现与推荐系统。",
     primaryLanguage: "TypeScript",
     topics: ["github", "recommendation", "ai"],
     visibility: "public",
-    readmeSummary: "Planned system for scanning GitHub projects and producing personalized recommendations.",
+    readmeSummary: "用于扫描 GitHub 项目并生成个性化推荐的系统。",
     selectedForContext: true,
     lastSyncedAt: now
   }
@@ -150,7 +150,7 @@ export const seedRecommendations: Recommendation[] = [
       owner: "vercel",
       name: "ai",
       htmlUrl: "https://github.com/vercel/ai",
-      description: "AI toolkit for TypeScript applications.",
+      description: "面向 TypeScript 应用的 AI 工具包。",
       primaryLanguage: "TypeScript",
       topics: ["ai", "sdk", "developer-tools"],
       stars: 18000,
@@ -169,18 +169,18 @@ export const seedRecommendations: Recommendation[] = [
       final: 0.86,
       scoreVersion: "mvp-v1"
     },
-    summary: "A TypeScript AI SDK that is relevant for building the fetchGithub UI and LLM integration layer.",
+    summary: "这是一个 TypeScript AI SDK，适合作为 fetchGithub 构建模型接入层、推荐解释和前端交互时的参考项目。",
     reasons: [
-      "Matches TypeScript and AI developer-tool preferences.",
-      "Useful as a reference for provider integration and UI streaming patterns.",
-      "Strong ecosystem signal and active maintenance."
+      "符合 TypeScript 和 AI 开发工具方向的偏好。",
+      "可以参考它的模型 provider 接入方式和前端交互模式。",
+      "生态信号强，维护活跃度较高。"
     ],
-    risks: ["Large ecosystem surface may be more than MVP needs."],
+    risks: ["生态覆盖面较大，MVP 阶段接入时需要控制范围。"],
     matchedPreferences: ["ai", "developer-tools", "TypeScript"],
     relatedUserRepos: [
       {
         fullName: "your-name/fetchGithub",
-        reason: "Can inform the chat provider integration and AI result rendering.",
+        reason: "可作为 Chat provider 接入和 AI 结果展示的参考。",
         score: 0.82
       }
     ],
@@ -198,7 +198,7 @@ export const seedRecommendations: Recommendation[] = [
       owner: "langchain-ai",
       name: "langchain",
       htmlUrl: "https://github.com/langchain-ai/langchain",
-      description: "Framework for developing applications powered by language models.",
+      description: "用于开发语言模型应用的框架。",
       primaryLanguage: "Python",
       topics: ["llm", "agents", "rag"],
       stars: 99000,
@@ -217,18 +217,18 @@ export const seedRecommendations: Recommendation[] = [
       final: 0.77,
       scoreVersion: "mvp-v1"
     },
-    summary: "A broad LLM application framework that is useful for understanding agent, RAG, and workflow ecosystems.",
+    summary: "这是一个覆盖面很广的 LLM 应用框架，适合用来理解 Agent、RAG 和 AI 工作流生态。",
     reasons: [
-      "Strong match on LLM, agents, and RAG topics.",
-      "High popularity and broad ecosystem relevance.",
-      "Useful comparison point for AI workflow recommendations."
+      "在 LLM、Agent 和 RAG 主题上匹配度较高。",
+      "流行度高，生态相关性强。",
+      "适合作为 AI 工作流项目推荐时的对照样本。"
     ],
-    risks: ["Large issue count may indicate operational complexity."],
+    risks: ["issue 数量较高，可能意味着使用和维护复杂度也较高。"],
     matchedPreferences: ["llm", "rag", "agents", "Python"],
     relatedUserRepos: [
       {
         fullName: "your-name/fetchGithub",
-        reason: "Relevant for classifying AI workflow projects discovered by fetchGithub.",
+        reason: "有助于判断 fetchGithub 发现的 AI 工作流项目类型。",
         score: 0.7
       }
     ],

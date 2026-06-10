@@ -66,6 +66,14 @@ export async function ensureSeedData() {
       )`
     );
     await client.query(
+      `create table if not exists auth_sessions (
+        id text primary key,
+        user_id text not null,
+        expires_at timestamptz not null,
+        created_at timestamptz not null default now()
+      )`
+    );
+    await client.query(
       `create table if not exists scan_schedule_state (
         profile_id text primary key references discovery_profiles(id) on delete cascade,
         last_checked_at timestamptz,

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { requireAuth } from "@/server/auth";
 import { syncGitHubContext } from "@/server/githubSync";
 
 const syncSchema = z.object({
@@ -8,6 +9,9 @@ const syncSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const auth = await requireAuth();
+  if (auth.response) return auth.response;
+
   const parsed = syncSchema.safeParse(await request.json().catch(() => ({})));
 
   if (!parsed.success) {

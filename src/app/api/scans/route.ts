@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { requireAuth } from "@/server/auth";
 import { runScanJob } from "@/server/scanRunner";
 import {
   createScanJob,
@@ -15,10 +16,16 @@ const scanRequestSchema = z.object({
 });
 
 export async function GET() {
+  const auth = await requireAuth();
+  if (auth.response) return auth.response;
+
   return NextResponse.json(await listScanJobs());
 }
 
 export async function POST(request: Request) {
+  const auth = await requireAuth();
+  if (auth.response) return auth.response;
+
   const parsed = scanRequestSchema.safeParse(await request.json());
 
   if (!parsed.success) {
