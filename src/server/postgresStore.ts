@@ -651,8 +651,58 @@ export async function upsertRepos(
   const pool = getPool();
 
   for (const repo of repos) {
-    const result = await pool.query(
-      `insert into repos
+    const existingRepoId = await resolvePersistedRepoId(repo);
+    const repoId = existingRepoId ?? repo.id;
+    const result = existingRepoId
+      ? await pool.query(
+        `update repos
+         set github_id=coalesce($2, github_id),
+             full_name=$3,
+             owner=$4,
+             name=$5,
+             html_url=$6,
+             description=$7,
+             primary_language=$8,
+             topics_json=$9,
+             stars=$10,
+             forks=$11,
+             open_issues=$12,
+             pushed_at=$13,
+             updated_at=$14,
+             archived=$15,
+             fork=$16,
+             data_level = case
+               when data_level = 'L4' or $17 = 'L4' then 'L4'
+               when data_level = 'L3' or $17 = 'L3' then 'L3'
+               when data_level = 'L2' or $17 = 'L2' then 'L2'
+               when data_level = 'L1' or $17 = 'L1' then 'L1'
+               else 'L0'
+             end,
+             last_seen_at=now()
+         where id=$1
+         returning id`,
+        [
+          repoId,
+          repo.githubId ?? null,
+          repo.fullName,
+          repo.owner,
+          repo.name,
+          repo.htmlUrl,
+          repo.description,
+          repo.primaryLanguage,
+          JSON.stringify(repo.topics ?? []),
+          repo.stars,
+          repo.forks,
+          repo.openIssues,
+          repo.pushedAt,
+          repo.updatedAt,
+          repo.archived,
+          repo.fork,
+          dataLevel
+        ]
+      )
+      : await pool.query(
+        `insert into repos
         (id, github_id, full_name, owner, name, html_url, description, primary_language,
          topics_json, stars, forks, open_issues, pushed_at, updated_at, archived, fork, data_level,
          first_seen_at, last_seen_at)
@@ -681,32 +731,32 @@ export async function upsertRepos(
          end,
          last_seen_at=now()
        returning id`,
-      [
-        repo.id,
-        repo.githubId ?? null,
-        repo.fullName,
-        repo.owner,
-        repo.name,
-        repo.htmlUrl,
-        repo.description,
-        repo.primaryLanguage,
-        JSON.stringify(repo.topics ?? []),
-        repo.stars,
-        repo.forks,
-        repo.openIssues,
-        repo.pushedAt,
-        repo.updatedAt,
-        repo.archived,
-        repo.fork,
-        dataLevel
-      ]
-    );
-    const repoId = result.rows[0]?.id as string | undefined;
-    if (!repoId) {
+        [
+          repoId,
+          repo.githubId ?? null,
+          repo.fullName,
+          repo.owner,
+          repo.name,
+          repo.htmlUrl,
+          repo.description,
+          repo.primaryLanguage,
+          JSON.stringify(repo.topics ?? []),
+          repo.stars,
+          repo.forks,
+          repo.openIssues,
+          repo.pushedAt,
+          repo.updatedAt,
+          repo.archived,
+          repo.fork,
+          dataLevel
+        ]
+      );
+    const persistedRepoId = result.rows[0]?.id as string | undefined;
+    if (!persistedRepoId) {
       throw new Error(`Failed to persist repository ${repo.fullName}`);
     }
 
-    repo.id = repoId;
+    repo.id = persistedRepoId;
 
     await pool.query(
       `insert into repo_snapshots
@@ -714,7 +764,7 @@ export async function upsertRepos(
        values ($1,$2,$3,$4,$5,$6,$7)`,
       [
         crypto.randomUUID(),
-        repoId,
+        persistedRepoId,
         repo.stars,
         repo.forks,
         repo.stars,
@@ -726,15 +776,20 @@ export async function upsertRepos(
 }
 
 async function resolvePersistedRepoId(
-  repo: Pick<RepoSummary, "id" | "fullName">
+  repo: Pick<RepoSummary, "id" | "fullName" | "githubId">
 ): Promise<string | undefined> {
   const result = await getPool().query(
     `select id
      from repos
-     where id=$1 or full_name=$2
-     order by case when id=$1 then 0 else 1 end
+     where id=$1 or full_name=$2 or github_id=$3
+     order by
+       case
+         when github_id=$3 then 0
+         when id=$1 then 1
+         else 2
+       end
      limit 1`,
-    [repo.id, repo.fullName]
+    [repo.id, repo.fullName, repo.githubId ?? null]
   );
 
   return result.rows[0]?.id as string | undefined;
