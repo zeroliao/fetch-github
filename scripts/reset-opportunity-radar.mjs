@@ -13,6 +13,45 @@ const client = new Client({ connectionString: databaseUrl });
 
 const now = new Date().toISOString();
 
+const defaultProviders = [
+  {
+    id: "default_chat",
+    name: "默认 Chat 模型",
+    kind: "chat",
+    type: "openai_compatible",
+    baseUrl: "https://api.example.com/v1",
+    apiKeyEnv: "CHAT_API_KEY",
+    model: "chat-model",
+    dimensions: null,
+    config: {
+      rateLimit: {
+        requestsPerMinute: 30,
+        tokensPerMinute: 60000
+      },
+      timeoutSeconds: 60
+    },
+    enabled: false
+  },
+  {
+    id: "default_embedding",
+    name: "默认 Embedding 模型",
+    kind: "embedding",
+    type: "openai_compatible",
+    baseUrl: "https://api.example.com/v1",
+    apiKeyEnv: "EMBEDDING_API_KEY",
+    model: "embedding-model",
+    dimensions: 1536,
+    config: {
+      rateLimit: {
+        requestsPerMinute: 120,
+        tokensPerMinute: 300000
+      },
+      timeoutSeconds: 30
+    },
+    enabled: false
+  }
+];
+
 const opportunityProfile = {
   goals: ["SaaS", "私有化部署服务", "AI Agent 工具", "二次开发/集成服务", "内容/课程/咨询"],
   targetCustomers: ["开发者", "中小企业", "企业研发团队", "内容创作者", "AI 工具用户"],
@@ -39,18 +78,13 @@ try {
   await client.connect();
   await client.query("begin");
 
-  const providers = await client.query(
-    `select id, kind, enabled
-     from ai_providers
-     order by enabled desc, created_at asc`
-  );
-  const chatProviderId =
-    providers.rows.find((provider) => provider.kind === "chat")?.id ?? "default_chat";
-  const embeddingProviderId =
-    providers.rows.find((provider) => provider.kind === "embedding")?.id ?? "default_embedding";
+  const chatProviderId = "default_chat";
+  const embeddingProviderId = "default_embedding";
 
   await client.query(
     `truncate table
+      app_state,
+      auth_sessions,
       knowledge_syncs,
       feedback,
       repo_context_matches,
@@ -69,9 +103,34 @@ try {
       repo_snapshots,
       repos,
       preference_signals,
-      discovery_profiles
+      user_repos,
+      github_accounts,
+      discovery_profiles,
+      ai_providers
     restart identity cascade`
   );
+
+  for (const provider of defaultProviders) {
+    await client.query(
+      `insert into ai_providers
+        (id, name, kind, type, base_url, api_key_env, model, dimensions, config_json, enabled, created_at, updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [
+        provider.id,
+        provider.name,
+        provider.kind,
+        provider.type,
+        provider.baseUrl,
+        provider.apiKeyEnv,
+        provider.model,
+        provider.dimensions,
+        JSON.stringify(provider.config),
+        provider.enabled,
+        now,
+        now
+      ]
+    );
+  }
 
   const config = {
     schedule: {
@@ -156,7 +215,9 @@ try {
   );
 
   await client.query("commit");
-  console.log(`Opportunity radar reset complete. profile=opportunity-radar chat=${chatProviderId} embedding=${embeddingProviderId}`);
+  console.log(
+    `Opportunity radar clean reset complete. profile=opportunity-radar chat=${chatProviderId} embedding=${embeddingProviderId}`
+  );
 } catch (error) {
   await client.query("rollback").catch(() => undefined);
   throw error;

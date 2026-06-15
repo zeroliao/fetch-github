@@ -40,6 +40,14 @@ pnpm db:init
 pnpm dev
 ```
 
+需要清空现有业务数据和应用配置，并重建默认「变现机会雷达」配置时运行：
+
+```powershell
+pnpm db:reset-opportunity
+```
+
+该命令会清空扫描、推荐、GitHub 关联、AI provider 记录、会话和应用状态，然后创建默认禁用的 Chat / Embedding provider 占位配置；不会删除 `.env.local` 中的 API Key 或管理员密码哈希。
+
 访问地址：
 
 ```text
