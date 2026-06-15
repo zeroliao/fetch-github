@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { seedSnapshot } from "@/lib/seed";
 import { normalizeDiscoverySources } from "@/lib/discoverySources";
+import { normalizeOpportunityProfile } from "@/lib/opportunity";
 import {
   ensureChineseSummary,
   normalizeChineseLabels
@@ -120,6 +121,7 @@ function normalizeProfiles(profiles: DiscoveryProfile[]) {
     ...profile,
     config: {
       ...profile.config,
+      opportunity: normalizeOpportunityProfile(profile.config.opportunity),
       sources: normalizeDiscoverySources(profile.config.sources)
     }
   }));

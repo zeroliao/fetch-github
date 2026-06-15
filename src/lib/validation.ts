@@ -64,6 +64,16 @@ export const profileSchema = z.object({
       excludeArchived: z.boolean(),
       excludeForks: z.boolean()
     }),
+    opportunity: z
+      .object({
+        goals: z.array(z.string()),
+        targetCustomers: z.array(z.string()),
+        monetizationChannels: z.array(z.string()),
+        preferredAdvantages: z.array(z.string()),
+        excludeSignals: z.array(z.string()),
+        minOpportunityScore: z.number().min(0).max(1)
+      })
+      .optional(),
     sources: z
       .array(
         z.object({

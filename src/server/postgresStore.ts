@@ -7,6 +7,7 @@ import type {
   GithubAccount,
   KnowledgeSync,
   OperationsSnapshot,
+  OpportunityAnalysis,
   PreferenceSignal,
   Recommendation,
   RepoDataLevel,
@@ -24,6 +25,7 @@ import {
   seedRecommendations
 } from "@/lib/seed";
 import { normalizeDiscoverySources } from "@/lib/discoverySources";
+import { normalizeOpportunityProfile } from "@/lib/opportunity";
 import {
   ensureChineseSummary,
   normalizeChineseLabels
@@ -822,6 +824,7 @@ export async function upsertRecommendations(
         recommendation.repo,
         recommendation.matchedPreferences
       ),
+      opportunity: recommendation.opportunity,
       matchedPreferences: recommendation.matchedPreferences,
       relatedUserRepos: recommendation.relatedUserRepos,
       scores: recommendation.scores
@@ -1183,7 +1186,13 @@ export async function rerankRecommendationsWithSemanticFit(input: {
       ruleScore: scores.rule,
       githubContextFit: scores.githubContextFit,
       llmMatchScore: scores.llmMatch,
-      feedbackScore: scores.feedback
+      feedbackScore: scores.feedback,
+      opportunityScore: scores.opportunity,
+      monetizationScore: scores.monetization,
+      growthSignal: scores.growth,
+      executionFit: scores.execution,
+      differentiationSpace: scores.differentiation,
+      technicalQuality: scores.technicalQuality
     });
 
     reranked.push({
@@ -2056,6 +2065,7 @@ function mapProviderRow(row: Record<string, any>): AiProvider {
 function normalizeProfileConfig(config: DiscoveryProfile["config"]): DiscoveryProfile["config"] {
   return {
     ...config,
+    opportunity: normalizeOpportunityProfile(config.opportunity),
     sources: normalizeDiscoverySources(config.sources)
   };
 }
@@ -2167,6 +2177,12 @@ function mapRecommendationRow(row: Record<string, any>): Recommendation {
       githubContextFit: Number(row.github_context_fit ?? scores.githubContextFit ?? 0),
       llmMatch: Number(row.llm_match_score ?? scores.llmMatch ?? 0),
       feedback: Number(row.feedback_score ?? scores.feedback ?? 0),
+      opportunity: optionalScore(scores.opportunity),
+      monetization: optionalScore(scores.monetization),
+      growth: optionalScore(scores.growth),
+      execution: optionalScore(scores.execution),
+      differentiation: optionalScore(scores.differentiation),
+      technicalQuality: optionalScore(scores.technicalQuality),
       final: Number(row.final_score ?? scores.final ?? 0),
       scoreVersion: row.score_version ?? String(scores.scoreVersion ?? "mvp-v1")
     },
@@ -2176,6 +2192,7 @@ function mapRecommendationRow(row: Record<string, any>): Recommendation {
       repo,
       matchedPreferences
     ),
+    opportunity: normalizePersistedOpportunity(reasonsJson.opportunity),
     reasons: normalizeChineseLabels(normalizeStringArray(reasonsJson.reasons)),
     risks: normalizeChineseLabels(normalizeStringArray(reasonsJson.risks)),
     matchedPreferences,
@@ -2207,6 +2224,42 @@ function parseRelatedUserRepos(
       score: Number(item.score ?? 0)
     }))
     .filter((item) => item.fullName);
+}
+
+function normalizePersistedOpportunity(value: unknown): OpportunityAnalysis | undefined {
+  const object = value && typeof value === "object" ? normalizeJsonObject(value) : null;
+  if (!object) {
+    return undefined;
+  }
+
+  return {
+    type: String(object.type ?? "SaaS/工具机会"),
+    score: Number(object.score ?? 0),
+    monetizationScore: Number(object.monetizationScore ?? 0),
+    growthSignal: Number(object.growthSignal ?? 0),
+    executionFit: Number(object.executionFit ?? 0),
+    differentiationSpace: Number(object.differentiationSpace ?? 0),
+    technicalQuality: Number(object.technicalQuality ?? 0),
+    targetCustomers: normalizeStringArray(object.targetCustomers),
+    monetizationPaths: normalizeStringArray(object.monetizationPaths),
+    validationSteps: normalizeStringArray(object.validationSteps),
+    suggestedAction: normalizeSuggestedAction(object.suggestedAction),
+    evidence: normalizeStringArray(object.evidence)
+  };
+}
+
+function normalizeSuggestedAction(value: unknown): OpportunityAnalysis["suggestedAction"] {
+  return value === "build" ||
+    value === "validate" ||
+    value === "track" ||
+    value === "observe" ||
+    value === "ignore"
+    ? value
+    : "observe";
+}
+
+function optionalScore(value: unknown) {
+  return value === undefined || value === null ? undefined : Number(value);
 }
 
 function mapKnowledgeSyncRow(row: Record<string, any>): KnowledgeSync {

@@ -24,6 +24,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { discoverySourceCatalog, normalizeDiscoverySources } from "@/lib/discoverySources";
 import { sectionDefinitions, sectionFromPath, sectionLabel, sectionPath, type Section } from "@/lib/navigation";
+import { normalizeOpportunityProfile, opportunityActionText } from "@/lib/opportunity";
 import { getRecommendationSummaryZh } from "@/lib/recommendationText";
 import type { GitHubSearchQueryPlan } from "@/server/githubSearch";
 import type {
@@ -414,9 +415,11 @@ function RecommendationsPanel({
             <tr>
               <th>项目</th>
               <th>分数</th>
+              <th>机会</th>
               <th>Stars</th>
               <th>语言</th>
               <th>命中</th>
+              <th>动作</th>
               <th>状态</th>
               <th>操作</th>
             </tr>
@@ -439,11 +442,16 @@ function RecommendationsPanel({
                     </div>
                   </div>
                 </td>
+                <td>
+                  <strong>{recommendation.opportunity?.type ?? "机会待分析"}</strong>
+                  <div className="muted">机会分 {Math.round((recommendation.scores.opportunity ?? recommendation.scores.final) * 100)}</div>
+                </td>
                 <td>{recommendation.repo.stars.toLocaleString()}</td>
                 <td>{recommendation.repo.primaryLanguage}</td>
                 <td>
                   <TagList items={recommendation.matchedPreferences.slice(0, 3)} />
                 </td>
+                <td>{recommendation.opportunity ? opportunityActionText(recommendation.opportunity.suggestedAction) : "观察"}</td>
                 <td>
                   <span className={`status ${recommendation.status}`}>{recommendation.status}</span>
                 </td>
@@ -505,6 +513,17 @@ function RepoDrawer({
             <button className="button" onClick={() => onFeedback(recommendation, "hide")} type="button">隐藏</button>
           </div>
           <DetailSection title="项目摘要">{getRecommendationSummaryZh(recommendation)}</DetailSection>
+          {recommendation.opportunity && (
+            <>
+              <DetailSection title="商业机会">
+                {`${recommendation.opportunity.type}，建议动作：${opportunityActionText(recommendation.opportunity.suggestedAction)}。机会分 ${Math.round(recommendation.opportunity.score * 100)}，变现潜力 ${Math.round(recommendation.opportunity.monetizationScore * 100)}。`}
+              </DetailSection>
+              <ListSection title="目标客户" items={recommendation.opportunity.targetCustomers} />
+              <ListSection title="变现路径" items={recommendation.opportunity.monetizationPaths} />
+              <ListSection title="最小验证步骤" items={recommendation.opportunity.validationSteps} />
+              <ListSection title="机会依据" items={recommendation.opportunity.evidence} />
+            </>
+          )}
           {recommendation.repo.description && (
             <DetailSection title="GitHub 原始描述">{recommendation.repo.description}</DetailSection>
           )}
@@ -537,6 +556,7 @@ function ProfilesPanel({
   const [schedule, setSchedule] = useState(selectedProfile?.config.schedule);
   const [limits, setLimits] = useState(selectedProfile?.config.limits);
   const [preferences, setPreferences] = useState(selectedProfile?.config.preferences);
+  const [opportunity, setOpportunity] = useState(normalizeOpportunityProfile(selectedProfile?.config.opportunity));
   const [resourcePolicy, setResourcePolicy] = useState(selectedProfile?.config.resourcePolicy);
   const [naturalLanguagePrompt, setNaturalLanguagePrompt] = useState("");
   const [naturalLanguageMode, setNaturalLanguageMode] = useState<"merge" | "replace">("merge");
@@ -554,6 +574,7 @@ function ProfilesPanel({
     setSchedule(selectedProfile.config.schedule);
     setLimits(selectedProfile.config.limits);
     setPreferences(selectedProfile.config.preferences);
+    setOpportunity(normalizeOpportunityProfile(selectedProfile.config.opportunity));
     setResourcePolicy(selectedProfile.config.resourcePolicy);
     setNaturalLanguagePreview(null);
   }, [selectedProfile]);
@@ -571,6 +592,7 @@ function ProfilesPanel({
       schedule,
       limits,
       preferences,
+      opportunity,
       resourcePolicy,
       sources,
       ai: {
@@ -723,6 +745,34 @@ function ProfilesPanel({
                   </div>
                 </div>
               )}
+            </section>
+            <section className="sub-panel">
+              <div className="panel-header compact-header">
+                <div className="panel-title">
+                  <h3>变现机会配置</h3>
+                  <p>把发现目标从技术兴趣切换为可验证、可交付、可变现的项目机会。</p>
+                </div>
+              </div>
+              <div className="form-grid">
+                <Field label="变现目标">
+                  <input className="input" value={opportunity.goals.join(", ")} onChange={(event) => setOpportunity({ ...opportunity, goals: splitCsv(event.target.value) })} />
+                </Field>
+                <Field label="目标客户">
+                  <input className="input" value={opportunity.targetCustomers.join(", ")} onChange={(event) => setOpportunity({ ...opportunity, targetCustomers: splitCsv(event.target.value) })} />
+                </Field>
+                <Field label="变现方式">
+                  <input className="input" value={opportunity.monetizationChannels.join(", ")} onChange={(event) => setOpportunity({ ...opportunity, monetizationChannels: splitCsv(event.target.value) })} />
+                </Field>
+                <Field label="偏好优势">
+                  <input className="input" value={opportunity.preferredAdvantages.join(", ")} onChange={(event) => setOpportunity({ ...opportunity, preferredAdvantages: splitCsv(event.target.value) })} />
+                </Field>
+                <Field label="排除信号">
+                  <input className="input" value={opportunity.excludeSignals.join(", ")} onChange={(event) => setOpportunity({ ...opportunity, excludeSignals: splitCsv(event.target.value) })} />
+                </Field>
+                <Field label="最低机会分">
+                  <input className="input" type="number" min={0} max={1} step={0.05} value={opportunity.minOpportunityScore} onChange={(event) => setOpportunity({ ...opportunity, minOpportunityScore: Number(event.target.value) })} />
+                </Field>
+              </div>
             </section>
             <div className="form-grid">
               <Field label="调度类型">
@@ -1538,6 +1588,7 @@ function buildMatchSignals(recommendation: Recommendation) {
     recommendation.repo.pushedAt
       ? `最近推送：${new Date(recommendation.repo.pushedAt).toLocaleDateString("zh-CN")}`
       : "",
+    `机会分：${Math.round((recommendation.scores.opportunity ?? recommendation.scores.final) * 100)}，变现分：${Math.round((recommendation.scores.monetization ?? recommendation.scores.llmMatch) * 100)}，增长信号：${Math.round((recommendation.scores.growth ?? recommendation.scores.rule) * 100)}`,
     `规则分：${Math.round(recommendation.scores.rule * 100)}，上下文分：${Math.round(recommendation.scores.githubContextFit * 100)}，LLM 分：${Math.round(recommendation.scores.llmMatch * 100)}`
   ].filter(Boolean);
 }

@@ -4,6 +4,11 @@ import {
   ensureChineseSummary,
   normalizeChineseLabels
 } from "@/lib/recommendationText";
+import {
+  buildHeuristicOpportunityAnalysis,
+  normalizeOpportunityProfile,
+  scoreOpportunitySignals
+} from "@/lib/opportunity";
 import type {
   DiscoveryProfile,
   PreferenceSignal,
@@ -75,11 +80,19 @@ export function scoreRepo(
   const githubContextFit = clampScore(relevanceScore * 0.75 + languageWeight * 0.08);
   const llmMatchScore = clampScore(ruleScore * 0.85 + relevanceScore * 0.15);
   const feedbackScore = calculateFeedbackScore(repo, preferenceSignals);
+  const opportunityProfile = normalizeOpportunityProfile(profile.config.opportunity);
+  const opportunitySignals = scoreOpportunitySignals(repo, opportunityProfile, ruleScore);
   const finalScore = calculateFinalScore({
     ruleScore,
     githubContextFit,
     llmMatchScore,
-    feedbackScore
+    feedbackScore,
+    opportunityScore: opportunitySignals.opportunityScore,
+    monetizationScore: opportunitySignals.monetizationScore,
+    growthSignal: opportunitySignals.growthSignal,
+    executionFit: opportunitySignals.executionFit,
+    differentiationSpace: opportunitySignals.differentiationSpace,
+    technicalQuality: opportunitySignals.technicalQuality
   });
 
   return {
@@ -87,6 +100,7 @@ export function scoreRepo(
     githubContextFit,
     llmMatchScore,
     feedbackScore,
+    opportunitySignals,
     finalScore,
     reasons: buildReasons(repo, profile, keywordHits, topicHits)
   };
@@ -106,11 +120,24 @@ export function buildRecommendation(
     Math.max(score.githubContextFit, relatedUserRepos[0]?.score ?? 0)
   );
   const llmMatchScore = analysis?.match_score ?? score.llmMatchScore;
+  const opportunityProfile = normalizeOpportunityProfile(profile.config.opportunity);
+  const heuristicOpportunity = buildHeuristicOpportunityAnalysis(
+    repo,
+    opportunityProfile,
+    score.opportunitySignals
+  );
+  const opportunity = mergeOpportunityAnalysis(analysis?.opportunity, heuristicOpportunity);
   const finalScore = calculateFinalScore({
     ruleScore: score.ruleScore,
     githubContextFit,
     llmMatchScore,
-    feedbackScore: score.feedbackScore
+    feedbackScore: score.feedbackScore,
+    opportunityScore: opportunity.score,
+    monetizationScore: opportunity.monetizationScore,
+    growthSignal: opportunity.growthSignal,
+    executionFit: opportunity.executionFit,
+    differentiationSpace: opportunity.differentiationSpace,
+    technicalQuality: opportunity.technicalQuality
   });
   const matchedPreferences = normalizeChineseLabels(
     analysis?.matched_preferences.length
@@ -134,11 +161,18 @@ export function buildRecommendation(
       githubContextFit,
       llmMatch: llmMatchScore,
       feedback: score.feedbackScore,
+      opportunity: opportunity.score,
+      monetization: opportunity.monetizationScore,
+      growth: opportunity.growthSignal,
+      execution: opportunity.executionFit,
+      differentiation: opportunity.differentiationSpace,
+      technicalQuality: opportunity.technicalQuality,
       final: finalScore,
       scoreVersion: SCORE_VERSION
     },
     summary,
     summaryZh: ensureChineseSummary(summary, repo, matchedPreferences),
+    opportunity,
     reasons,
     risks: analysis?.risks.length
       ? normalizeChineseLabels(analysis.risks)
@@ -195,6 +229,30 @@ function buildReasons(
 
 function buildChineseSummary(repo: RepoSummary, profile: DiscoveryProfile) {
   return buildChineseRepoSummary(repo, inferMatchedPreferences(repo, profile));
+}
+
+function mergeOpportunityAnalysis(
+  analysisOpportunity: RepoAnalysisResult["opportunity"],
+  fallback: ReturnType<typeof buildHeuristicOpportunityAnalysis>
+) {
+  if (!analysisOpportunity) {
+    return fallback;
+  }
+
+  return {
+    ...fallback,
+    ...analysisOpportunity,
+    targetCustomers: analysisOpportunity.targetCustomers.length
+      ? analysisOpportunity.targetCustomers
+      : fallback.targetCustomers,
+    monetizationPaths: analysisOpportunity.monetizationPaths.length
+      ? analysisOpportunity.monetizationPaths
+      : fallback.monetizationPaths,
+    validationSteps: analysisOpportunity.validationSteps.length
+      ? analysisOpportunity.validationSteps
+      : fallback.validationSteps,
+    evidence: analysisOpportunity.evidence.length ? analysisOpportunity.evidence : fallback.evidence
+  };
 }
 
 function inferMatchedPreferences(repo: RepoSummary, profile: DiscoveryProfile): string[] {

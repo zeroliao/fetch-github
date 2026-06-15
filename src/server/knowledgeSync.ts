@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { opportunityActionText } from "@/lib/opportunity";
 import { getRecommendationSummaryZh } from "@/lib/recommendationText";
 import type { Recommendation } from "@/lib/types";
 import {
@@ -135,6 +136,21 @@ export function buildRecommendationMarkdown(recommendation: Recommendation) {
     "",
     "## Summary",
     getRecommendationSummaryZh(recommendation),
+    "",
+    "## Opportunity",
+    ...(recommendation.opportunity
+      ? [
+          `Type: ${recommendation.opportunity.type}`,
+          `Action: ${opportunityActionText(recommendation.opportunity.suggestedAction)}`,
+          `Opportunity Score: ${Math.round(recommendation.opportunity.score * 100)}`,
+          "",
+          "### Monetization Paths",
+          ...recommendation.opportunity.monetizationPaths.map((path) => `- ${path}`),
+          "",
+          "### Validation Steps",
+          ...recommendation.opportunity.validationSteps.map((step) => `- ${step}`)
+        ]
+      : ["None"]),
     "",
     "## Reasons",
     ...recommendation.reasons.map((reason) => `- ${reason}`),

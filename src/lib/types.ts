@@ -96,6 +96,7 @@ export interface DiscoveryProfileConfig {
     excludeArchived: boolean;
     excludeForks: boolean;
   };
+  opportunity?: OpportunityProfile;
   sources?: DiscoverySourceConfig[];
   resourcePolicy: {
     mode: "complete_low_memory" | "balanced" | "fast";
@@ -115,6 +116,15 @@ export interface DiscoveryProfileConfig {
     chatProviderId: string;
     embeddingProviderId: string;
   };
+}
+
+export interface OpportunityProfile {
+  goals: string[];
+  targetCustomers: string[];
+  monetizationChannels: string[];
+  preferredAdvantages: string[];
+  excludeSignals: string[];
+  minOpportunityScore: number;
 }
 
 export interface RepoSummary {
@@ -147,11 +157,18 @@ export interface Recommendation {
     githubContextFit: number;
     llmMatch: number;
     feedback: number;
+    opportunity?: number;
+    monetization?: number;
+    growth?: number;
+    execution?: number;
+    differentiation?: number;
+    technicalQuality?: number;
     final: number;
     scoreVersion: string;
   };
   summary: string;
   summaryZh?: string;
+  opportunity?: OpportunityAnalysis;
   reasons: string[];
   risks: string[];
   matchedPreferences: string[];
@@ -163,6 +180,21 @@ export interface Recommendation {
   }>;
   status: "new" | "viewed" | "saved" | "hidden" | "tracked";
   createdAt: string;
+}
+
+export interface OpportunityAnalysis {
+  type: string;
+  score: number;
+  monetizationScore: number;
+  growthSignal: number;
+  executionFit: number;
+  differentiationSpace: number;
+  technicalQuality: number;
+  targetCustomers: string[];
+  monetizationPaths: string[];
+  validationSteps: string[];
+  suggestedAction: "observe" | "track" | "validate" | "build" | "ignore";
+  evidence: string[];
 }
 
 export interface ScanJob {

@@ -10,6 +10,7 @@
     "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "db:init": "node scripts/init-db.mjs",
+    "db:reset-opportunity": "node scripts/reset-opportunity-radar.mjs",
     "auth:hash": "node scripts/hash-password.mjs",
     "worker:dev": "tsx src/worker/index.ts",
     "worker:start": "tsx src/worker/index.ts",

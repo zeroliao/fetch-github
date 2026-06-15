@@ -322,6 +322,8 @@ test("推荐生成会保留关联我的 GitHub 项目的外键", () => {
   assert.equal(recommendation.relatedUserRepos[0]?.fullName, "me/fetchGithub");
   assert.equal(recommendation.repo.description, "AI workflow developer tool");
   assert.match(recommendation.summaryZh ?? "", /example\/candidate 是一个 TypeScript 项目/);
+  assert.ok((recommendation.scores.opportunity ?? 0) > 0);
+  assert.ok(recommendation.opportunity?.monetizationPaths.length);
 });
 
 test("英文 LLM 摘要不会作为中文展示摘要直接展示", () => {
@@ -356,7 +358,21 @@ test("英文 LLM 摘要不会作为中文展示摘要直接展示", () => {
       confidence: 0.9,
       matched_preferences: ["Matches preferred topic: developer-tools"],
       risks: [],
-      recommendation_reason: "Strong match for developer-tools topic"
+      recommendation_reason: "Strong match for developer-tools topic",
+      opportunity: {
+        type: "SaaS/工具机会",
+        score: 0.88,
+        monetizationScore: 0.86,
+        growthSignal: 0.75,
+        executionFit: 0.8,
+        differentiationSpace: 0.7,
+        technicalQuality: 0.82,
+        targetCustomers: ["开发者", "企业研发团队"],
+        monetizationPaths: ["托管版 SaaS", "私有化部署"],
+        validationSteps: ["做一个付费落地页验证需求。"],
+        suggestedAction: "validate",
+        evidence: ["LLM 应用平台具备明确商业场景。"]
+      }
     }
   );
 
@@ -368,6 +384,9 @@ test("英文 LLM 摘要不会作为中文展示摘要直接展示", () => {
   assert.ok(!(recommendation.summaryZh ?? "").startsWith("A production-ready"));
   assert.deepEqual(recommendation.matchedPreferences, ["命中偏好 topic：开发者工具"]);
   assert.deepEqual(recommendation.reasons.slice(0, 1), ["与 开发者工具 topic 强匹配"]);
+  assert.equal(recommendation.opportunity?.type, "SaaS/工具机会");
+  assert.equal(recommendation.opportunity?.suggestedAction, "validate");
+  assert.equal(recommendation.scores.opportunity, 0.88);
 });
 
 test("旧版包含原始英文描述的摘要会重建为中文展示摘要", () => {
@@ -434,6 +453,8 @@ test("知识库 Markdown 会包含推荐理由和关联项目解释", () => {
   );
 
   const markdown = buildRecommendationMarkdown(recommendation);
+  assert.match(markdown, /## Opportunity/);
+  assert.match(markdown, /### Monetization Paths/);
   assert.match(markdown, /## Reasons/);
   assert.match(markdown, /## Related User Repositories/);
   assert.match(markdown, /me\/fetchGithub/);

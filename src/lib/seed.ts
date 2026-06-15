@@ -9,6 +9,7 @@ import type {
   UserGitHubRepo
 } from "./types";
 import { defaultDiscoverySources } from "./discoverySources";
+import { defaultOpportunityProfile } from "./opportunity";
 
 const now = new Date().toISOString();
 
@@ -53,7 +54,7 @@ export const seedProviders: AiProvider[] = [
 export const seedProfiles: DiscoveryProfile[] = [
   {
     id: "ai-dev-tools",
-    name: "AI Dev Tools",
+    name: "变现机会雷达",
     enabled: true,
     config: {
       schedule: {
@@ -86,6 +87,7 @@ export const seedProfiles: DiscoveryProfile[] = [
         excludeArchived: true,
         excludeForks: true
       },
+      opportunity: defaultOpportunityProfile,
       sources: defaultDiscoverySources(),
       resourcePolicy: {
         mode: "complete_low_memory",
@@ -166,10 +168,30 @@ export const seedRecommendations: Recommendation[] = [
       githubContextFit: 0.82,
       llmMatch: 0.91,
       feedback: 0.1,
+      opportunity: 0.82,
+      monetization: 0.8,
+      growth: 0.78,
+      execution: 0.86,
+      differentiation: 0.72,
+      technicalQuality: 0.84,
       final: 0.86,
-      scoreVersion: "mvp-v1"
+      scoreVersion: "opportunity-radar-v1"
     },
     summary: "这是一个 TypeScript AI SDK，适合作为 fetchGithub 构建模型接入层、推荐解释和前端交互时的参考项目。",
+    opportunity: {
+      type: "集成/API 机会",
+      score: 0.82,
+      monetizationScore: 0.8,
+      growthSignal: 0.78,
+      executionFit: 0.86,
+      differentiationSpace: 0.72,
+      technicalQuality: 0.84,
+      targetCustomers: ["开发者", "企业研发团队", "AI 工具用户"],
+      monetizationPaths: ["插件/API 集成", "托管版 SaaS", "咨询与实施"],
+      validationSteps: ["验证中文开发者对统一模型接入层的付费意愿。", "包装一个小型托管 Demo。"],
+      suggestedAction: "validate",
+      evidence: ["生态信号强，适合观察 AI SDK 商业化形态。"]
+    },
     reasons: [
       "符合 TypeScript 和 AI 开发工具方向的偏好。",
       "可以参考它的模型 provider 接入方式和前端交互模式。",
@@ -214,10 +236,30 @@ export const seedRecommendations: Recommendation[] = [
       githubContextFit: 0.7,
       llmMatch: 0.84,
       feedback: 0.05,
+      opportunity: 0.74,
+      monetization: 0.72,
+      growth: 0.82,
+      execution: 0.62,
+      differentiation: 0.65,
+      technicalQuality: 0.78,
       final: 0.77,
-      scoreVersion: "mvp-v1"
+      scoreVersion: "opportunity-radar-v1"
     },
     summary: "这是一个覆盖面很广的 LLM 应用框架，适合用来理解 Agent、RAG 和 AI 工作流生态。",
+    opportunity: {
+      type: "Agent 自动化机会",
+      score: 0.74,
+      monetizationScore: 0.72,
+      growthSignal: 0.82,
+      executionFit: 0.62,
+      differentiationSpace: 0.65,
+      technicalQuality: 0.78,
+      targetCustomers: ["企业研发团队", "AI 工具用户", "开发者"],
+      monetizationPaths: ["自动化方案服务", "私有化部署", "课程/内容"],
+      validationSteps: ["选择一个垂直 Agent 场景做需求访谈。", "评估中文化模板和交付服务空间。"],
+      suggestedAction: "track",
+      evidence: ["生态规模大，可作为市场信号和竞品参考。"]
+    },
     reasons: [
       "在 LLM、Agent 和 RAG 主题上匹配度较高。",
       "流行度高，生态相关性强。",
