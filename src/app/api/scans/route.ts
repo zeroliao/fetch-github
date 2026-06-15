@@ -5,6 +5,7 @@ import { runScanJob } from "@/server/scanRunner";
 import {
   createScanJob,
   findActiveScanJobByProfile,
+  getAppSettings,
   getAiProvider,
   listProfiles,
   listScanJobs,
@@ -30,6 +31,11 @@ export async function POST(request: Request) {
 
   if (!parsed.success) {
     return NextResponse.json({ errors: parsed.error.flatten() }, { status: 400 });
+  }
+
+  const settings = await getAppSettings();
+  if (!settings.scanEnabled) {
+    return NextResponse.json({ error: "全局扫描任务已关闭，当前不会启动扫描任务。" }, { status: 409 });
   }
 
   const profiles = await listProfiles();

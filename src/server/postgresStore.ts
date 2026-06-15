@@ -1,5 +1,7 @@
 import type {
   AiProvider,
+  AppSettings,
+  CachedEmbedding,
   DashboardSnapshot,
   DiscoveryProfile,
   Feedback,
@@ -15,8 +17,11 @@ import type {
   ResourceEvent,
   ScanCheckpoint,
   ScanJob,
+  UpsertRepoStats,
   UserGitHubRepo
 } from "@/lib/types";
+import { defaultAppSettings, normalizeAppSettings } from "@/lib/settings";
+import { normalizeDiscoveryLimits } from "@/lib/semanticGate";
 import {
   seedGithubAccounts,
   seedGithubRepos,
@@ -26,6 +31,11 @@ import {
 } from "@/lib/seed";
 import { normalizeDiscoverySources } from "@/lib/discoverySources";
 import { normalizeOpportunityProfile } from "@/lib/opportunity";
+import { annotateRecommendationClusters } from "@/lib/repoCluster";
+import {
+  repoHasMaterialMetadataChanges,
+  shouldAnalyzeDiscoveredRepo
+} from "@/lib/repoRefresh";
 import {
   ensureChineseSummary,
   normalizeChineseLabels
@@ -58,6 +68,11 @@ type Json = Record<string, unknown> | unknown[];
 type QueryRunner = {
   query: (sql: string, values?: unknown[]) => Promise<unknown>;
 };
+
+const JOB_SELECT_FIELDS = `id, profile_id, type, status, stage, max_candidates, fetched_count,
+            processed_count, analyzed_count, new_repo_count, updated_repo_count,
+            unchanged_repo_count, candidate_count, started_at, finished_at,
+            error_message, archived_at, created_at`;
 
 export async function ensureSeedData() {
   const pool = getPool();
@@ -100,6 +115,40 @@ export async function ensureSeedData() {
     await client.query(
       `alter table discovery_jobs
        add column if not exists archived_at timestamptz`
+    );
+    await client.query(
+      `alter table discovery_jobs
+       add column if not exists new_repo_count integer not null default 0`
+    );
+    await client.query(
+      `alter table discovery_jobs
+       add column if not exists updated_repo_count integer not null default 0`
+    );
+    await client.query(
+      `alter table discovery_jobs
+       add column if not exists unchanged_repo_count integer not null default 0`
+    );
+    await client.query(
+      `alter table discovery_jobs
+       add column if not exists candidate_count integer not null default 0`
+    );
+    await client.query(
+      `create table if not exists embedding_cache (
+        id text primary key,
+        cache_key text not null unique,
+        provider_id text not null references ai_providers(id),
+        model text not null,
+        dimensions integer not null,
+        content_hash text not null,
+        vector vector,
+        created_at timestamptz not null default now()
+      )`
+    );
+    await client.query(
+      `insert into app_state (key, value_json, updated_at)
+       values ('app_settings', $1, now())
+       on conflict (key) do nothing`,
+      [JSON.stringify(defaultAppSettings)]
     );
 
     const seedState = await client.query(
@@ -244,6 +293,7 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
     ]);
 
   return {
+    settings: await getAppSettings(),
     profiles,
     aiProviders,
     recommendations,
@@ -254,6 +304,32 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
     queueStats: await getQueueStats(),
     operations: await getOperationsSnapshot()
   };
+}
+
+export async function getAppSettings(): Promise<AppSettings> {
+  await ensureSeedDataOnce();
+  const result = await getPool().query(
+    `select value_json from app_state where key='app_settings'`
+  );
+
+  return normalizeAppSettings(result.rows[0]?.value_json as Partial<AppSettings> | undefined);
+}
+
+export async function updateAppSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+  const current = await getAppSettings();
+  const next = normalizeAppSettings({
+    ...current,
+    ...patch
+  });
+
+  await getPool().query(
+    `insert into app_state (key, value_json, updated_at)
+     values ('app_settings', $1, now())
+     on conflict (key) do update set value_json=excluded.value_json, updated_at=now()`,
+    [JSON.stringify(next)]
+  );
+
+  return next;
 }
 
 export async function listProfiles(): Promise<DiscoveryProfile[]> {
@@ -452,8 +528,7 @@ export async function deleteAiProvider(id: string): Promise<{
 
 export async function listScanJobs(): Promise<ScanJob[]> {
   const result = await getPool().query(
-    `select id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
-            analyzed_count, started_at, finished_at, error_message, archived_at, created_at
+    `select ${JOB_SELECT_FIELDS}
      from discovery_jobs
      where archived_at is null
      order by created_at desc
@@ -465,8 +540,7 @@ export async function listScanJobs(): Promise<ScanJob[]> {
 
 export async function getScanJob(jobId: string): Promise<ScanJob | undefined> {
   const result = await getPool().query(
-    `select id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
-            analyzed_count, started_at, finished_at, error_message, archived_at, created_at
+    `select ${JOB_SELECT_FIELDS}
      from discovery_jobs
      where id = $1`,
     [jobId]
@@ -482,8 +556,7 @@ export async function archiveScanJob(jobId: string): Promise<ScanJob | undefined
      where id=$1
        and status in ('completed', 'failed')
        and archived_at is null
-     returning id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
-               analyzed_count, started_at, finished_at, error_message, archived_at, created_at`,
+     returning ${JOB_SELECT_FIELDS}`,
     [jobId]
   );
 
@@ -492,8 +565,7 @@ export async function archiveScanJob(jobId: string): Promise<ScanJob | undefined
 
 export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
   const result = await getPool().query(
-    `select id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
-            analyzed_count, started_at, finished_at, error_message, archived_at, created_at
+    `select ${JOB_SELECT_FIELDS}
      from discovery_jobs
      where status in ('pending', 'running', 'throttled', 'retry_later', 'paused_by_memory', 'paused_by_runtime')
        and archived_at is null
@@ -507,8 +579,7 @@ export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
 
 export async function findActiveScanJobByProfile(profileId: string): Promise<ScanJob | undefined> {
   const result = await getPool().query(
-    `select id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
-            analyzed_count, started_at, finished_at, error_message, archived_at, created_at
+    `select ${JOB_SELECT_FIELDS}
      from discovery_jobs
      where profile_id=$1
        and status in ('pending', 'running', 'throttled', 'retry_later', 'paused_by_user', 'paused_by_memory', 'paused_by_runtime')
@@ -575,13 +646,18 @@ export async function createScanJob(
     fetchedCount: 0,
     processedCount: 0,
     analyzedCount: 0,
+    newRepoCount: 0,
+    updatedRepoCount: 0,
+    unchangedRepoCount: 0,
+    candidateCount: 0,
     createdAt: now
   };
 
   await getPool().query(
     `insert into discovery_jobs
-      (id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count, analyzed_count, created_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      (id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
+       analyzed_count, new_repo_count, updated_repo_count, unchanged_repo_count, candidate_count, created_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
     [
       job.id,
       job.profileId,
@@ -592,6 +668,10 @@ export async function createScanJob(
       job.fetchedCount,
       job.processedCount,
       job.analyzedCount,
+      job.newRepoCount,
+      job.updatedRepoCount,
+      job.unchangedRepoCount,
+      job.candidateCount,
       job.createdAt
     ]
   );
@@ -604,8 +684,7 @@ export async function updateScanJob(
   patch: Partial<ScanJob>
 ): Promise<ScanJob | undefined> {
   const current = await getPool().query(
-    `select id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
-            analyzed_count, started_at, finished_at, error_message, archived_at, created_at
+    `select ${JOB_SELECT_FIELDS}
      from discovery_jobs
      where id = $1`,
     [jobId]
@@ -631,10 +710,11 @@ export async function updateScanJob(
   const updated = await getPool().query(
     `update discovery_jobs
      set status=$2, stage=$3, max_candidates=$4, fetched_count=$5, processed_count=$6,
-         analyzed_count=$7, started_at=$8, finished_at=$9, error_message=$10
+         analyzed_count=$7, new_repo_count=$8, updated_repo_count=$9,
+         unchanged_repo_count=$10, candidate_count=$11, started_at=$12,
+         finished_at=$13, error_message=$14
      where id=$1
-     returning id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
-               analyzed_count, started_at, finished_at, error_message, archived_at, created_at`,
+     returning ${JOB_SELECT_FIELDS}`,
     [
       job.id,
       job.status,
@@ -643,6 +723,10 @@ export async function updateScanJob(
       job.fetchedCount,
       job.processedCount,
       job.analyzedCount,
+      job.newRepoCount,
+      job.updatedRepoCount,
+      job.unchangedRepoCount,
+      job.candidateCount,
       job.startedAt ?? null,
       job.finishedAt ?? null,
       nextErrorMessage ?? null
@@ -655,12 +739,25 @@ export async function updateScanJob(
 export async function upsertRepos(
   repos: RepoSummary[],
   dataLevel: RepoDataLevel = "L1"
-): Promise<void> {
+): Promise<UpsertRepoStats> {
   const pool = getPool();
+  const stats: UpsertRepoStats = {
+    newCount: 0,
+    updatedCount: 0,
+    unchangedCount: 0,
+    repos: []
+  };
 
   for (const repo of repos) {
     const existingRepoId = await resolvePersistedRepoId(repo);
     const repoId = existingRepoId ?? repo.id;
+    const existingRepo = existingRepoId ? await getRepoWithDataLevel(existingRepoId) : undefined;
+    const changed = existingRepo ? repoHasMaterialChanges(existingRepo.repo, repo) : true;
+    const analysisDecision = shouldAnalyzeDiscoveredRepo({
+      existing: existingRepo?.repo,
+      existingDataLevel: existingRepo?.dataLevel,
+      next: repo
+    });
     const result = existingRepoId
       ? await pool.query(
         `update repos
@@ -765,6 +862,22 @@ export async function upsertRepos(
     }
 
     repo.id = persistedRepoId;
+    if (existingRepoId) {
+      if (changed) {
+        stats.updatedCount += 1;
+      } else {
+        stats.unchangedCount += 1;
+      }
+    } else {
+      stats.newCount += 1;
+    }
+    stats.repos.push({
+      repo,
+      status: existingRepoId ? (changed ? "updated" : "unchanged") : "new",
+      existingDataLevel: existingRepo?.dataLevel,
+      shouldAnalyze: analysisDecision.shouldAnalyze,
+      analyzeReason: analysisDecision.reason
+    });
 
     await pool.query(
       `insert into repo_snapshots
@@ -781,6 +894,8 @@ export async function upsertRepos(
       ]
     );
   }
+
+  return stats;
 }
 
 async function resolvePersistedRepoId(
@@ -808,7 +923,7 @@ export async function upsertRecommendations(
 ): Promise<void> {
   const pool = getPool();
 
-  for (const recommendation of recommendations) {
+  for (const recommendation of annotateRecommendationClusters(recommendations)) {
     const repoId = await resolvePersistedRepoId(recommendation.repo);
     if (!repoId) {
       await upsertRepos([recommendation.repo], "L3");
@@ -827,6 +942,7 @@ export async function upsertRecommendations(
       opportunity: recommendation.opportunity,
       matchedPreferences: recommendation.matchedPreferences,
       relatedUserRepos: recommendation.relatedUserRepos,
+      cluster: recommendation.cluster,
       scores: recommendation.scores
     });
 
@@ -1139,6 +1255,139 @@ export async function upsertRepoEmbedding(input: {
   );
 }
 
+export async function getRepoEmbedding(input: {
+  repoId: string;
+  providerId: string;
+  model: string;
+  contentHash: string;
+}) {
+  const result = await getPool().query(
+    `select id, repo_id, provider_id, model, dimensions, content_hash, created_at
+     from repo_embeddings
+     where repo_id=$1 and provider_id=$2 and model=$3 and content_hash=$4
+     order by created_at desc
+     limit 1`,
+    [input.repoId, input.providerId, input.model, input.contentHash]
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    return undefined;
+  }
+
+  return {
+    id: row.id as string,
+    repoId: row.repo_id as string,
+    providerId: row.provider_id as string,
+    model: row.model as string,
+    dimensions: Number(row.dimensions),
+    contentHash: row.content_hash as string,
+    createdAt: toIso(row.created_at)
+  };
+}
+
+export async function getRepoEmbeddingVector(input: {
+  repoId: string;
+  providerId: string;
+  model?: string;
+  contentHash?: string;
+}) {
+  const conditions = ["repo_id=$1", "provider_id=$2"];
+  const values: unknown[] = [input.repoId, input.providerId];
+
+  if (input.model) {
+    values.push(input.model);
+    conditions.push(`model=$${values.length}`);
+  }
+  if (input.contentHash) {
+    values.push(input.contentHash);
+    conditions.push(`content_hash=$${values.length}`);
+  }
+
+  const result = await getPool().query(
+    `select id, repo_id, provider_id, model, dimensions, content_hash, vector, created_at
+     from repo_embeddings
+     where ${conditions.join(" and ")}
+     order by created_at desc
+     limit 1`,
+    values
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    return undefined;
+  }
+
+  return {
+    id: row.id as string,
+    repoId: row.repo_id as string,
+    providerId: row.provider_id as string,
+    model: row.model as string,
+    dimensions: Number(row.dimensions),
+    contentHash: row.content_hash as string,
+    vector: parseVector(row.vector),
+    createdAt: toIso(row.created_at)
+  };
+}
+
+export async function upsertCachedEmbedding(input: {
+  cacheKey: string;
+  providerId: string;
+  model: string;
+  dimensions: number;
+  contentHash: string;
+  vector: number[];
+}) {
+  await getPool().query(
+    `insert into embedding_cache
+      (id, cache_key, provider_id, model, dimensions, content_hash, vector, created_at)
+     values ($1,$2,$3,$4,$5,$6,$7,now())
+     on conflict (cache_key) do update set
+       provider_id=excluded.provider_id,
+       model=excluded.model,
+       dimensions=excluded.dimensions,
+       content_hash=excluded.content_hash,
+       vector=excluded.vector,
+       created_at=now()`,
+    [
+      crypto.randomUUID(),
+      input.cacheKey,
+      input.providerId,
+      input.model,
+      input.dimensions,
+      input.contentHash,
+      toVector(input.vector)
+    ]
+  );
+}
+
+export async function getCachedEmbedding(input: {
+  cacheKey: string;
+  providerId: string;
+  model: string;
+  contentHash: string;
+}): Promise<CachedEmbedding | undefined> {
+  const result = await getPool().query(
+    `select provider_id, model, dimensions, content_hash, vector, created_at
+     from embedding_cache
+     where cache_key=$1 and provider_id=$2 and model=$3 and content_hash=$4`,
+    [input.cacheKey, input.providerId, input.model, input.contentHash]
+  );
+  const row = result.rows[0];
+  if (!row) {
+    return undefined;
+  }
+
+  return {
+    providerId: row.provider_id,
+    model: row.model,
+    dimensions: Number(row.dimensions),
+    contentHash: row.content_hash,
+    vector: parseVector(row.vector),
+    createdAt: toIso(row.created_at)
+  };
+}
+
 export async function getRepoEmbeddingSimilarity(input: {
   repoId: string;
   providerId: string;
@@ -1397,6 +1646,14 @@ export async function recordFeedback(
         ? "hidden"
         : action === "track"
           ? "tracked"
+          : action === "to_validate"
+            ? "to_validate"
+            : action === "validating"
+              ? "validating"
+              : action === "monetization_ready"
+                ? "monetization_ready"
+                : action === "abandon"
+                  ? "abandoned"
           : null;
 
   if (status) {
@@ -1415,15 +1672,27 @@ export async function recordFeedback(
 }
 
 export async function getRepoById(repoId: string): Promise<RepoSummary | undefined> {
+  const row = await getRepoWithDataLevel(repoId);
+  return row?.repo;
+}
+
+async function getRepoWithDataLevel(repoId: string): Promise<
+  { repo: RepoSummary; dataLevel: RepoDataLevel } | undefined
+> {
   const result = await getPool().query(
     `select id as repo_id, github_id, full_name, owner, name, html_url, description, primary_language,
-            topics_json, stars, forks, open_issues, pushed_at, updated_at, archived, fork
+            topics_json, stars, forks, open_issues, pushed_at, updated_at, archived, fork, data_level
      from repos
      where id=$1`,
     [repoId]
   );
 
-  return result.rows[0] ? mapRepoRow(result.rows[0]) : undefined;
+  return result.rows[0]
+    ? {
+        repo: mapRepoRow(result.rows[0]),
+        dataLevel: result.rows[0].data_level
+      }
+    : undefined;
 }
 
 export async function upsertPreferenceSignals(
@@ -2065,6 +2334,7 @@ function mapProviderRow(row: Record<string, any>): AiProvider {
 function normalizeProfileConfig(config: DiscoveryProfile["config"]): DiscoveryProfile["config"] {
   return {
     ...config,
+    limits: normalizeDiscoveryLimits(config.limits),
     opportunity: normalizeOpportunityProfile(config.opportunity),
     sources: normalizeDiscoverySources(config.sources)
   };
@@ -2081,6 +2351,10 @@ function mapJobRow(row: Record<string, any>): ScanJob {
     fetchedCount: row.fetched_count,
     processedCount: row.processed_count,
     analyzedCount: row.analyzed_count,
+    newRepoCount: Number(row.new_repo_count ?? 0),
+    updatedRepoCount: Number(row.updated_repo_count ?? 0),
+    unchangedRepoCount: Number(row.unchanged_repo_count ?? 0),
+    candidateCount: Number(row.candidate_count ?? 0),
     statusReason: row.error_message ?? undefined,
     startedAt: row.started_at ? toIso(row.started_at) : undefined,
     finishedAt: row.finished_at ? toIso(row.finished_at) : undefined,
@@ -2200,8 +2474,25 @@ function mapRecommendationRow(row: Record<string, any>): Recommendation {
       row.context_matches_json,
       reasonsJson.relatedUserRepos
     ),
+    cluster: normalizePersistedCluster(reasonsJson.cluster),
     status: row.status,
     createdAt: toIso(row.created_at)
+  };
+}
+
+function normalizePersistedCluster(value: unknown): Recommendation["cluster"] {
+  const object = value && typeof value === "object" ? normalizeJsonObject(value) : null;
+  if (!object) {
+    return undefined;
+  }
+
+  return {
+    key: String(object.key ?? ""),
+    label: String(object.label ?? "未分组"),
+    reason: String(object.reason ?? ""),
+    representativeTerms: normalizeStringArray(object.representativeTerms),
+    size: object.size === undefined ? undefined : Number(object.size),
+    rankInCluster: object.rankInCluster === undefined ? undefined : Number(object.rankInCluster)
   };
 }
 
@@ -2248,6 +2539,10 @@ function normalizePersistedOpportunity(value: unknown): OpportunityAnalysis | un
   };
 }
 
+function repoHasMaterialChanges(existing: RepoSummary, next: RepoSummary) {
+  return repoHasMaterialMetadataChanges(existing, next);
+}
+
 function normalizeSuggestedAction(value: unknown): OpportunityAnalysis["suggestedAction"] {
   return value === "build" ||
     value === "validate" ||
@@ -2283,13 +2578,17 @@ function buildPreferenceSignals(
   action: FeedbackAction
 ): Array<Omit<PreferenceSignal, "id" | "updatedAt">> {
   const delta =
-    action === "save" || action === "track"
+    action === "save" ||
+    action === "track" ||
+    action === "to_validate" ||
+    action === "validating" ||
+    action === "monetization_ready"
       ? 0.18
       : action === "like"
         ? 0.1
         : action === "hide"
           ? -0.18
-          : action === "dislike"
+          : action === "dislike" || action === "abandon"
             ? -0.1
             : 0;
 
@@ -2351,6 +2650,25 @@ function normalizeStringArray(value: unknown): string[] {
   }
 
   return [];
+}
+
+function toVector(vector: number[]) {
+  return `[${vector.map((value) => Number(value) || 0).join(",")}]`;
+}
+
+function parseVector(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map(Number);
+  }
+  if (typeof value !== "string") {
+    return [];
+  }
+
+  return value
+    .replace(/^\[|\]$/g, "")
+    .split(",")
+    .map((item) => Number(item.trim()))
+    .filter((item) => Number.isFinite(item));
 }
 
 function toIso(value: string | Date): string {

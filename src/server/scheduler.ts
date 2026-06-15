@@ -2,6 +2,7 @@ import type { DiscoveryProfile } from "@/lib/types";
 import {
   createScanJob,
   findActiveScanJobByProfile,
+  getAppSettings,
   getScheduleState,
   listProfiles,
   touchScheduleState
@@ -19,6 +20,11 @@ type SchedulePlan = {
 };
 
 export async function scheduleDueScanJobs(now = new Date()) {
+  const settings = await getAppSettings();
+  if (!settings.scanEnabled) {
+    return [];
+  }
+
   const profiles = (await listProfiles()).filter((profile) => profile.enabled);
   const created = [];
 

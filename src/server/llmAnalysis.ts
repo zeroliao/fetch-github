@@ -1,14 +1,36 @@
-import { chunkText } from "@/lib/text";
+import { compactMarkdownForAnalysis } from "@/lib/text";
 import type { DiscoveryProfile, OpportunityAnalysis, RepoSummary } from "@/lib/types";
 import { callChatJson } from "./aiClient";
 import { getAiProvider } from "./store";
 
-export const REPO_ANALYSIS_PROMPT_VERSION = "opportunity-radar-v1";
+export const REPO_ANALYSIS_PROMPT_VERSION = "opportunity-radar-v3";
+export const REPO_DELTA_ANALYSIS_PROMPT_VERSION = "opportunity-radar-delta-v1";
+const README_ANALYSIS_MAX_CHARS = 7000;
+const README_DELTA_ANALYSIS_MAX_CHARS = 2600;
 
 export interface RepoAnalysisInput {
   repo: RepoSummary;
   profile: DiscoveryProfile;
   readme: string;
+  previousAnalysis?: RepoAnalysisResult;
+  changeHint?: string;
+}
+
+export function buildRepoAnalysisPromptRepo(repo: RepoSummary) {
+  return {
+    fullName: repo.fullName,
+    description: repo.description,
+    primaryLanguage: repo.primaryLanguage,
+    topics: repo.topics,
+    stars: repo.stars,
+    forks: repo.forks,
+    openIssues: repo.openIssues,
+    pushedAt: repo.pushedAt,
+    updatedAt: repo.updatedAt,
+    archived: repo.archived,
+    fork: repo.fork,
+    private: repo.private ?? false
+  };
 }
 
 export interface RepoAnalysisResult {
@@ -34,11 +56,11 @@ export async function analyzeRepoWithLlm(
     throw new Error("Chat 模型配置不存在。");
   }
 
-  const chunks = chunkText(input.readme, 8000);
-  const readmeForPrompt =
-    chunks.length <= 1
-      ? input.readme
-      : chunks.map((chunk) => `Chunk ${chunk.index + 1}:\n${chunk.text}`).join("\n\n");
+  const isDelta = Boolean(input.previousAnalysis);
+  const readmeForPrompt = compactMarkdownForAnalysis(
+    input.readme,
+    isDelta ? README_DELTA_ANALYSIS_MAX_CHARS : README_ANALYSIS_MAX_CHARS
+  );
 
   const result = await callChatJson({
     provider,
@@ -46,51 +68,97 @@ export async function analyzeRepoWithLlm(
       {
         role: "system",
         content:
-          "你是商业机会雷达分析助手。你的目标不是普通技术推荐，而是判断 GitHub 项目是否暴露可变现机会。必须只返回合法 JSON，所有用户可见字段使用简体中文；技术名词、仓库名、模型名可以保留英文。"
+          "你是商业机会雷达。判断 GitHub 项目是否有变现机会。只返回合法 JSON。用户可见文本用简体中文，技术名词可保留英文。"
       },
       {
         role: "user",
-        content: JSON.stringify({
-          prompt_version: REPO_ANALYSIS_PROMPT_VERSION,
-          task: "分析候选 GitHub 仓库是否具备变现机会，并给出可执行的商业验证建议。",
-          repo: input.repo,
-          profile_preferences: input.profile.config.preferences,
-          opportunity_profile: input.profile.config.opportunity,
-          readme: readmeForPrompt,
-          language_requirement: "不要原样复制 GitHub 英文描述，需要用中文概括商业含义、目标客户、变现路径和验证动作。",
-          output_schema: {
-            summary: "简体中文 string，说明这个项目暴露了什么变现机会",
-            categories: ["简体中文 string"],
-            target_users: ["简体中文 string"],
-            core_features: ["简体中文 string"],
-            maturity: "简体中文 string",
-            is_match: "boolean",
-            match_score: "number 0..1",
-            confidence: "number 0..1",
-            matched_preferences: ["简体中文 string"],
-            risks: ["简体中文 string"],
-            recommendation_reason: "简体中文 string",
-            opportunity: {
-              type: "简体中文 string，例如 SaaS/工具机会、Agent 自动化机会、私有化部署机会、插件/扩展机会、内容/课程机会",
-              score: "number 0..1，综合机会分",
-              monetizationScore: "number 0..1，变现潜力",
-              growthSignal: "number 0..1，增长/市场信号",
-              executionFit: "number 0..1，落地执行匹配度",
-              differentiationSpace: "number 0..1，差异化空间",
-              technicalQuality: "number 0..1，技术质量",
-              targetCustomers: ["简体中文 string，谁可能付费"],
-              monetizationPaths: ["简体中文 string，可变现方式"],
-              validationSteps: ["简体中文 string，最小验证步骤"],
-              suggestedAction: "observe | track | validate | build | ignore",
-              evidence: ["简体中文 string，判断依据"]
-            }
-          }
-        })
+        content: isDelta
+          ? buildRepoDeltaAnalysisPrompt({
+              repo: input.repo,
+              profile: input.profile,
+              readme: readmeForPrompt,
+              compressed: readmeForPrompt.length < input.readme.length,
+              previousAnalysis: input.previousAnalysis,
+              changeHint: input.changeHint
+            })
+          : buildRepoAnalysisPrompt({
+              repo: input.repo,
+              profile: input.profile,
+              readme: readmeForPrompt,
+              compressed: readmeForPrompt.length < input.readme.length
+            })
       }
     ]
   });
 
   return normalizeAnalysis(result);
+}
+
+export function buildRepoDeltaAnalysisPrompt(input: {
+  repo: RepoSummary;
+  profile: DiscoveryProfile;
+  readme: string;
+  compressed: boolean;
+  previousAnalysis?: RepoAnalysisResult;
+  changeHint?: string;
+}) {
+  return JSON.stringify({
+    v: REPO_DELTA_ANALYSIS_PROMPT_VERSION,
+    task: "基于已有分析和变化摘要，重新评估变现机会。重点更新变化影响，不复述无变化内容。",
+    repo: buildRepoAnalysisPromptRepo(input.repo),
+    pref: input.profile.config.preferences,
+    opp: input.profile.config.opportunity,
+    previous: compactPreviousAnalysis(input.previousAnalysis),
+    changeHint: input.changeHint ?? "metadata_or_activity_changed",
+    changedContext: input.readme,
+    readmeCompressed: input.compressed,
+    output:
+      "返回完整 JSON，字段同 full prompt: summary,categories,target_users,core_features,maturity,is_match,match_score,confidence,matched_preferences,risks,recommendation_reason,opportunity{type,score,monetizationScore,growthSignal,executionFit,differentiationSpace,technicalQuality,targetCustomers,monetizationPaths,validationSteps,suggestedAction,evidence}. 用户可见文本用简体中文。"
+  });
+}
+
+function compactPreviousAnalysis(previous?: RepoAnalysisResult) {
+  if (!previous) {
+    return undefined;
+  }
+
+  return {
+    summary: previous.summary,
+    is_match: previous.is_match,
+    match_score: previous.match_score,
+    matched_preferences: previous.matched_preferences.slice(0, 8),
+    risks: previous.risks.slice(0, 6),
+    recommendation_reason: previous.recommendation_reason,
+    opportunity: previous.opportunity
+      ? {
+          type: previous.opportunity.type,
+          score: previous.opportunity.score,
+          monetizationScore: previous.opportunity.monetizationScore,
+          suggestedAction: previous.opportunity.suggestedAction,
+          monetizationPaths: previous.opportunity.monetizationPaths.slice(0, 5),
+          validationSteps: previous.opportunity.validationSteps.slice(0, 5)
+        }
+      : undefined
+  };
+}
+
+export function buildRepoAnalysisPrompt(input: {
+  repo: RepoSummary;
+  profile: DiscoveryProfile;
+  readme: string;
+  compressed: boolean;
+}) {
+  return JSON.stringify({
+    v: REPO_ANALYSIS_PROMPT_VERSION,
+    task: "评估变现机会，给可执行验证建议，不复述英文描述。",
+    repo: buildRepoAnalysisPromptRepo(input.repo),
+    pref: input.profile.config.preferences,
+    opp: input.profile.config.opportunity,
+    readme: input.readme,
+    readmeCompressed: input.compressed,
+    output:
+      "JSON keys: summary,categories,target_users,core_features,maturity,is_match,match_score,confidence,matched_preferences,risks,recommendation_reason,opportunity{type,score,monetizationScore,growthSignal,executionFit,differentiationSpace,technicalQuality,targetCustomers,monetizationPaths,validationSteps,suggestedAction,evidence}. Scores 0..1. suggestedAction=observe|track|validate|build|ignore."
+  });
 }
 
 function normalizeAnalysis(value: unknown): RepoAnalysisResult {

@@ -4,6 +4,8 @@ import {
   Activity,
   Brain,
   BarChart3,
+  ChevronDown,
+  ChevronRight,
   Database,
   ExternalLink,
   EyeOff,
@@ -18,6 +20,7 @@ import {
   Star,
   ThumbsDown,
   ThumbsUp,
+  ClipboardCheck,
   X
 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
@@ -86,6 +89,7 @@ export function DashboardClient({
   const [knowledgeSyncs, setKnowledgeSyncs] = useState(initialData.knowledgeSyncs);
   const [queueStats, setQueueStats] = useState(initialData.queueStats);
   const [operations, setOperations] = useState(initialData.operations);
+  const [settings, setSettings] = useState(initialData.settings);
   const [selectedProfileId, setSelectedProfileId] = useState(initialData.profiles[0]?.id ?? "");
   const [selectedRepo, setSelectedRepo] = useState<Recommendation | null>(null);
   const [showPasswordDialog, setShowPasswordDialog] = useState(false);
@@ -111,6 +115,7 @@ export function DashboardClient({
     if (dashboardResponse.ok) {
       const snapshot = await dashboardResponse.json() as DashboardSnapshot;
       setOperations(snapshot.operations);
+      setSettings(snapshot.settings);
     }
   }
 
@@ -120,7 +125,7 @@ export function DashboardClient({
   }
 
   async function startScan() {
-    if (!selectedProfileId) return;
+    if (!selectedProfileId || !settings.scanEnabled) return;
     setIsScanning(true);
     try {
       const response = await fetch("/api/scans", {
@@ -153,8 +158,7 @@ export function DashboardClient({
       setMessage(body.error ?? "反馈保存失败。");
       return;
     }
-    const status =
-      action === "save" ? "saved" : action === "hide" ? "hidden" : action === "track" ? "tracked" : recommendation.status;
+    const status = statusFromFeedbackAction(action, recommendation.status);
     setRecommendations((current) =>
       current.map((item) => (item.id === recommendation.id ? { ...item, status } : item))
     );
@@ -169,6 +173,24 @@ export function DashboardClient({
 
   function navigateSection(section: Section) {
     router.push(sectionPath(section));
+  }
+
+  async function toggleGlobalScan(enabled: boolean) {
+    const previous = settings;
+    setSettings({ ...settings, scanEnabled: enabled });
+    const response = await fetch("/api/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scanEnabled: enabled })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (response.ok) {
+      setSettings(body);
+      setMessage(enabled ? "全局扫描任务已开启。" : "全局扫描任务已关闭，不会启动新的扫描任务。");
+    } else {
+      setSettings(previous);
+      setMessage(body.error ?? "全局扫描开关更新失败。");
+    }
   }
 
   return (
@@ -203,6 +225,14 @@ export function DashboardClient({
             <p>{sectionSubtitle(activeSection)}</p>
           </div>
           <div className="toolbar-actions">
+            <label className="switch-row" title="关闭后不会创建、启动或恢复扫描任务">
+              <input
+                type="checkbox"
+                checked={settings.scanEnabled}
+                onChange={(event) => void toggleGlobalScan(event.target.checked)}
+              />
+              <span>全局扫描</span>
+            </label>
             <select className="select" value={selectedProfileId} onChange={(event) => setSelectedProfileId(event.target.value)}>
               {profiles.map((profile) => (
                 <option key={profile.id} value={profile.id}>
@@ -210,7 +240,7 @@ export function DashboardClient({
                 </option>
               ))}
             </select>
-            <button className="button primary" disabled={!selectedProfileId || isScanning} onClick={startScan} type="button">
+            <button className="button primary" disabled={!selectedProfileId || isScanning || !settings.scanEnabled} onClick={startScan} type="button">
               {isScanning ? <RefreshCw size={16} /> : <Play size={16} />}
               <span>立即扫描</span>
             </button>
@@ -255,8 +285,10 @@ export function DashboardClient({
         )}
         {activeSection === "github" && (
           <GitHubPanel
+            settings={settings}
             accounts={githubAccounts}
             repos={githubRepos}
+            onSettingsChanged={setSettings}
             onRepoUpdated={(repo) => setGithubRepos((current) => current.map((item) => (item.id === repo.id ? repo : item)))}
             onSynced={(accounts, repos) => {
               setGithubAccounts(accounts);
@@ -291,7 +323,14 @@ export function DashboardClient({
         )}
       </main>
 
-      {selectedRepo && <RepoDrawer recommendation={selectedRepo} onClose={() => setSelectedRepo(null)} onFeedback={sendFeedback} />}
+      {selectedRepo && (
+        <RepoDrawer
+          recommendation={selectedRepo}
+          recommendations={recommendations}
+          onClose={() => setSelectedRepo(null)}
+          onFeedback={sendFeedback}
+        />
+      )}
       {showPasswordDialog && <PasswordDialog onClose={() => setShowPasswordDialog(false)} />}
     </div>
   );
@@ -418,7 +457,9 @@ function RecommendationsPanel({
               <th>机会</th>
               <th>Stars</th>
               <th>语言</th>
+              <th>分组</th>
               <th>命中</th>
+              <th>解释</th>
               <th>动作</th>
               <th>状态</th>
               <th>操作</th>
@@ -449,11 +490,27 @@ function RecommendationsPanel({
                 <td>{recommendation.repo.stars.toLocaleString()}</td>
                 <td>{recommendation.repo.primaryLanguage}</td>
                 <td>
+                  <strong>{recommendation.cluster?.label ?? "未分组"}</strong>
+                  {recommendation.cluster?.size ? (
+                    <div className="muted">
+                      {recommendation.cluster.rankInCluster ?? "-"} / {recommendation.cluster.size}
+                    </div>
+                  ) : null}
+                </td>
+                <td>
                   <TagList items={recommendation.matchedPreferences.slice(0, 3)} />
+                </td>
+                <td className="explain-cell">
+                  <strong>{recommendation.reasons[0] ?? "综合评分较高"}</strong>
+                  <div className="muted">
+                    {recommendation.opportunity?.monetizationPaths[0]
+                      ? `变现方向：${recommendation.opportunity.monetizationPaths[0]}`
+                      : `变现分：${Math.round((recommendation.scores.monetization ?? recommendation.scores.final) * 100)}`}
+                  </div>
                 </td>
                 <td>{recommendation.opportunity ? opportunityActionText(recommendation.opportunity.suggestedAction) : "观察"}</td>
                 <td>
-                  <span className={`status ${recommendation.status}`}>{recommendation.status}</span>
+                  <span className={`status ${recommendation.status}`}>{recommendationStatusText(recommendation.status)}</span>
                 </td>
                 <td>
                   <div className="action-row">
@@ -480,13 +537,30 @@ function RecommendationsPanel({
 
 function RepoDrawer({
   recommendation,
+  recommendations,
   onClose,
   onFeedback
 }: {
   recommendation: Recommendation;
+  recommendations: Recommendation[];
   onClose: () => void;
   onFeedback: (recommendation: Recommendation, action: FeedbackAction) => Promise<void>;
 }) {
+  const similarRecommendations = recommendations.filter(
+    (item) =>
+      item.id !== recommendation.id &&
+      item.cluster?.key &&
+      item.cluster.key === recommendation.cluster?.key &&
+      item.status !== "hidden" &&
+      item.status !== "abandoned"
+  );
+
+  async function hideSimilarRecommendations() {
+    for (const item of similarRecommendations) {
+      await onFeedback(item, "hide");
+    }
+  }
+
   return (
     <div className="drawer-backdrop">
       <aside className="drawer" aria-label="项目详情">
@@ -508,10 +582,26 @@ function RepoDrawer({
               <ExternalLink size={15} />
               <span>打开 GitHub</span>
             </a>
+            <button className="button" onClick={() => onFeedback(recommendation, "to_validate")} type="button">
+              <ClipboardCheck size={15} />
+              待验证
+            </button>
+            <button className="button" onClick={() => onFeedback(recommendation, "validating")} type="button">验证中</button>
+            <button className="button" onClick={() => onFeedback(recommendation, "monetization_ready")} type="button">准备变现</button>
             <button className="button" onClick={() => onFeedback(recommendation, "save")} type="button">收藏</button>
             <button className="button" onClick={() => onFeedback(recommendation, "track")} type="button">跟踪</button>
+            <button className="button" onClick={() => onFeedback(recommendation, "abandon")} type="button">放弃</button>
+            <button className="button" onClick={() => void hideSimilarRecommendations()} disabled={similarRecommendations.length === 0} type="button">
+              隐藏类似项目
+            </button>
             <button className="button" onClick={() => onFeedback(recommendation, "hide")} type="button">隐藏</button>
           </div>
+          <DetailSection title="当前状态">{recommendationStatusText(recommendation.status)}</DetailSection>
+          {recommendation.cluster && (
+            <DetailSection title="项目分组">
+              {`${recommendation.cluster.label}。${recommendation.cluster.reason} 组内第 ${recommendation.cluster.rankInCluster ?? "-"} / ${recommendation.cluster.size ?? 1}。`}
+            </DetailSection>
+          )}
           <DetailSection title="项目摘要">{getRecommendationSummaryZh(recommendation)}</DetailSection>
           {recommendation.opportunity && (
             <>
@@ -520,7 +610,7 @@ function RepoDrawer({
               </DetailSection>
               <ListSection title="目标客户" items={recommendation.opportunity.targetCustomers} />
               <ListSection title="变现路径" items={recommendation.opportunity.monetizationPaths} />
-              <ListSection title="最小验证步骤" items={recommendation.opportunity.validationSteps} />
+              <ChecklistSection title="机会验证清单" items={recommendation.opportunity.validationSteps} />
               <ListSection title="机会依据" items={recommendation.opportunity.evidence} />
             </>
           )}
@@ -531,6 +621,10 @@ function RepoDrawer({
           <ListSection title="匹配信号" items={buildMatchSignals(recommendation)} />
           <ListSection title="风险点" items={recommendation.risks} />
           <ListSection title="关联我的项目" items={recommendation.relatedUserRepos.map((repo) => `${repo.fullName}: ${repo.reason}`)} />
+          <ListSection
+            title="同组类似项目"
+            items={similarRecommendations.slice(0, 8).map((item) => `${item.repo.fullName}：${getRecommendationSummaryZh(item)}`)}
+          />
         </div>
       </aside>
     </div>
@@ -821,6 +915,17 @@ function ProfilesPanel({
               <Field label="LLM Top K">
                 <input className="input" type="number" min={1} value={limits.llmAnalyzeTopK} onChange={(event) => setLimits({ ...limits, llmAnalyzeTopK: Number(event.target.value) })} />
               </Field>
+              <Field label="LLM 语义阈值">
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={limits.semanticFitThreshold ?? 0.42}
+                  onChange={(event) => setLimits({ ...limits, semanticFitThreshold: Number(event.target.value) })}
+                />
+              </Field>
               <Field label="最终推荐 Top K">
                 <input className="input" type="number" min={1} value={limits.finalReportTopK} onChange={(event) => setLimits({ ...limits, finalReportTopK: Number(event.target.value) })} />
               </Field>
@@ -1008,6 +1113,10 @@ function JobsPanel({
                 <th>状态</th>
                 <th>阶段</th>
                 <th>已抓取</th>
+                <th>新增项目</th>
+                <th>更新项目</th>
+                <th>未变化</th>
+                <th>候选项目</th>
                 <th>已处理</th>
                 <th>已分析</th>
                 <th>操作</th>
@@ -1015,7 +1124,7 @@ function JobsPanel({
             </thead>
             <tbody>
               {jobs.length === 0 ? (
-                <tr><td colSpan={7} className="muted">暂无扫描任务</td></tr>
+                <tr><td colSpan={11} className="muted">暂无扫描任务</td></tr>
               ) : (
                 jobs.map((job) => (
                   <tr key={job.id}>
@@ -1025,7 +1134,11 @@ function JobsPanel({
                       {(job.statusReason || job.errorMessage) && <div className="muted">{job.statusReason ?? job.errorMessage}</div>}
                     </td>
                     <td>{job.stage}</td>
-                    <td>{job.fetchedCount} / {job.maxCandidates}</td>
+                    <td>{job.fetchedCount}</td>
+                    <td>{job.newRepoCount}</td>
+                    <td>{job.updatedRepoCount}</td>
+                    <td>{job.unchangedRepoCount}</td>
+                    <td>{job.candidateCount} / {job.maxCandidates}</td>
                     <td>{job.processedCount}</td>
                     <td>{job.analyzedCount}</td>
                     <td>
@@ -1047,13 +1160,17 @@ function JobsPanel({
 }
 
 function GitHubPanel({
+  settings,
   accounts,
   repos,
+  onSettingsChanged,
   onRepoUpdated,
   onSynced
 }: {
+  settings: DashboardSnapshot["settings"];
   accounts: GithubAccount[];
   repos: UserGitHubRepo[];
+  onSettingsChanged: (settings: DashboardSnapshot["settings"]) => void;
   onRepoUpdated: (repo: UserGitHubRepo) => void;
   onSynced: (accounts: GithubAccount[], repos: UserGitHubRepo[]) => void;
 }) {
@@ -1113,6 +1230,21 @@ function GitHubPanel({
     }
   }
 
+  async function toggleAutoSync(enabled: boolean) {
+    const response = await fetch("/api/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ githubAutoSyncEnabled: enabled })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (response.ok) {
+      onSettingsChanged(body);
+      setMessage(enabled ? "GitHub 每日被动同步已开启。" : "GitHub 每日被动同步已关闭。");
+    } else {
+      setMessage(body.error ?? "GitHub 自动同步设置更新失败。");
+    }
+  }
+
   async function toggleSelected(repo: UserGitHubRepo) {
     const response = await fetch(`/api/github-context/repos/${repo.id}`, {
       method: "PATCH",
@@ -1152,6 +1284,23 @@ function GitHubPanel({
           <div className="action-row wrap">
             <label className="checkbox-row"><input type="checkbox" checked={includeOwned} onChange={(event) => setIncludeOwned(event.target.checked)} /> owned</label>
             <label className="checkbox-row"><input type="checkbox" checked={includeStarred} onChange={(event) => setIncludeStarred(event.target.checked)} /> starred</label>
+          </div>
+        </div>
+        <div className="row-item">
+          <strong>被动同步</strong>
+          <span className="muted">
+            每 {settings.githubAutoSyncIntervalHours} 小时最多同步一次
+            {settings.githubLastAutoSyncedAt ? `，上次成功：${formatTime(settings.githubLastAutoSyncedAt)}` : "，尚未自动同步"}
+          </span>
+          <div className="action-row wrap">
+            <label className="switch-row">
+              <input
+                type="checkbox"
+                checked={settings.githubAutoSyncEnabled}
+                onChange={(event) => void toggleAutoSync(event.target.checked)}
+              />
+              <span>每日同步 GitHub</span>
+            </label>
           </div>
         </div>
         <div className="row-item">
@@ -1339,7 +1488,10 @@ function KnowledgePanel({
   const [isSyncing, setIsSyncing] = useState(false);
   const [target, setTarget] = useState("local-derived-index");
   const [minScore, setMinScore] = useState(0.8);
-  const candidates = recommendations.filter((item) => item.status === "saved" || item.status === "tracked" || item.scores.final >= minScore);
+  const candidates = recommendations.filter((item) =>
+    ["saved", "tracked", "to_validate", "validating", "monetization_ready"].includes(item.status) ||
+    item.scores.final >= minScore
+  );
 
   async function runSync() {
     setIsSyncing(true);
@@ -1427,6 +1579,8 @@ function OperationsPanel({
   queueStats: DashboardSnapshot["queueStats"];
   onRefresh: () => Promise<void>;
 }) {
+  const alerts = buildOperationAlerts(operations, queueStats);
+
   return (
     <div className="stack">
       <section className="panel">
@@ -1446,13 +1600,17 @@ function OperationsPanel({
           <SummaryTile icon={Database} label="Token 用量" value={operations.aiCostSummary.totalTokens.toLocaleString()} />
           <SummaryTile icon={BarChart3} label="估算成本 USD" value={formatUsd(operations.aiCostSummary.estimatedCostUsd)} />
         </div>
+        {alerts.length > 0 && (
+          <div className="alert-list">
+            {alerts.map((alert) => (
+              <div className={`alert ${alert.level}`} key={alert.text}>{alert.text}</div>
+            ))}
+          </div>
+        )}
       </section>
 
-      <section className="panel">
-        <div className="panel-header">
-          <div className="panel-title"><h2>资源调节事件</h2><p>ResourceGovernor 记录的批量大小和内存状态。</p></div>
-        </div>
-        <div className="table-wrap">
+      <CollapsiblePanel title="资源调节事件" subtitle="ResourceGovernor 记录的批量大小和内存状态。">
+        <div className="table-wrap module-scroll">
           <table className="repo-table">
             <thead><tr><th>时间</th><th>任务</th><th>阶段</th><th>状态</th><th>可用 MB</th><th>RSS MB</th><th>批量</th><th>原因</th></tr></thead>
             <tbody>
@@ -1471,13 +1629,10 @@ function OperationsPanel({
             </tbody>
           </table>
         </div>
-      </section>
+      </CollapsiblePanel>
 
-      <section className="panel">
-        <div className="panel-header">
-          <div className="panel-title"><h2>AI 作业与成本</h2><p>成本按 provider 可选 pricing 配置估算；未配置价格时为 0。</p></div>
-        </div>
-        <div className="table-wrap">
+      <CollapsiblePanel title="AI 作业与成本" subtitle="成本按 provider 可选 pricing 配置估算；未配置价格时为 0。">
+        <div className="table-wrap module-scroll">
           <table className="repo-table">
             <thead><tr><th>时间</th><th>项目</th><th>Provider</th><th>模型</th><th>状态</th><th>Prompt</th><th>Completion</th><th>成本</th></tr></thead>
             <tbody>
@@ -1496,15 +1651,39 @@ function OperationsPanel({
             </tbody>
           </table>
         </div>
-      </section>
+      </CollapsiblePanel>
 
-      <section className="panel">
-        <div className="panel-header">
-          <div className="panel-title"><h2>候选队列</h2><p>扫描任务在各阶段的待处理、运行和重试数量。</p></div>
-        </div>
+      <CollapsiblePanel title="候选队列" subtitle="扫描任务在各阶段的待处理、运行和重试数量。">
         <SimpleStatsTable rows={queueStats.map((stat) => [stat.stage, stat.status, String(stat.count)])} emptyText="暂无候选队列" />
-      </section>
+      </CollapsiblePanel>
     </div>
+  );
+}
+
+function CollapsiblePanel({
+  title,
+  subtitle,
+  children,
+  defaultOpen = true
+}: {
+  title: string;
+  subtitle?: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    <section className="panel collapsible-panel">
+      <button className="panel-header collapsible-header" type="button" onClick={() => setOpen(!open)}>
+        <div className="panel-title">
+          <h2>{title}</h2>
+          {subtitle && <p>{subtitle}</p>}
+        </div>
+        {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+      </button>
+      {open && children}
+    </section>
   );
 }
 
@@ -1578,6 +1757,26 @@ function ListSection({ title, items }: { title: string; items: string[] }) {
   return <section className="detail-section"><h3>{title}</h3>{items.length === 0 ? <p>暂无</p> : <ul>{items.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul>}</section>;
 }
 
+function ChecklistSection({ title, items }: { title: string; items: string[] }) {
+  return (
+    <section className="detail-section">
+      <h3>{title}</h3>
+      {items.length === 0 ? (
+        <p>暂无</p>
+      ) : (
+        <ul className="check-list">
+          {items.map((item, index) => (
+            <li key={`${item}-${index}`}>
+              <input type="checkbox" aria-label={`验证步骤 ${index + 1}`} />
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function buildMatchSignals(recommendation: Recommendation) {
   return [
     recommendation.matchedPreferences.length
@@ -1591,6 +1790,100 @@ function buildMatchSignals(recommendation: Recommendation) {
     `机会分：${Math.round((recommendation.scores.opportunity ?? recommendation.scores.final) * 100)}，变现分：${Math.round((recommendation.scores.monetization ?? recommendation.scores.llmMatch) * 100)}，增长信号：${Math.round((recommendation.scores.growth ?? recommendation.scores.rule) * 100)}`,
     `规则分：${Math.round(recommendation.scores.rule * 100)}，上下文分：${Math.round(recommendation.scores.githubContextFit * 100)}，LLM 分：${Math.round(recommendation.scores.llmMatch * 100)}`
   ].filter(Boolean);
+}
+
+function buildOperationAlerts(
+  operations: DashboardSnapshot["operations"],
+  queueStats: DashboardSnapshot["queueStats"]
+) {
+  const alerts: Array<{ level: "warning" | "danger"; text: string }> = [];
+  const failedAiJobs = operations.aiJobs.filter((job) => job.status === "failed");
+  const retryQueue = queueStats
+    .filter((stat) => stat.status === "failed" || stat.status === "pending")
+    .filter((stat) => stat.stage === "llm" || stat.stage === "embed");
+  const pressureEvents = operations.resourceEvents.filter(
+    (event) => event.status === "paused_by_memory" || event.status === "throttled"
+  );
+  const rateLimitJobs = operations.aiJobs.filter((job) =>
+    `${job.providerName ?? ""} ${job.model} ${job.status}`.toLowerCase().includes("rate")
+  );
+
+  if (pressureEvents.length > 0) {
+    alerts.push({
+      level: pressureEvents.some((event) => event.status === "paused_by_memory") ? "danger" : "warning",
+      text: `资源调节触发 ${pressureEvents.length} 次，最近一次：${pressureEvents[0].reason}`
+    });
+  }
+  if (failedAiJobs.length > 0) {
+    alerts.push({
+      level: "danger",
+      text: `最近有 ${failedAiJobs.length} 个 AI 作业失败，请检查 provider、API key 或模型响应。`
+    });
+  }
+  if (rateLimitJobs.length > 0) {
+    alerts.push({
+      level: "warning",
+      text: `检测到疑似 rate limit，请降低批量或调整 provider 限速配置。`
+    });
+  }
+  for (const stat of retryQueue.slice(0, 3)) {
+    if (stat.count > 0) {
+      alerts.push({
+        level: stat.status === "failed" ? "danger" : "warning",
+        text: `${stat.stage} 阶段 ${stat.status} 队列还有 ${stat.count} 个候选。`
+      });
+    }
+  }
+
+  return alerts.slice(0, 5);
+}
+
+function recommendationStatusText(status: Recommendation["status"]) {
+  switch (status) {
+    case "new":
+      return "新发现";
+    case "viewed":
+      return "已查看";
+    case "saved":
+      return "已收藏";
+    case "hidden":
+      return "已隐藏";
+    case "tracked":
+      return "重点跟踪";
+    case "to_validate":
+      return "待验证";
+    case "validating":
+      return "验证中";
+    case "monetization_ready":
+      return "准备变现";
+    case "abandoned":
+      return "已放弃";
+  }
+}
+
+function statusFromFeedbackAction(
+  action: FeedbackAction,
+  fallback: Recommendation["status"]
+): Recommendation["status"] {
+  switch (action) {
+    case "save":
+      return "saved";
+    case "hide":
+      return "hidden";
+    case "track":
+      return "tracked";
+    case "to_validate":
+      return "to_validate";
+    case "validating":
+      return "validating";
+    case "monetization_ready":
+      return "monetization_ready";
+    case "abandon":
+      return "abandoned";
+    case "like":
+    case "dislike":
+      return fallback;
+  }
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

@@ -9,6 +9,7 @@ import {
   normalizeOpportunityProfile,
   scoreOpportunitySignals
 } from "@/lib/opportunity";
+import { inferRecommendationCluster } from "@/lib/repoCluster";
 import type {
   DiscoveryProfile,
   PreferenceSignal,
@@ -181,6 +182,7 @@ export function buildRecommendation(
         : [],
     matchedPreferences,
     relatedUserRepos,
+    cluster: inferRecommendationCluster(repo, opportunity.type),
     status: "new",
     createdAt: new Date().toISOString()
   };

@@ -6,8 +6,10 @@ import {
 import {
   listGithubRepos,
   listProfiles,
+  getAppSettings,
   replaceUserRepos,
   rebuildRecommendationScores,
+  updateAppSettings,
   upsertGithubAccount
 } from "./store";
 
@@ -72,4 +74,47 @@ export async function syncGitHubContext(options: SyncGitHubContextOptions = {}) 
     includeOwned,
     includeStarred
   };
+}
+
+export async function syncGitHubContextIfDue(now = new Date()) {
+  const settings = await getAppSettings();
+  if (!settings.githubAutoSyncEnabled) {
+    return { skipped: true, reason: "disabled" };
+  }
+  if (!process.env.GITHUB_TOKEN) {
+    await updateAppSettings({ githubLastAutoSyncAttemptAt: now.toISOString() });
+    return { skipped: true, reason: "missing_github_token" };
+  }
+
+  const intervalMs = settings.githubAutoSyncIntervalHours * 60 * 60 * 1000;
+  const lastSyncAt = parseOptionalDate(settings.githubLastAutoSyncedAt);
+  const lastAttemptAt = parseOptionalDate(settings.githubLastAutoSyncAttemptAt);
+  const lastRunAt = [lastSyncAt, lastAttemptAt]
+    .filter((date): date is Date => Boolean(date))
+    .sort((a, b) => b.getTime() - a.getTime())[0];
+
+  if (lastRunAt && now.getTime() - lastRunAt.getTime() < intervalMs) {
+    return { skipped: true, reason: "not_due" };
+  }
+
+  await updateAppSettings({ githubLastAutoSyncAttemptAt: now.toISOString() });
+  const result = await syncGitHubContext();
+  await updateAppSettings({
+    githubLastAutoSyncedAt: now.toISOString(),
+    githubLastAutoSyncAttemptAt: now.toISOString()
+  });
+
+  return {
+    skipped: false,
+    ...result
+  };
+}
+
+function parseOptionalDate(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date : undefined;
 }

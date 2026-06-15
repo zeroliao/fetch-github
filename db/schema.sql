@@ -122,6 +122,10 @@ CREATE TABLE IF NOT EXISTS discovery_jobs (
   fetched_count INTEGER NOT NULL DEFAULT 0,
   processed_count INTEGER NOT NULL DEFAULT 0,
   analyzed_count INTEGER NOT NULL DEFAULT 0,
+  new_repo_count INTEGER NOT NULL DEFAULT 0,
+  updated_repo_count INTEGER NOT NULL DEFAULT 0,
+  unchanged_repo_count INTEGER NOT NULL DEFAULT 0,
+  candidate_count INTEGER NOT NULL DEFAULT 0,
   started_at TIMESTAMPTZ,
   finished_at TIMESTAMPTZ,
   error_message TEXT,
@@ -182,6 +186,17 @@ CREATE TABLE IF NOT EXISTS repo_embeddings (
   vector vector,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(repo_id, provider_id, content_hash)
+);
+
+CREATE TABLE IF NOT EXISTS embedding_cache (
+  id TEXT PRIMARY KEY,
+  cache_key TEXT NOT NULL UNIQUE,
+  provider_id TEXT NOT NULL REFERENCES ai_providers(id),
+  model TEXT NOT NULL,
+  dimensions INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  vector vector,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS llm_jobs (

@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { defaultDiscoverySources, normalizeDiscoverySources } from "../src/lib/discoverySources";
+import { shouldAnalyzeDiscoveredRepo } from "../src/lib/repoRefresh";
 import { ensureChineseSummary } from "../src/lib/recommendationText";
+import {
+  normalizeSemanticFitThreshold,
+  shouldDeferLlmBySemanticFit
+} from "../src/lib/semanticGate";
+import { annotateRecommendationClusters, inferRecommendationCluster } from "../src/lib/repoCluster";
+import { compactMarkdownForAnalysis } from "../src/lib/text";
 import type { DiscoveryProfile } from "../src/lib/types";
 import { buildGitHubSearchQueryPlans } from "../src/server/githubSearch";
 import { buildRecommendationMarkdown } from "../src/server/knowledgeSync";
+import { buildRepoAnalysisPrompt, buildRepoDeltaAnalysisPrompt } from "../src/server/llmAnalysis";
 import {
   buildDiscoveryPreview,
   heuristicDiscoveryPreferences
@@ -38,6 +46,7 @@ const baseProfile: DiscoveryProfile = {
       detailFetchTopK: 300,
       embeddingTopK: 1000,
       llmAnalyzeTopK: 100,
+      semanticFitThreshold: 0.42,
       finalReportTopK: 30
     },
     preferences: {
@@ -74,11 +83,74 @@ const baseProfile: DiscoveryProfile = {
   }
 };
 
+const baseRepo = {
+  id: "repo-refresh",
+  githubId: 1,
+  fullName: "example/refresh",
+  owner: "example",
+  name: "refresh",
+  htmlUrl: "https://github.com/example/refresh",
+  description: "AI workflow tool",
+  primaryLanguage: "TypeScript",
+  topics: ["ai", "workflow"],
+  stars: 1000,
+  forks: 100,
+  openIssues: 10,
+  pushedAt: "2026-06-01T00:00:00.000Z",
+  updatedAt: "2026-06-01T00:00:00.000Z",
+  archived: false,
+  fork: false
+};
+
 test("GitHub Search 查询会拆分多个 keyword，而不是塞进同一条 query", () => {
   const plans = buildGitHubSearchQueryPlans(baseProfile);
   assert.ok(plans.some((plan) => plan.query.startsWith("agent ")));
   assert.ok(plans.some((plan) => plan.query.startsWith("workflow ")));
   assert.ok(!plans.some((plan) => plan.query.startsWith("agent workflow ")));
+});
+
+test("incremental scan skips unchanged repositories that were already deeply analyzed", () => {
+  const decision = shouldAnalyzeDiscoveredRepo({
+    existing: baseRepo,
+    existingDataLevel: "L3",
+    next: { ...baseRepo }
+  });
+
+  assert.equal(decision.shouldAnalyze, false);
+  assert.equal(decision.reason, "unchanged_snapshot_only");
+});
+
+test("incremental scan re-analyzes new, shallow, or significantly changed repositories", () => {
+  assert.equal(
+    shouldAnalyzeDiscoveredRepo({
+      next: baseRepo
+    }).reason,
+    "new_repo"
+  );
+  assert.equal(
+    shouldAnalyzeDiscoveredRepo({
+      existing: baseRepo,
+      existingDataLevel: "L0",
+      next: { ...baseRepo }
+    }).reason,
+    "not_deep_analyzed"
+  );
+  assert.equal(
+    shouldAnalyzeDiscoveredRepo({
+      existing: baseRepo,
+      existingDataLevel: "L3",
+      next: { ...baseRepo, stars: 1250 }
+    }).reason,
+    "growth_signal_changed"
+  );
+  assert.equal(
+    shouldAnalyzeDiscoveredRepo({
+      existing: baseRepo,
+      existingDataLevel: "L3",
+      next: { ...baseRepo, description: "AI workflow monetization tool" }
+    }).reason,
+    "metadata_changed"
+  );
 });
 
 test("查询计划会去重", () => {
@@ -416,6 +488,143 @@ test("旧版包含原始英文描述的摘要会重建为中文展示摘要", ()
   assert.doesNotMatch(summary, /原始描述/);
 });
 
+test("长 README 会压缩为保留商业分析信号的输入", () => {
+  const readme = [
+    "# Opportunity Tool",
+    "A short intro.",
+    "## Features",
+    "- Self-hosted deployment",
+    "- API integration",
+    "## Usage",
+    "```ts",
+    "const app = createApp();",
+    "app.start();",
+    "```",
+    "x".repeat(20000),
+    "## License",
+    "MIT"
+  ].join("\n");
+
+  const compacted = compactMarkdownForAnalysis(readme, 1200);
+  assert.ok(compacted.length <= 1200);
+  assert.match(compacted, /# Opportunity Tool/);
+  assert.match(compacted, /Self-hosted deployment/);
+  assert.match(compacted, /API integration/);
+  assert.match(compacted, /License/);
+});
+
+test("LLM 分析 prompt 会使用紧凑协议和压缩 README", () => {
+  const prompt = buildRepoAnalysisPrompt({
+    repo: baseRepo,
+    profile: baseProfile,
+    readme: compactMarkdownForAnalysis(
+      [
+        "# Opportunity Tool",
+        "A short intro.",
+        "## Features",
+        "- Self-hosted deployment",
+        "- API integration",
+        "x".repeat(12000)
+      ].join("\n"),
+      7000
+    ),
+    compressed: true
+  });
+
+  assert.ok(prompt.length < 9000);
+  assert.match(prompt, /Self-hosted deployment/);
+  assert.match(prompt, /JSON keys/);
+  assert.doesNotMatch(prompt, /output_schema/);
+});
+
+test("语义门控只延后低相关项目，不延后高优先级或高机会项目", () => {
+  assert.equal(normalizeSemanticFitThreshold(undefined), 0.42);
+  assert.equal(
+    shouldDeferLlmBySemanticFit({
+      semanticFit: 0.2,
+      threshold: 0.42,
+      priorityScore: 0.4,
+      opportunityScore: 0.3,
+      minOpportunityScore: 0.55
+    }),
+    true
+  );
+  assert.equal(
+    shouldDeferLlmBySemanticFit({
+      semanticFit: 0.2,
+      threshold: 0.42,
+      priorityScore: 0.8,
+      opportunityScore: 0.3,
+      minOpportunityScore: 0.55
+    }),
+    false
+  );
+  assert.equal(
+    shouldDeferLlmBySemanticFit({
+      semanticFit: 0.2,
+      threshold: 0.42,
+      priorityScore: 0.4,
+      opportunityScore: 0.7,
+      minOpportunityScore: 0.55
+    }),
+    false
+  );
+});
+
+test("重新分析 delta prompt 使用旧分析和更短上下文", () => {
+  const readme = [
+    "# Opportunity Tool",
+    "A short intro.",
+    "## Features",
+    "- Self-hosted deployment",
+    "- API integration",
+    "x".repeat(12000)
+  ].join("\n");
+  const fullPrompt = buildRepoAnalysisPrompt({
+    repo: baseRepo,
+    profile: baseProfile,
+    readme: compactMarkdownForAnalysis(readme, 7000),
+    compressed: true
+  });
+  const deltaPrompt = buildRepoDeltaAnalysisPrompt({
+    repo: baseRepo,
+    profile: baseProfile,
+    readme: compactMarkdownForAnalysis(readme, 2600),
+    compressed: true,
+    previousAnalysis: {
+      summary: "已有中文摘要",
+      categories: ["AI"],
+      target_users: ["开发者"],
+      core_features: ["workflow"],
+      maturity: "growth",
+      is_match: true,
+      match_score: 0.8,
+      confidence: 0.7,
+      matched_preferences: ["agent"],
+      risks: ["维护风险"],
+      recommendation_reason: "适合包装成托管服务。",
+      opportunity: {
+        type: "SaaS/工具机会",
+        score: 0.75,
+        monetizationScore: 0.7,
+        growthSignal: 0.6,
+        executionFit: 0.8,
+        differentiationSpace: 0.6,
+        technicalQuality: 0.7,
+        targetCustomers: ["开发者"],
+        monetizationPaths: ["托管版 SaaS"],
+        validationSteps: ["访谈 3 个潜在客户"],
+        suggestedAction: "validate",
+        evidence: ["stars 增长明显"]
+      }
+    }
+  });
+
+  assert.ok(deltaPrompt.length < fullPrompt.length);
+  assert.match(deltaPrompt, /previous/);
+  assert.match(deltaPrompt, /完整 JSON/);
+});
+
 test("知识库 Markdown 会包含推荐理由和关联项目解释", () => {
   const recommendation = buildRecommendation(
     {
@@ -458,4 +667,47 @@ test("知识库 Markdown 会包含推荐理由和关联项目解释", () => {
   assert.match(markdown, /## Reasons/);
   assert.match(markdown, /## Related User Repositories/);
   assert.match(markdown, /me\/fetchGithub/);
+});
+
+test("推荐项目会按主题生成轻量分组并计算组内位置", () => {
+  const agentCluster = inferRecommendationCluster(
+    {
+      ...baseRepo,
+      id: "agent-repo",
+      fullName: "example/agent-workflow",
+      description: "AI agent workflow automation platform",
+      topics: ["agent", "workflow"]
+    },
+    "Agent 自动化机会"
+  );
+  assert.equal(agentCluster.key, "ai-agent-workflow");
+
+  const first = buildRecommendation(
+    {
+      ...baseRepo,
+      id: "cluster-1",
+      fullName: "example/agent-one",
+      description: "AI agent workflow tool",
+      stars: 2000
+    },
+    baseProfile,
+    1
+  );
+  const second = buildRecommendation(
+    {
+      ...baseRepo,
+      id: "cluster-2",
+      fullName: "example/agent-two",
+      description: "AI agent automation toolkit",
+      stars: 1000
+    },
+    baseProfile,
+    2
+  );
+  const grouped = annotateRecommendationClusters([second, first]);
+
+  assert.equal(grouped[0].cluster?.key, "ai-agent-workflow");
+  assert.equal(grouped[0].cluster?.size, 2);
+  assert.equal(grouped[0].cluster?.rankInCluster, 1);
+  assert.equal(grouped[1].cluster?.rankInCluster, 2);
 });

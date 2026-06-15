@@ -10,6 +10,7 @@ import type {
 } from "./types";
 import { defaultDiscoverySources } from "./discoverySources";
 import { defaultOpportunityProfile } from "./opportunity";
+import { defaultAppSettings } from "./settings";
 
 const now = new Date().toISOString();
 
@@ -72,6 +73,7 @@ export const seedProfiles: DiscoveryProfile[] = [
         detailFetchTopK: 300,
         embeddingTopK: 1000,
         llmAnalyzeTopK: 100,
+        semanticFitThreshold: 0.42,
         finalReportTopK: 30
       },
       preferences: {
@@ -290,12 +292,17 @@ export const seedJobs: ScanJob[] = [
     fetchedCount: 340,
     processedCount: 210,
     analyzedCount: 24,
+    newRepoCount: 0,
+    updatedRepoCount: 0,
+    unchangedRepoCount: 0,
+    candidateCount: 210,
     startedAt: now,
     createdAt: now
   }
 ];
 
 export const seedSnapshot: DashboardSnapshot = {
+  settings: defaultAppSettings,
   profiles: seedProfiles,
   aiProviders: seedProviders,
   recommendations: seedRecommendations,

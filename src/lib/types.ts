@@ -19,7 +19,16 @@ export type JobStage =
   | "rank"
   | "sync";
 
-export type FeedbackAction = "save" | "hide" | "like" | "dislike" | "track";
+export type FeedbackAction =
+  | "save"
+  | "hide"
+  | "like"
+  | "dislike"
+  | "track"
+  | "to_validate"
+  | "validating"
+  | "monetization_ready"
+  | "abandon";
 export type RepoDataLevel = "L0" | "L1" | "L2" | "L3" | "L4";
 export type DiscoverySourceId =
   | "github_search_preferences"
@@ -81,10 +90,11 @@ export interface DiscoveryProfileConfig {
     sourceLimitPerQuery: number;
     maxCandidates: number;
     ruleFilterTopK: number;
-    detailFetchTopK: number;
-    embeddingTopK: number;
-    llmAnalyzeTopK: number;
-    finalReportTopK: number;
+      detailFetchTopK: number;
+      embeddingTopK: number;
+      llmAnalyzeTopK: number;
+      semanticFitThreshold?: number;
+      finalReportTopK: number;
   };
   preferences: {
     keywords: string[];
@@ -178,8 +188,27 @@ export interface Recommendation {
     reason: string;
     score: number;
   }>;
-  status: "new" | "viewed" | "saved" | "hidden" | "tracked";
+  cluster?: RecommendationCluster;
+  status:
+    | "new"
+    | "viewed"
+    | "saved"
+    | "hidden"
+    | "tracked"
+    | "to_validate"
+    | "validating"
+    | "monetization_ready"
+    | "abandoned";
   createdAt: string;
+}
+
+export interface RecommendationCluster {
+  key: string;
+  label: string;
+  reason: string;
+  representativeTerms: string[];
+  size?: number;
+  rankInCluster?: number;
 }
 
 export interface OpportunityAnalysis {
@@ -207,6 +236,10 @@ export interface ScanJob {
   fetchedCount: number;
   processedCount: number;
   analyzedCount: number;
+  newRepoCount: number;
+  updatedRepoCount: number;
+  unchangedRepoCount: number;
+  candidateCount: number;
   statusReason?: string;
   startedAt?: string;
   finishedAt?: string;
@@ -324,7 +357,38 @@ export interface PreferenceSignal {
   updatedAt: string;
 }
 
+export interface AppSettings {
+  scanEnabled: boolean;
+  githubAutoSyncEnabled: boolean;
+  githubAutoSyncIntervalHours: number;
+  githubLastAutoSyncedAt?: string;
+  githubLastAutoSyncAttemptAt?: string;
+}
+
+export interface UpsertRepoStats {
+  newCount: number;
+  updatedCount: number;
+  unchangedCount: number;
+  repos: Array<{
+    repo: RepoSummary;
+    status: "new" | "updated" | "unchanged";
+    existingDataLevel?: RepoDataLevel;
+    shouldAnalyze: boolean;
+    analyzeReason: string;
+  }>;
+}
+
+export interface CachedEmbedding {
+  providerId: string;
+  model: string;
+  dimensions: number;
+  contentHash: string;
+  vector: number[];
+  createdAt?: string;
+}
+
 export interface DashboardSnapshot {
+  settings: AppSettings;
   profiles: DiscoveryProfile[];
   aiProviders: AiProvider[];
   recommendations: Recommendation[];

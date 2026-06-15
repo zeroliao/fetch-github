@@ -52,6 +52,7 @@ export const profileSchema = z.object({
       detailFetchTopK: z.number().int().positive(),
       embeddingTopK: z.number().int().positive(),
       llmAnalyzeTopK: z.number().int().positive(),
+      semanticFitThreshold: z.number().min(0).max(1).optional(),
       finalReportTopK: z.number().int().positive()
     }),
     preferences: z.object({
@@ -106,6 +107,16 @@ export const profileSchema = z.object({
 
 export const feedbackSchema = z.object({
   profileId: z.string().min(1),
-  action: z.enum(["save", "hide", "like", "dislike", "track"]),
+  action: z.enum([
+    "save",
+    "hide",
+    "like",
+    "dislike",
+    "track",
+    "to_validate",
+    "validating",
+    "monetization_ready",
+    "abandon"
+  ]),
   note: z.string().optional()
 });

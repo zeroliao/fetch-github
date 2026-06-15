@@ -1,6 +1,7 @@
 import { loadLocalEnv } from "@/server/loadEnv";
 import { runNextScanJob } from "@/server/scanRunner";
 import { scheduleDueScanJobs } from "@/server/scheduler";
+import { syncGitHubContextIfDue } from "@/server/githubSync";
 import {
   getQueueStats,
   listProfiles,
@@ -33,6 +34,15 @@ async function main() {
       const scheduled = await scheduleDueScanJobs();
       if (scheduled.length) {
         console.log(`scheduled_jobs=${scheduled.map((job) => job.id).join(",")}`);
+      }
+
+      try {
+        const githubSync = await syncGitHubContextIfDue();
+        if (!githubSync.skipped && "syncedCount" in githubSync) {
+          console.log(`github_auto_sync=${githubSync.syncedCount}`);
+        }
+      } catch (error) {
+        console.error("github_auto_sync_error", error);
       }
 
       const job = await runNextScanJob({

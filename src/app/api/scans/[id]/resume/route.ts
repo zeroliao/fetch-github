@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/server/auth";
 import { resumeScanJob } from "@/server/scanRunner";
-import { getScanJob, requeueRunningCandidates, updateScanJob } from "@/server/store";
+import { getAppSettings, getScanJob, requeueRunningCandidates, updateScanJob } from "@/server/store";
 
 export async function POST(
   _request: Request,
@@ -11,6 +11,11 @@ export async function POST(
   if (auth.response) return auth.response;
 
   const { id } = await context.params;
+  const settings = await getAppSettings();
+  if (!settings.scanEnabled) {
+    return NextResponse.json({ error: "全局扫描任务已关闭，当前不能恢复扫描任务。" }, { status: 409 });
+  }
+
   const existing = await getScanJob(id);
   if (!existing) {
     return NextResponse.json({ error: "扫描任务不存在。" }, { status: 404 });

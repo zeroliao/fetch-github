@@ -1,14 +1,24 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { seedSnapshot } from "@/lib/seed";
+import { calculateFinalScore } from "@/lib/scoring";
 import { normalizeDiscoverySources } from "@/lib/discoverySources";
 import { normalizeOpportunityProfile } from "@/lib/opportunity";
+import { cosineSimilarity, normalizeDiscoveryLimits } from "@/lib/semanticGate";
+import {
+  repoHasMaterialMetadataChanges,
+  shouldAnalyzeDiscoveredRepo
+} from "@/lib/repoRefresh";
+import { normalizeAppSettings } from "@/lib/settings";
+import { annotateRecommendationClusters } from "@/lib/repoCluster";
 import {
   ensureChineseSummary,
   normalizeChineseLabels
 } from "@/lib/recommendationText";
 import type {
   AiProvider,
+  AppSettings,
+  CachedEmbedding,
   DashboardSnapshot,
   DiscoveryProfile,
   Feedback,
@@ -20,6 +30,7 @@ import type {
   ResourceEvent,
   ScanCheckpoint,
   ScanJob,
+  UpsertRepoStats,
   GithubAccount,
   KnowledgeSync,
   OperationsSnapshot,
@@ -32,6 +43,7 @@ import * as postgresStore from "./postgresStore";
 interface StoreState extends DashboardSnapshot {
   feedback: Feedback[];
   repos: RepoSummary[];
+  repoDataLevels: Record<string, RepoDataLevel>;
   checkpoints: ScanCheckpoint[];
   resourceEvents: ResourceEvent[];
   repoDocuments: Array<{
@@ -42,9 +54,23 @@ interface StoreState extends DashboardSnapshot {
     rawContent: string;
     summary?: string;
   }>;
+  repoEmbeddings: Array<{
+    repoId: string;
+    providerId: string;
+    model: string;
+    dimensions: number;
+    contentHash: string;
+    vector: number[];
+    createdAt: string;
+  }>;
+  embeddingCache: Array<CachedEmbedding & { cacheKey: string }>;
   llmResults: Array<{
     repoId: string;
     jobType: string;
+    providerId?: string;
+    model?: string;
+    promptVersion?: string;
+    inputHash?: string;
     structured: Record<string, unknown>;
   }>;
   preferenceSignals: PreferenceSignal[];
@@ -65,10 +91,15 @@ function createInitialState(): StoreState {
   return {
     ...seedSnapshot,
     repos: seedSnapshot.recommendations.map((recommendation) => recommendation.repo),
+    repoDataLevels: Object.fromEntries(
+      seedSnapshot.recommendations.map((recommendation) => [recommendation.repo.id, "L3"])
+    ),
     feedback: [],
     checkpoints: [],
     resourceEvents: [],
     repoDocuments: [],
+    repoEmbeddings: [],
+    embeddingCache: [],
     llmResults: [],
     preferenceSignals: [],
     knowledgeSyncs: [],
@@ -96,18 +127,22 @@ function normalizeState(state: Partial<StoreState>): StoreState {
   const recommendations = state.recommendations ?? seedSnapshot.recommendations;
 
   return {
+    settings: normalizeAppSettings(state.settings),
     profiles: normalizeProfiles(state.profiles ?? seedSnapshot.profiles),
     aiProviders: state.aiProviders ?? seedSnapshot.aiProviders,
     recommendations,
-    jobs: state.jobs ?? seedSnapshot.jobs,
+    jobs: normalizeScanJobs(state.jobs ?? seedSnapshot.jobs),
     githubRepos: state.githubRepos ?? seedSnapshot.githubRepos,
     queueStats: state.queueStats ?? [],
     githubAccounts: state.githubAccounts ?? seedSnapshot.githubAccounts ?? [],
     repos: state.repos ?? recommendations.map((recommendation) => recommendation.repo),
+    repoDataLevels: state.repoDataLevels ?? {},
     feedback: state.feedback ?? [],
     checkpoints: state.checkpoints ?? [],
     resourceEvents: state.resourceEvents ?? [],
     repoDocuments: state.repoDocuments ?? [],
+    repoEmbeddings: state.repoEmbeddings ?? [],
+    embeddingCache: state.embeddingCache ?? [],
     llmResults: state.llmResults ?? [],
     preferenceSignals: state.preferenceSignals ?? [],
     knowledgeSyncs: state.knowledgeSyncs ?? seedSnapshot.knowledgeSyncs ?? [],
@@ -119,12 +154,43 @@ function normalizeState(state: Partial<StoreState>): StoreState {
 function normalizeProfiles(profiles: DiscoveryProfile[]) {
   return profiles.map((profile) => ({
     ...profile,
-    config: {
-      ...profile.config,
-      opportunity: normalizeOpportunityProfile(profile.config.opportunity),
-      sources: normalizeDiscoverySources(profile.config.sources)
-    }
+      config: {
+        ...profile.config,
+        limits: normalizeDiscoveryLimits(profile.config.limits),
+        opportunity: normalizeOpportunityProfile(profile.config.opportunity),
+        sources: normalizeDiscoverySources(profile.config.sources)
+      }
   }));
+}
+
+function normalizeScanJobs(jobs: ScanJob[]) {
+  return jobs.map((job) => ({
+    ...job,
+    newRepoCount: job.newRepoCount ?? 0,
+    updatedRepoCount: job.updatedRepoCount ?? 0,
+    unchangedRepoCount: job.unchangedRepoCount ?? 0,
+    candidateCount: job.candidateCount ?? job.processedCount ?? 0
+  }));
+}
+
+function findLocalRepo(repos: RepoSummary[], repo: RepoSummary) {
+  return repos.find(
+    (item) =>
+      item.id === repo.id ||
+      item.fullName === repo.fullName ||
+      (repo.githubId !== undefined && item.githubId === repo.githubId)
+  );
+}
+
+function repoHasMaterialChanges(existing: RepoSummary, next: RepoSummary) {
+  return repoHasMaterialMetadataChanges(existing, next);
+}
+
+function mergeDataLevel(current: RepoDataLevel | undefined, next: RepoDataLevel) {
+  const order: RepoDataLevel[] = ["L0", "L1", "L2", "L3", "L4"];
+  const currentIndex = current ? order.indexOf(current) : 0;
+  const nextIndex = order.indexOf(next);
+  return order[Math.max(currentIndex, nextIndex)] ?? next;
 }
 
 async function saveState(state: StoreState): Promise<void> {
@@ -141,6 +207,7 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
   const state = await loadState();
 
   return {
+    settings: state.settings,
     profiles: state.profiles,
     aiProviders: state.aiProviders,
     recommendations: state.recommendations.map(withChineseDisplay),
@@ -163,6 +230,28 @@ function buildLocalOperationsSnapshot(state: StoreState): OperationsSnapshot {
       estimatedCostUsd: 0
     }
   };
+}
+
+export async function getAppSettings(): Promise<AppSettings> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.getAppSettings();
+  }
+
+  return (await loadState()).settings;
+}
+
+export async function updateAppSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.updateAppSettings(patch);
+  }
+
+  const state = await loadState();
+  state.settings = normalizeAppSettings({
+    ...state.settings,
+    ...patch
+  });
+  await saveState(state);
+  return state.settings;
 }
 
 export async function listProfiles(): Promise<DiscoveryProfile[]> {
@@ -461,6 +550,10 @@ export async function createScanJob(
     fetchedCount: 0,
     processedCount: 0,
     analyzedCount: 0,
+    newRepoCount: 0,
+    updatedRepoCount: 0,
+    unchangedRepoCount: 0,
+    candidateCount: 0,
     createdAt: now
   };
 
@@ -511,23 +604,66 @@ export async function updateScanJob(
 export async function upsertRepos(
   repos: RepoSummary[],
   dataLevel: RepoDataLevel = "L1"
-): Promise<void> {
+): Promise<UpsertRepoStats> {
   if (await isDatabaseAvailable()) {
     return postgresStore.upsertRepos(repos, dataLevel);
   }
 
   const state = await loadState();
   const byId = new Map(state.repos.map((repo) => [repo.id, repo]));
+  const stats: UpsertRepoStats = {
+    newCount: 0,
+    updatedCount: 0,
+    unchangedCount: 0,
+    repos: []
+  };
 
   for (const repo of repos) {
-    byId.set(repo.id, {
-      ...byId.get(repo.id),
+    const existing = findLocalRepo(state.repos, repo);
+    const existingDataLevel = existing ? state.repoDataLevels[existing.id] ?? "L0" : undefined;
+    const analysisDecision = shouldAnalyzeDiscoveredRepo({
+      existing,
+      existingDataLevel,
+      next: repo
+    });
+    if (!existing) {
+      stats.newCount += 1;
+      stats.repos.push({
+        repo,
+        status: "new",
+        shouldAnalyze: analysisDecision.shouldAnalyze,
+        analyzeReason: analysisDecision.reason
+      });
+      state.repoDataLevels[repo.id] = mergeDataLevel(state.repoDataLevels[repo.id], dataLevel);
+      byId.set(repo.id, repo);
+      continue;
+    }
+
+    const status = repoHasMaterialChanges(existing, repo) ? "updated" : "unchanged";
+    if (status === "updated") {
+      stats.updatedCount += 1;
+    } else {
+      stats.unchangedCount += 1;
+    }
+
+    repo.id = existing.id;
+    byId.set(existing.id, {
+      ...existing,
       ...repo
     });
+    stats.repos.push({
+      repo,
+      status,
+      existingDataLevel,
+      shouldAnalyze: analysisDecision.shouldAnalyze,
+      analyzeReason: analysisDecision.reason
+    });
+    state.repoDataLevels[existing.id] = mergeDataLevel(existingDataLevel, dataLevel);
   }
 
   state.repos = [...byId.values()];
   await saveState(state);
+  return stats;
 }
 
 export async function upsertRecommendations(
@@ -540,7 +676,7 @@ export async function upsertRecommendations(
   const state = await loadState();
   const byId = new Map(state.recommendations.map((item) => [item.id, item]));
 
-  for (const recommendation of recommendations) {
+  for (const recommendation of annotateRecommendationClusters(recommendations)) {
     const existing = byId.get(recommendation.id);
     const displayRecommendation = withChineseDisplay(recommendation);
     byId.set(recommendation.id, {
@@ -563,11 +699,9 @@ export async function upsertRecommendations(
     ];
   }
 
-  state.recommendations = [...byId.values()].sort((a, b) => b.scores.final - a.scores.final);
-  state.recommendations = state.recommendations.map((item, index) => ({
-    ...item,
-    rank: index + 1
-  }));
+  state.recommendations = annotateRecommendationClusters(
+    [...byId.values()].sort((a, b) => b.scores.final - a.scores.final)
+  );
 
   await saveState(state);
 }
@@ -592,8 +726,15 @@ export async function upgradeRepoDataLevel(
     return postgresStore.upgradeRepoDataLevel(repos, dataLevel);
   }
 
-  void repos;
-  void dataLevel;
+  const state = await loadState();
+  for (const repo of repos) {
+    const existing = findLocalRepo(state.repos, repo);
+    if (existing) {
+      state.repoDataLevels[existing.id] = mergeDataLevel(state.repoDataLevels[existing.id], dataLevel);
+      repo.id = existing.id;
+    }
+  }
+  await saveState(state);
 }
 
 export async function upsertScanCheckpoint(
@@ -729,7 +870,15 @@ export async function recordFeedback(
           ? "hidden"
           : action === "track"
             ? "tracked"
-            : recommendation.status;
+            : action === "to_validate"
+              ? "to_validate"
+              : action === "validating"
+                ? "validating"
+                : action === "monetization_ready"
+                  ? "monetization_ready"
+                  : action === "abandon"
+                    ? "abandoned"
+                    : recommendation.status;
 
     return {
       ...recommendation,
@@ -1132,7 +1281,98 @@ export async function upsertRepoEmbedding(input: {
     return postgresStore.upsertRepoEmbedding(input);
   }
 
-  void input;
+  const state = await loadState();
+  state.repoEmbeddings = [
+    {
+      ...input,
+      createdAt: new Date().toISOString()
+    },
+    ...state.repoEmbeddings.filter(
+      (item) =>
+        !(
+          item.repoId === input.repoId &&
+          item.providerId === input.providerId &&
+          item.contentHash === input.contentHash
+        )
+    )
+  ];
+  await saveState(state);
+}
+
+export async function getRepoEmbedding(input: {
+  repoId: string;
+  providerId: string;
+  model: string;
+  contentHash: string;
+}) {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.getRepoEmbedding(input);
+  }
+
+  const state = await loadState();
+  return state.repoEmbeddings.find(
+    (item) =>
+      item.repoId === input.repoId &&
+      item.providerId === input.providerId &&
+      item.model === input.model &&
+      item.contentHash === input.contentHash
+  );
+}
+
+export async function getRepoEmbeddingVector(input: {
+  repoId: string;
+  providerId: string;
+  model?: string;
+  contentHash?: string;
+}) {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.getRepoEmbeddingVector(input);
+  }
+
+  const state = await loadState();
+  return state.repoEmbeddings.find(
+    (item) =>
+      item.repoId === input.repoId &&
+      item.providerId === input.providerId &&
+      (!input.model || item.model === input.model) &&
+      (!input.contentHash || item.contentHash === input.contentHash)
+  );
+}
+
+export async function upsertCachedEmbedding(input: CachedEmbedding & { cacheKey: string }) {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.upsertCachedEmbedding(input);
+  }
+
+  const state = await loadState();
+  state.embeddingCache = [
+    {
+      ...input,
+      createdAt: new Date().toISOString()
+    },
+    ...state.embeddingCache.filter((item) => item.cacheKey !== input.cacheKey)
+  ];
+  await saveState(state);
+}
+
+export async function getCachedEmbedding(input: {
+  cacheKey: string;
+  providerId: string;
+  model: string;
+  contentHash: string;
+}): Promise<CachedEmbedding | undefined> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.getCachedEmbedding(input);
+  }
+
+  const state = await loadState();
+  return state.embeddingCache.find(
+    (item) =>
+      item.cacheKey === input.cacheKey &&
+      item.providerId === input.providerId &&
+      item.model === input.model &&
+      item.contentHash === input.contentHash
+  );
 }
 
 export async function rerankRecommendationsWithSemanticFit(input: {
@@ -1144,7 +1384,52 @@ export async function rerankRecommendationsWithSemanticFit(input: {
     return postgresStore.rerankRecommendationsWithSemanticFit(input);
   }
 
-  void input;
+  const state = await loadState();
+  const reranked = state.recommendations
+    .filter((item) => item.profileId === input.profileId)
+    .map((recommendation) => {
+      const embedding = state.repoEmbeddings
+        .filter(
+          (item) =>
+            item.repoId === recommendation.repo.id &&
+            item.providerId === input.providerId
+        )
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      const semanticFit = embedding
+        ? cosineSimilarity(embedding.vector, input.queryVector)
+        : undefined;
+
+      if (semanticFit === undefined) {
+        return recommendation;
+      }
+
+      return {
+        ...recommendation,
+        scores: {
+          ...recommendation.scores,
+          githubContextFit: Math.max(recommendation.scores.githubContextFit, semanticFit),
+          final: calculateFinalScore({
+            ruleScore: recommendation.scores.rule,
+            githubContextFit: Math.max(recommendation.scores.githubContextFit, semanticFit),
+            llmMatchScore: recommendation.scores.llmMatch,
+            feedbackScore: recommendation.scores.feedback,
+            opportunityScore: recommendation.scores.opportunity,
+            monetizationScore: recommendation.scores.monetization,
+            growthSignal: recommendation.scores.growth,
+            executionFit: recommendation.scores.execution,
+            differentiationSpace: recommendation.scores.differentiation,
+            technicalQuality: recommendation.scores.technicalQuality
+          })
+        }
+      };
+    })
+    .sort((a, b) => b.scores.final - a.scores.final)
+    .map((recommendation, index) => ({
+      ...recommendation,
+      rank: index + 1
+    }));
+
+  await upsertRecommendations(reranked);
 }
 
 export async function createLlmJob(input: {
@@ -1196,6 +1481,10 @@ export async function upsertLlmResult(input: {
   state.llmResults.unshift({
     repoId: input.repoId,
     jobType: input.jobType,
+    providerId: input.providerId,
+    model: input.model,
+    promptVersion: input.promptVersion,
+    inputHash: input.inputHash,
     structured: input.structured
   });
   await saveState(state);
@@ -1216,8 +1505,24 @@ export async function getLatestLlmResult(
   }
 
   const state = await loadState();
-  return state.llmResults.find((item) => item.repoId === repoId && item.jobType === jobType)
-    ?.structured;
+  return state.llmResults.find((item) => {
+    if (item.repoId !== repoId || item.jobType !== jobType) {
+      return false;
+    }
+    if (options.providerId && item.providerId !== options.providerId) {
+      return false;
+    }
+    if (options.model && item.model !== options.model) {
+      return false;
+    }
+    if (options.promptVersion && item.promptVersion !== options.promptVersion) {
+      return false;
+    }
+    if (options.inputHash && item.inputHash !== options.inputHash) {
+      return false;
+    }
+    return true;
+  })?.structured;
 }
 
 function buildPreferenceSignals(
@@ -1226,13 +1531,17 @@ function buildPreferenceSignals(
   action: FeedbackAction
 ): Array<Omit<PreferenceSignal, "id" | "updatedAt">> {
   const delta =
-    action === "save" || action === "track"
+    action === "save" ||
+    action === "track" ||
+    action === "to_validate" ||
+    action === "validating" ||
+    action === "monetization_ready"
       ? 0.18
       : action === "like"
         ? 0.1
         : action === "hide"
           ? -0.18
-          : action === "dislike"
+          : action === "dislike" || action === "abandon"
             ? -0.1
             : 0;
 
