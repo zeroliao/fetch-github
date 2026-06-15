@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { getRecommendationSummaryZh } from "@/lib/recommendationText";
 import type { Recommendation } from "@/lib/types";
 import {
   listKnowledgeSyncs,
@@ -133,7 +134,7 @@ export function buildRecommendationMarkdown(recommendation: Recommendation) {
     `Topics: ${recommendation.repo.topics.join(", ") || "None"}`,
     "",
     "## Summary",
-    recommendation.summary,
+    getRecommendationSummaryZh(recommendation),
     "",
     "## Reasons",
     ...recommendation.reasons.map((reason) => `- ${reason}`),

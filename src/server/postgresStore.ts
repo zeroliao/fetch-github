@@ -24,6 +24,10 @@ import {
   seedRecommendations
 } from "@/lib/seed";
 import { normalizeDiscoverySources } from "@/lib/discoverySources";
+import {
+  ensureChineseSummary,
+  normalizeChineseLabels
+} from "@/lib/recommendationText";
 import { calculateFinalScore } from "@/lib/scoring";
 import { getPool } from "./db";
 
@@ -813,6 +817,11 @@ export async function upsertRecommendations(
       reasons: recommendation.reasons,
       risks: recommendation.risks,
       summary: recommendation.summary,
+      summaryZh: recommendation.summaryZh ?? ensureChineseSummary(
+        recommendation.summary,
+        recommendation.repo,
+        recommendation.matchedPreferences
+      ),
       matchedPreferences: recommendation.matchedPreferences,
       relatedUserRepos: recommendation.relatedUserRepos,
       scores: recommendation.scores
@@ -2125,29 +2134,34 @@ function mapRepoRow(row: Record<string, any>): RepoSummary {
 function mapRecommendationRow(row: Record<string, any>): Recommendation {
   const reasonsJson = normalizeJsonObject(row.reasons_json);
   const scores = normalizeJsonObject(reasonsJson.scores);
+  const repo: RepoSummary = {
+    id: row.repo_id,
+    githubId: row.github_id ? Number(row.github_id) : undefined,
+    fullName: row.full_name,
+    owner: row.owner,
+    name: row.name,
+    htmlUrl: row.html_url,
+    description: row.description ?? "",
+    primaryLanguage: row.primary_language ?? "Unknown",
+    topics: normalizeJsonArray(row.topics_json),
+    stars: row.stars,
+    forks: row.forks,
+    openIssues: row.open_issues,
+    pushedAt: row.pushed_at ? toIso(row.pushed_at) : "",
+    updatedAt: row.updated_at ? toIso(row.updated_at) : "",
+    archived: row.archived,
+    fork: row.fork
+  };
+  const matchedPreferences = normalizeChineseLabels(
+    normalizeStringArray(reasonsJson.matchedPreferences)
+  );
+  const summary = String(reasonsJson.summary ?? row.description ?? "");
 
   return {
     id: row.id,
     profileId: row.profile_id,
     rank: row.rank,
-    repo: {
-      id: row.repo_id,
-      githubId: row.github_id ? Number(row.github_id) : undefined,
-      fullName: row.full_name,
-      owner: row.owner,
-      name: row.name,
-      htmlUrl: row.html_url,
-      description: row.description ?? "",
-      primaryLanguage: row.primary_language ?? "Unknown",
-      topics: normalizeJsonArray(row.topics_json),
-      stars: row.stars,
-      forks: row.forks,
-      openIssues: row.open_issues,
-      pushedAt: row.pushed_at ? toIso(row.pushed_at) : "",
-      updatedAt: row.updated_at ? toIso(row.updated_at) : "",
-      archived: row.archived,
-      fork: row.fork
-    },
+    repo,
     scores: {
       rule: Number(row.rule_score ?? scores.rule ?? 0),
       githubContextFit: Number(row.github_context_fit ?? scores.githubContextFit ?? 0),
@@ -2156,10 +2170,15 @@ function mapRecommendationRow(row: Record<string, any>): Recommendation {
       final: Number(row.final_score ?? scores.final ?? 0),
       scoreVersion: row.score_version ?? String(scores.scoreVersion ?? "mvp-v1")
     },
-    summary: String(reasonsJson.summary ?? row.description ?? ""),
-    reasons: normalizeStringArray(reasonsJson.reasons),
-    risks: normalizeStringArray(reasonsJson.risks),
-    matchedPreferences: normalizeStringArray(reasonsJson.matchedPreferences),
+    summary,
+    summaryZh: ensureChineseSummary(
+      String(reasonsJson.summaryZh ?? summary),
+      repo,
+      matchedPreferences
+    ),
+    reasons: normalizeChineseLabels(normalizeStringArray(reasonsJson.reasons)),
+    risks: normalizeChineseLabels(normalizeStringArray(reasonsJson.risks)),
+    matchedPreferences,
     relatedUserRepos: parseRelatedUserRepos(
       row.context_matches_json,
       reasonsJson.relatedUserRepos
@@ -2184,7 +2203,7 @@ function parseRelatedUserRepos(
     .map((item) => ({
       userRepoId: typeof item.userRepoId === "string" ? item.userRepoId : undefined,
       fullName: String(item.fullName ?? ""),
-      reason: String(item.reason ?? ""),
+      reason: normalizeChineseLabels([String(item.reason ?? "")])[0] ?? "",
       score: Number(item.score ?? 0)
     }))
     .filter((item) => item.fullName);

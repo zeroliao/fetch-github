@@ -6,6 +6,7 @@ import { buildRecommendation, repoPassesHardFilters, scoreRepo } from "@/server/
 import { callEmbedding } from "./aiClient";
 import { analyzeRepoWithLlm, REPO_ANALYSIS_PROMPT_VERSION, type RepoAnalysisResult } from "./llmAnalysis";
 import { evaluateResourcePolicy, recordResourceDecision } from "./resourceGovernor";
+import { buildSourceAdapterPlans, type SourceAdapterPlan } from "./sourceAdapters";
 import {
   claimQueuedRepoBatch,
   completeCandidate,
@@ -204,10 +205,28 @@ async function runCollectStage(
   }
 
   const queryPlans = buildGitHubSearchQueryPlans(profile);
+  const sourceAdapterPlans = buildSourceAdapterPlans(profile);
   const preferenceSignals = await listPreferenceSignals(profile.id);
   const perPage = Math.max(1, Math.min(profile.config.limits.sourceLimitPerQuery, 100));
   const pageLimit = Math.max(1, maxPages);
   let pagesProcessed = 0;
+
+  for (const plan of sourceAdapterPlans) {
+    if (pagesProcessed >= pageLimit || currentJob.fetchedCount >= currentJob.maxCandidates) {
+      break;
+    }
+
+    currentJob = (await runSourceAdapterCollect({
+      job,
+      currentJob,
+      profile,
+      plan,
+      preferenceSignals,
+      resourceStatus: resource.status,
+      resourceReason: resource.reason
+    })) ?? currentJob;
+    pagesProcessed += 1;
+  }
 
   for (const plan of queryPlans) {
     if (pagesProcessed >= pageLimit || currentJob.fetchedCount >= currentJob.maxCandidates) {
@@ -292,6 +311,70 @@ async function runCollectStage(
   }
 
   return currentJob;
+}
+
+async function runSourceAdapterCollect(input: {
+  job: ScanJob;
+  currentJob: ScanJob;
+  profile: DiscoveryProfile;
+  plan: SourceAdapterPlan;
+  preferenceSignals: Awaited<ReturnType<typeof listPreferenceSignals>>;
+  resourceStatus: "running" | "throttled" | "paused_by_memory";
+  resourceReason: string;
+}) {
+  const queryHash = hashQuery(input.plan.queryHashKey);
+  const checkpoint = await getScanCheckpoint(
+    input.job.id,
+    input.plan.sourceId,
+    queryHash,
+    "collect"
+  );
+  if ((checkpoint?.page ?? 0) >= 1) {
+    return input.currentJob;
+  }
+
+  const limit = Math.min(
+    input.profile.config.limits.sourceLimitPerQuery,
+    Math.max(0, input.currentJob.maxCandidates - input.currentJob.fetchedCount)
+  );
+  if (limit <= 0) {
+    return input.currentJob;
+  }
+
+  const repos = await input.plan.fetchRepos(limit);
+  const candidates = repos.filter((repo) => repoPassesHardFilters(repo, input.profile));
+
+  await upsertRepos(repos, "L0");
+  await upgradeRepoDataLevel(candidates, "L1");
+  await enqueueCandidates(
+    input.job.id,
+    candidates.map((repo) => ({
+      repo,
+      priorityScore:
+        scoreRepo(repo, input.profile, input.preferenceSignals).finalScore * input.plan.weight,
+      stage: "profile"
+    }))
+  );
+
+  const fetchedCount = input.currentJob.fetchedCount + repos.length;
+  const processedCount = input.currentJob.processedCount + candidates.length;
+  await upsertScanCheckpoint({
+    jobId: input.job.id,
+    source: input.plan.sourceId,
+    queryHash,
+    page: 1,
+    cursor: input.plan.cursor,
+    processedCount: fetchedCount,
+    stage: "collect"
+  });
+
+  return updateScanJob(input.job.id, {
+    status: input.resourceStatus === "throttled" ? "throttled" : "running",
+    stage: "collect",
+    fetchedCount,
+    processedCount,
+    statusReason: input.resourceStatus === "throttled" ? input.resourceReason : undefined
+  });
 }
 
 async function runProfileStage(
@@ -743,11 +826,24 @@ function retryDelaySeconds(attempts: number) {
 
 async function isCollectComplete(jobId: string, profile: DiscoveryProfile) {
   const queryPlans = buildGitHubSearchQueryPlans(profile);
+  const sourceAdapterPlans = buildSourceAdapterPlans(profile);
   const perQuery = Math.max(1, Math.min(profile.config.limits.sourceLimitPerQuery, 100));
   const maxPagesForQuery = Math.max(
     1,
     Math.ceil(profile.config.limits.sourceLimitPerQuery / perQuery)
   );
+
+  for (const plan of sourceAdapterPlans) {
+    const checkpoint = await getScanCheckpoint(
+      jobId,
+      plan.sourceId,
+      hashQuery(plan.queryHashKey),
+      "collect"
+    );
+    if (!checkpoint || checkpoint.page < 1) {
+      return false;
+    }
+  }
 
   for (const plan of queryPlans) {
     const checkpoint = await getScanCheckpoint(

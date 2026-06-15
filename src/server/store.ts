@@ -2,6 +2,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { seedSnapshot } from "@/lib/seed";
 import { normalizeDiscoverySources } from "@/lib/discoverySources";
+import {
+  ensureChineseSummary,
+  normalizeChineseLabels
+} from "@/lib/recommendationText";
 import type {
   AiProvider,
   DashboardSnapshot,
@@ -137,7 +141,7 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
   return {
     profiles: state.profiles,
     aiProviders: state.aiProviders,
-    recommendations: state.recommendations,
+    recommendations: state.recommendations.map(withChineseDisplay),
     jobs: state.jobs,
     githubAccounts: state.githubAccounts,
     githubRepos: state.githubRepos,
@@ -536,8 +540,9 @@ export async function upsertRecommendations(
 
   for (const recommendation of recommendations) {
     const existing = byId.get(recommendation.id);
+    const displayRecommendation = withChineseDisplay(recommendation);
     byId.set(recommendation.id, {
-      ...recommendation,
+      ...displayRecommendation,
       status: existing?.status ?? recommendation.status
     });
 
@@ -545,10 +550,10 @@ export async function upsertRecommendations(
       ...state.repoContextMatches.filter(
         (item) => item.candidateRepoId !== recommendation.repo.id
       ),
-      ...recommendation.relatedUserRepos
+      ...displayRecommendation.relatedUserRepos
         .filter((repo) => repo.userRepoId)
         .map((repo) => ({
-          candidateRepoId: recommendation.repo.id,
+          candidateRepoId: displayRecommendation.repo.id,
           userRepoId: repo.userRepoId as string,
           score: repo.score,
           reasons: [repo.reason]
@@ -654,7 +659,27 @@ export async function listRecommendations() {
   }
 
   const state = await loadState();
-  return state.recommendations.sort((a, b) => a.rank - b.rank);
+  return state.recommendations.map(withChineseDisplay).sort((a, b) => a.rank - b.rank);
+}
+
+function withChineseDisplay(recommendation: Recommendation): Recommendation {
+  const matchedPreferences = normalizeChineseLabels(recommendation.matchedPreferences);
+
+  return {
+    ...recommendation,
+    summaryZh: ensureChineseSummary(
+      recommendation.summaryZh ?? recommendation.summary,
+      recommendation.repo,
+      matchedPreferences
+    ),
+    reasons: normalizeChineseLabels(recommendation.reasons),
+    risks: normalizeChineseLabels(recommendation.risks),
+    matchedPreferences,
+    relatedUserRepos: recommendation.relatedUserRepos.map((repo) => ({
+      ...repo,
+      reason: normalizeChineseLabels([repo.reason])[0] ?? ""
+    }))
+  };
 }
 
 export async function recordFeedback(

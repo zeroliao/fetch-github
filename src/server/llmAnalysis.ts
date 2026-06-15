@@ -3,7 +3,7 @@ import type { DiscoveryProfile, RepoSummary } from "@/lib/types";
 import { callChatJson } from "./aiClient";
 import { getAiProvider } from "./store";
 
-export const REPO_ANALYSIS_PROMPT_VERSION = "repo-analysis-v1";
+export const REPO_ANALYSIS_PROMPT_VERSION = "repo-analysis-v2-cn-display";
 
 export interface RepoAnalysisInput {
   repo: RepoSummary;
@@ -55,7 +55,7 @@ export async function analyzeRepoWithLlm(
           repo: input.repo,
           profile_preferences: input.profile.config.preferences,
           readme: readmeForPrompt,
-          language_requirement: "所有用户可见文本字段必须使用简体中文；仓库名、技术名词、topic 和模型名可以保留英文。",
+          language_requirement: "所有用户可见文本字段必须使用简体中文；仓库名、技术名词、topic 和模型名可以保留英文。不要原样复制 GitHub 英文描述，需要用中文概括其含义和推荐价值。",
           output_schema: {
             summary: "简体中文 string，说明这个项目是什么以及为什么值得看",
             categories: ["简体中文 string"],

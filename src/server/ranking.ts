@@ -1,4 +1,9 @@
 import { calculateFinalScore, clampScore, SCORE_VERSION } from "@/lib/scoring";
+import {
+  buildChineseRepoSummary,
+  ensureChineseSummary,
+  normalizeChineseLabels
+} from "@/lib/recommendationText";
 import type {
   DiscoveryProfile,
   PreferenceSignal,
@@ -107,6 +112,17 @@ export function buildRecommendation(
     llmMatchScore,
     feedbackScore: score.feedbackScore
   });
+  const matchedPreferences = normalizeChineseLabels(
+    analysis?.matched_preferences.length
+      ? analysis.matched_preferences
+      : inferMatchedPreferences(repo, profile)
+  );
+  const summary = analysis?.summary || buildChineseSummary(repo, profile);
+  const reasons = normalizeChineseLabels(
+    analysis?.recommendation_reason
+      ? [analysis.recommendation_reason, ...score.reasons]
+      : score.reasons
+  );
 
   return {
     id: `rec-${profile.id}-${repo.id}`,
@@ -121,18 +137,15 @@ export function buildRecommendation(
       final: finalScore,
       scoreVersion: SCORE_VERSION
     },
-    summary: analysis?.summary || buildChineseSummary(repo, profile),
-    reasons: analysis?.recommendation_reason
-      ? [analysis.recommendation_reason, ...score.reasons]
-      : score.reasons,
+    summary,
+    summaryZh: ensureChineseSummary(summary, repo, matchedPreferences),
+    reasons,
     risks: analysis?.risks.length
-      ? analysis.risks
+      ? normalizeChineseLabels(analysis.risks)
       : repo.openIssues > 500
         ? ["当前未关闭 issue 数较高，采用前需要进一步评估维护压力。"]
         : [],
-    matchedPreferences: analysis?.matched_preferences.length
-      ? analysis.matched_preferences
-      : inferMatchedPreferences(repo, profile),
+    matchedPreferences,
     relatedUserRepos,
     status: "new",
     createdAt: new Date().toISOString()
@@ -181,10 +194,7 @@ function buildReasons(
 }
 
 function buildChineseSummary(repo: RepoSummary, profile: DiscoveryProfile) {
-  const matched = inferMatchedPreferences(repo, profile).slice(0, 4);
-  const matchedText = matched.length ? `，与 ${matched.join("、")} 等偏好相关` : "";
-  const description = repo.description ? `原始描述：${repo.description}` : "仓库暂未提供详细描述";
-  return `${repo.fullName} 是一个 ${repo.primaryLanguage} 项目${matchedText}。${description}。`;
+  return buildChineseRepoSummary(repo, inferMatchedPreferences(repo, profile));
 }
 
 function inferMatchedPreferences(repo: RepoSummary, profile: DiscoveryProfile): string[] {

@@ -151,6 +151,7 @@ export interface Recommendation {
     scoreVersion: string;
   };
   summary: string;
+  summaryZh?: string;
   reasons: string[];
   risks: string[];
   matchedPreferences: string[];

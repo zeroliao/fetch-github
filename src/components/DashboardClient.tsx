@@ -24,6 +24,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { discoverySourceCatalog, normalizeDiscoverySources } from "@/lib/discoverySources";
 import { sectionDefinitions, sectionFromPath, sectionLabel, sectionPath, type Section } from "@/lib/navigation";
+import { getRecommendationSummaryZh } from "@/lib/recommendationText";
 import type { GitHubSearchQueryPlan } from "@/server/githubSearch";
 import type {
   AiProvider,
@@ -428,7 +429,7 @@ function RecommendationsPanel({
                     <span>{recommendation.repo.fullName}</span>
                     <ExternalLink size={14} />
                   </a>
-                  <div className="muted">{recommendation.summary}</div>
+                  <div className="muted">{getRecommendationSummaryZh(recommendation)}</div>
                 </td>
                 <td>
                   <div className="score">
@@ -487,7 +488,7 @@ function RepoDrawer({
               <span>{recommendation.repo.fullName}</span>
               <ExternalLink size={15} />
             </a>
-            <p className="muted">{recommendation.summary}</p>
+            <p className="muted">{getRecommendationSummaryZh(recommendation)}</p>
           </div>
           <button className="button icon" onClick={onClose} type="button" aria-label="关闭">
             <X size={16} />
@@ -503,7 +504,7 @@ function RepoDrawer({
             <button className="button" onClick={() => onFeedback(recommendation, "track")} type="button">跟踪</button>
             <button className="button" onClick={() => onFeedback(recommendation, "hide")} type="button">隐藏</button>
           </div>
-          <DetailSection title="项目摘要">{recommendation.summary}</DetailSection>
+          <DetailSection title="项目摘要">{getRecommendationSummaryZh(recommendation)}</DetailSection>
           {recommendation.repo.description && (
             <DetailSection title="GitHub 原始描述">{recommendation.repo.description}</DetailSection>
           )}
@@ -841,14 +842,12 @@ function ProfilesPanel({
             <div className="source-grid">
               {discoverySourceCatalog.map((definition) => {
                 const source = sources.find((item) => item.id === definition.id);
-                const implemented = definition.capability === "implemented";
                 return (
                   <div className="source-item" key={definition.id}>
                     <label className="checkbox-row">
                       <input
                         type="checkbox"
-                        checked={implemented && (source?.enabled ?? false)}
-                        disabled={!implemented}
+                        checked={source?.enabled ?? false}
                         onChange={(event) => updateSource(definition.id, { enabled: event.target.checked })}
                       />
                       <strong>{definition.label}</strong>
@@ -1631,9 +1630,9 @@ function sourceCapabilityText(capability: string) {
     case "implemented":
       return "已接入扫描";
     case "planned_adapter":
-      return "待接入 adapter";
+      return "待接入 adapter，可保存";
     case "quality_signal":
-      return "质量评分信号";
+      return "质量评分信号，可保存";
     default:
       return capability;
   }

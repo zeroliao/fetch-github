@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaultDiscoverySources } from "../src/lib/discoverySources";
+import { defaultDiscoverySources, normalizeDiscoverySources } from "../src/lib/discoverySources";
+import { ensureChineseSummary } from "../src/lib/recommendationText";
 import type { DiscoveryProfile } from "../src/lib/types";
 import { buildGitHubSearchQueryPlans } from "../src/server/githubSearch";
 import { buildRecommendationMarkdown } from "../src/server/knowledgeSync";
@@ -10,6 +11,7 @@ import {
 } from "../src/server/naturalLanguageDiscovery";
 import { buildRecommendation } from "../src/server/ranking";
 import { buildSchedulePlan } from "../src/server/scheduler";
+import { buildSourceAdapterPlans, mapOssInsightTrendingRows } from "../src/server/sourceAdapters";
 
 const baseProfile: DiscoveryProfile = {
   id: "test-profile",
@@ -89,6 +91,66 @@ test("查询计划会去重", () => {
   const plans = buildGitHubSearchQueryPlans(profile);
   const keys = plans.map((plan) => `${plan.sourceId}:${plan.query}:${plan.sort}:${plan.order}`);
   assert.equal(keys.length, new Set(keys).size);
+});
+
+test("待接入榜单来源可以保存启用状态，但不会生成未实现查询", () => {
+  const sources = normalizeDiscoverySources([
+    ...defaultDiscoverySources(),
+    { id: "github_trending", enabled: true, weight: 1.15 }
+  ]);
+  assert.equal(sources.find((source) => source.id === "github_trending")?.enabled, true);
+
+  const plans = buildGitHubSearchQueryPlans({
+    ...baseProfile,
+    config: {
+      ...baseProfile.config,
+      sources
+    }
+  });
+  assert.ok(!plans.some((plan) => plan.sourceId === "github_trending"));
+});
+
+test("OSS Insight Trending 会生成 source adapter plan", () => {
+  const sources = normalizeDiscoverySources([
+    ...defaultDiscoverySources(),
+    { id: "ossinsight_trending", enabled: true, weight: 1.12 }
+  ]);
+  const plans = buildSourceAdapterPlans({
+    ...baseProfile,
+    config: {
+      ...baseProfile.config,
+      sources
+    }
+  });
+
+  assert.equal(plans[0]?.sourceId, "ossinsight_trending");
+  assert.equal(plans[0]?.queryHashKey, "ossinsight_trending:past_24_hours:All");
+});
+
+test("OSS Insight Trending 响应可以映射为仓库候选", () => {
+  const [repo] = mapOssInsightTrendingRows(
+    [
+      {
+        repo_id: "1165277268",
+        repo_name: "Panniantong/Agent-Reach",
+        primary_language: "Python",
+        description: "Give your AI agent eyes to see the entire internet.",
+        stars: "102",
+        forks: "11",
+        collection_names: "ai,agent"
+      }
+    ],
+    "2026-06-15T00:00:00.000Z"
+  );
+
+  assert.equal(repo.id, "github-1165277268");
+  assert.equal(repo.githubId, 1165277268);
+  assert.equal(repo.fullName, "Panniantong/Agent-Reach");
+  assert.equal(repo.htmlUrl, "https://github.com/Panniantong/Agent-Reach");
+  assert.equal(repo.primaryLanguage, "Python");
+  assert.deepEqual(repo.topics, ["ai", "agent"]);
+  assert.equal(repo.stars, 102);
+  assert.equal(repo.forks, 11);
 });
 
 test("自然语言兜底解析会生成适合 GitHub 的英文条件", () => {
@@ -220,6 +282,81 @@ test("推荐生成会保留关联我的 GitHub 项目的外键", () => {
 
   assert.equal(recommendation.relatedUserRepos[0]?.userRepoId, "user-repo-1");
   assert.equal(recommendation.relatedUserRepos[0]?.fullName, "me/fetchGithub");
+  assert.equal(recommendation.repo.description, "AI workflow developer tool");
+  assert.match(recommendation.summaryZh ?? "", /example\/candidate 是一个 TypeScript 项目/);
+});
+
+test("英文 LLM 摘要不会作为中文展示摘要直接展示", () => {
+  const recommendation = buildRecommendation(
+    {
+      id: "repo-english-summary",
+      fullName: "example/english-summary",
+      owner: "example",
+      name: "english-summary",
+      htmlUrl: "https://github.com/example/english-summary",
+      description: "A production-ready open-source platform for building LLM applications.",
+      primaryLanguage: "TypeScript",
+      topics: ["ai", "developer-tools"],
+      stars: 1500,
+      forks: 120,
+      openIssues: 10,
+      pushedAt: "2026-06-09T00:00:00.000Z",
+      updatedAt: "2026-06-09T00:00:00.000Z",
+      archived: false,
+      fork: false
+    },
+    baseProfile,
+    1,
+    {
+      summary: "A production-ready open-source platform for building LLM applications.",
+      categories: [],
+      target_users: [],
+      core_features: [],
+      maturity: "active",
+      is_match: true,
+      match_score: 0.8,
+      confidence: 0.9,
+      matched_preferences: ["Matches preferred topic: developer-tools"],
+      risks: [],
+      recommendation_reason: "Strong match for developer-tools topic"
+    }
+  );
+
+  assert.equal(
+    recommendation.repo.description,
+    "A production-ready open-source platform for building LLM applications."
+  );
+  assert.match(recommendation.summaryZh ?? "", /example\/english-summary 是一个 TypeScript 项目/);
+  assert.ok(!(recommendation.summaryZh ?? "").startsWith("A production-ready"));
+  assert.deepEqual(recommendation.matchedPreferences, ["命中偏好 topic：开发者工具"]);
+  assert.deepEqual(recommendation.reasons.slice(0, 1), ["与 开发者工具 topic 强匹配"]);
+});
+
+test("旧版包含原始英文描述的摘要会重建为中文展示摘要", () => {
+  const summary = ensureChineseSummary(
+    "example/legacy 是一个 TypeScript 项目。原始描述：A production-ready platform for LLM apps.",
+    {
+      id: "repo-legacy",
+      fullName: "example/legacy",
+      owner: "example",
+      name: "legacy",
+      htmlUrl: "https://github.com/example/legacy",
+      description: "A production-ready platform for LLM apps.",
+      primaryLanguage: "TypeScript",
+      topics: ["ai", "workflow"],
+      stars: 900,
+      forks: 90,
+      openIssues: 3,
+      pushedAt: "2026-06-09T00:00:00.000Z",
+      updatedAt: "2026-06-09T00:00:00.000Z",
+      archived: false,
+      fork: false
+    },
+    ["命中偏好 topic：ai"]
+  );
+
+  assert.match(summary, /example\/legacy 是一个 TypeScript 项目/);
+  assert.doesNotMatch(summary, /原始描述/);
 });
 
 test("知识库 Markdown 会包含推荐理由和关联项目解释", () => {

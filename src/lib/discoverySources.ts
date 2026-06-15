@@ -62,9 +62,9 @@ export const discoverySourceCatalog: DiscoverySourceDefinition[] = [
     id: "ossinsight_trending",
     label: "OSS Insight Trending",
     authority: "third_party",
-    capability: "planned_adapter",
+    capability: "implemented",
     defaultWeight: 1.12,
-    description: "第三方 GitHub 趋势 API，可替代页面抓取 Trending。"
+    description: "通过 OSS Insight 官方 Public API 获取近期 GitHub 趋势仓库，适合补充快速增长项目。"
   },
   {
     id: "gharchive_velocity",
@@ -108,10 +108,7 @@ export function normalizeDiscoverySources(
     const source = byId.get(definition.id);
     return {
       id: definition.id,
-      enabled:
-        definition.capability === "implemented"
-          ? source?.enabled ?? true
-          : false,
+      enabled: source?.enabled ?? (definition.capability === "implemented"),
       weight: source?.weight ?? definition.defaultWeight
     };
   });
