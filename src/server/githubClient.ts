@@ -120,6 +120,26 @@ export async function fetchRepositoryReadme(repo: RepoSummary) {
   };
 }
 
+export async function fetchRepositoryDetails(
+  owner: string,
+  name: string
+): Promise<RepoSummary | null> {
+  const response = await fetchGitHub(`https://api.github.com/repos/${owner}/${name}`);
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `GitHub repository lookup failed: ${response.status} ${response.statusText} ${body}`
+    );
+  }
+
+  return mapGitHubRepo((await response.json()) as GitHubRepoItem);
+}
+
 export async function getGitHubUserProfile(): Promise<GitHubUserProfile> {
   const response = await fetchGitHub("https://api.github.com/user");
 

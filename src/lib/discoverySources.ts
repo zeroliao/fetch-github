@@ -46,9 +46,9 @@ export const discoverySourceCatalog: DiscoverySourceDefinition[] = [
     id: "github_trending",
     label: "GitHub Trending",
     authority: "github_official",
-    capability: "planned_adapter",
+    capability: "implemented",
     defaultWeight: 1.15,
-    description: "GitHub 官方 Trending 页面，适合补充今日/本周/月度热度。"
+    description: "解析 GitHub 官方 Trending 页面，并通过 GitHub REST API 补全仓库详情。"
   },
   {
     id: "github_explore",

@@ -1,5 +1,6 @@
 import type { DiscoveryProfile, DiscoverySourceId, RepoSummary } from "@/lib/types";
 import { normalizeDiscoverySources, sourceDefinition } from "@/lib/discoverySources";
+import { fetchRepositoryDetails } from "./githubClient";
 
 export interface SourceAdapterPlan {
   sourceId: DiscoverySourceId;
@@ -27,11 +28,24 @@ interface OssInsightTrendingRow {
 }
 
 const OSS_INSIGHT_TRENDING_URL = "https://api.ossinsight.io/v1/trends/repos/";
+const GITHUB_TRENDING_URL = "https://github.com/trending";
 
 export function buildSourceAdapterPlans(profile: DiscoveryProfile): SourceAdapterPlan[] {
   const sources = normalizeDiscoverySources(profile.config.sources);
   const plans: SourceAdapterPlan[] = [];
+  const githubTrending = sources.find((source) => source.id === "github_trending");
   const ossInsight = sources.find((source) => source.id === "ossinsight_trending");
+
+  if (githubTrending?.enabled) {
+    plans.push({
+      sourceId: "github_trending",
+      sourceLabel: sourceDefinition("github_trending")?.label ?? "GitHub Trending",
+      weight: githubTrending.weight,
+      queryHashKey: "github_trending:daily:all",
+      cursor: "GitHub Trending: daily / all languages",
+      fetchRepos: (limit) => fetchGitHubTrendingRepos(limit)
+    });
+  }
 
   if (ossInsight?.enabled) {
     plans.push({
@@ -47,12 +61,39 @@ export function buildSourceAdapterPlans(profile: DiscoveryProfile): SourceAdapte
   return plans;
 }
 
+export async function fetchGitHubTrendingRepos(limit: number): Promise<RepoSummary[]> {
+  const url = new URL(GITHUB_TRENDING_URL);
+  url.searchParams.set("since", "daily");
+
+  const response = await fetchWithTimeout(url, "text/html");
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `GitHub Trending failed: ${response.status} ${response.statusText} ${body}`
+    );
+  }
+
+  const links = parseGitHubTrendingRepoLinks(await response.text()).slice(
+    0,
+    Math.max(1, limit)
+  );
+  const repos: RepoSummary[] = [];
+  for (const link of links) {
+    const repo = await fetchRepositoryDetails(link.owner, link.name);
+    if (repo) {
+      repos.push(repo);
+    }
+  }
+
+  return repos;
+}
+
 export async function fetchOssInsightTrendingRepos(limit: number): Promise<RepoSummary[]> {
   const url = new URL(OSS_INSIGHT_TRENDING_URL);
   url.searchParams.set("period", "past_24_hours");
   url.searchParams.set("language", "All");
 
-  const response = await fetchWithTimeout(url);
+  const response = await fetchWithTimeout(url, "application/json");
   if (!response.ok) {
     const body = await response.text();
     throw new Error(
@@ -65,6 +106,27 @@ export async function fetchOssInsightTrendingRepos(limit: number): Promise<RepoS
     0,
     Math.max(1, limit)
   );
+}
+
+export function parseGitHubTrendingRepoLinks(html: string) {
+  const links: Array<{ owner: string; name: string }> = [];
+  const seen = new Set<string>();
+  const pattern = /<h2\b[^>]*>[\s\S]*?<a\b[^>]*href="\/([^/"#?]+)\/([^/"#?]+)"[^>]*>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(html))) {
+    const owner = decodeHtml(match[1]).trim();
+    const name = decodeHtml(match[2]).trim();
+    const key = `${owner}/${name}`.toLowerCase();
+    if (!owner || !name || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    links.push({ owner, name });
+  }
+
+  return links;
 }
 
 export function mapOssInsightTrendingRows(
@@ -115,14 +177,14 @@ function mapOssInsightTrendingRow(
   };
 }
 
-async function fetchWithTimeout(input: string | URL) {
+async function fetchWithTimeout(input: string | URL, accept: string) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
 
   try {
     return await fetch(input, {
       headers: {
-        Accept: "application/json",
+        Accept: accept,
         "User-Agent": "fetchGithub"
       },
       signal: controller.signal
@@ -135,6 +197,14 @@ async function fetchWithTimeout(input: string | URL) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function decodeHtml(value: string) {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&#x2F;/g, "/")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"');
 }
 
 function optionalNumber(value: unknown) {
