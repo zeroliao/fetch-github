@@ -110,6 +110,7 @@ export const feedbackSchema = z.object({
   action: z.enum([
     "save",
     "hide",
+    "restore",
     "like",
     "dislike",
     "track",

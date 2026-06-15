@@ -150,14 +150,14 @@ export function buildRepoAnalysisPrompt(input: {
 }) {
   return JSON.stringify({
     v: REPO_ANALYSIS_PROMPT_VERSION,
-    task: "评估变现机会，给可执行验证建议，不复述英文描述。",
+    task: "评估变现机会，给可执行验证建议。summary 必须直接说明项目功能和用途，用简体中文，避免“是一个项目”“适合进一步评估”等套话，不要复述英文描述。",
     repo: buildRepoAnalysisPromptRepo(input.repo),
     pref: input.profile.config.preferences,
     opp: input.profile.config.opportunity,
     readme: input.readme,
     readmeCompressed: input.compressed,
     output:
-      "JSON keys: summary,categories,target_users,core_features,maturity,is_match,match_score,confidence,matched_preferences,risks,recommendation_reason,opportunity{type,score,monetizationScore,growthSignal,executionFit,differentiationSpace,technicalQuality,targetCustomers,monetizationPaths,validationSteps,suggestedAction,evidence}. Scores 0..1. suggestedAction=observe|track|validate|build|ignore."
+      "JSON keys: summary,categories,target_users,core_features,maturity,is_match,match_score,confidence,matched_preferences,risks,recommendation_reason,opportunity{type,score,monetizationScore,growthSignal,executionFit,differentiationSpace,technicalQuality,targetCustomers,monetizationPaths,validationSteps,suggestedAction,evidence}. summary 只写一句中文功能简介，优先说明项目是做什么的、给谁用、能解决什么问题。Scores 0..1. suggestedAction=observe|track|validate|build|ignore."
   });
 }
 

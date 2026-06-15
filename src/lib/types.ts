@@ -22,6 +22,7 @@ export type JobStage =
 export type FeedbackAction =
   | "save"
   | "hide"
+  | "restore"
   | "like"
   | "dislike"
   | "track"

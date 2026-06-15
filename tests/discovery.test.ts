@@ -18,6 +18,7 @@ import {
   heuristicDiscoveryPreferences
 } from "../src/server/naturalLanguageDiscovery";
 import { buildRecommendation } from "../src/server/ranking";
+import { lexicalRecommendationSearchScore } from "../src/server/recommendationSearch";
 import { buildSchedulePlan } from "../src/server/scheduler";
 import {
   buildSourceAdapterPlans,
@@ -393,7 +394,8 @@ test("推荐生成会保留关联我的 GitHub 项目的外键", () => {
   assert.equal(recommendation.relatedUserRepos[0]?.userRepoId, "user-repo-1");
   assert.equal(recommendation.relatedUserRepos[0]?.fullName, "me/fetchGithub");
   assert.equal(recommendation.repo.description, "AI workflow developer tool");
-  assert.match(recommendation.summaryZh ?? "", /example\/candidate 是一个 TypeScript 项目/);
+  assert.match(recommendation.summaryZh ?? "", /^功能：/);
+  assert.match(recommendation.summaryZh ?? "", /AI 工作流开发工具|AI 产品开发团队|工作流编排/);
   assert.ok((recommendation.scores.opportunity ?? 0) > 0);
   assert.ok(recommendation.opportunity?.monetizationPaths.length);
 });
@@ -452,8 +454,9 @@ test("英文 LLM 摘要不会作为中文展示摘要直接展示", () => {
     recommendation.repo.description,
     "A production-ready open-source platform for building LLM applications."
   );
-  assert.match(recommendation.summaryZh ?? "", /example\/english-summary 是一个 TypeScript 项目/);
-  assert.ok(!(recommendation.summaryZh ?? "").startsWith("A production-ready"));
+  assert.match(recommendation.summaryZh ?? "", /^功能：/);
+  assert.ok(recommendation.summaryZh?.includes("用于构建 LLM / AI 应用的开发平台"));
+  assert.ok(!(recommendation.summaryZh ?? "").includes("A production-ready"));
   assert.deepEqual(recommendation.matchedPreferences, ["命中偏好 topic：开发者工具"]);
   assert.deepEqual(recommendation.reasons.slice(0, 1), ["与 开发者工具 topic 强匹配"]);
   assert.equal(recommendation.opportunity?.type, "SaaS/工具机会");
@@ -484,7 +487,12 @@ test("旧版包含原始英文描述的摘要会重建为中文展示摘要", ()
     ["命中偏好 topic：ai"]
   );
 
-  assert.match(summary, /example\/legacy 是一个 TypeScript 项目/);
+  assert.match(summary, /^功能：/);
+  assert.ok(
+    summary.includes("用于构建 LLM / AI 应用") ||
+      summary.includes("AI 应用开发框架") ||
+      summary.includes("AI 工作流")
+  );
   assert.doesNotMatch(summary, /原始描述/);
 });
 
@@ -710,4 +718,22 @@ test("推荐项目会按主题生成轻量分组并计算组内位置", () => {
   assert.equal(grouped[0].cluster?.size, 2);
   assert.equal(grouped[0].cluster?.rankInCluster, 1);
   assert.equal(grouped[1].cluster?.rankInCluster, 2);
+});
+
+test("推荐项目语义搜索缺少向量时仍可用文本信号召回", () => {
+  const recommendation = buildRecommendation(
+    {
+      ...baseRepo,
+      id: "search-rag",
+      fullName: "example/rag-hosting",
+      description: "RAG knowledge base with self-hosted deployment",
+      topics: ["rag", "embedding", "search"],
+      stars: 1800
+    },
+    baseProfile,
+    1
+  );
+
+  assert.ok(lexicalRecommendationSearchScore(recommendation, "托管 rag knowledge") > 0);
+  assert.equal(lexicalRecommendationSearchScore(recommendation, "crypto exchange wallet"), 0);
 });

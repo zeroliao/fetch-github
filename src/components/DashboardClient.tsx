@@ -2,6 +2,9 @@
 
 import {
   Activity,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   Brain,
   BarChart3,
   ChevronDown,
@@ -9,6 +12,7 @@ import {
   Database,
   ExternalLink,
   EyeOff,
+  Eye,
   GitBranch,
   LogOut,
   LockKeyhole,
@@ -264,7 +268,12 @@ export function DashboardClient({
         {message && <div className="notice page-notice">{message}</div>}
 
         {activeSection === "recommendations" && (
-          <RecommendationsPanel recommendations={recommendations} onSelect={setSelectedRepo} onFeedback={sendFeedback} />
+          <RecommendationsPanel
+            recommendations={recommendations}
+            selectedProfileId={selectedProfileId}
+            onSelect={setSelectedRepo}
+            onFeedback={sendFeedback}
+          />
         )}
         {activeSection === "profiles" && (
           <ProfilesPanel
@@ -427,15 +436,127 @@ function SummaryTile({ icon: Icon, label, value }: { icon: React.ComponentType<{
 
 function RecommendationsPanel({
   recommendations,
+  selectedProfileId,
   onSelect,
   onFeedback
 }: {
   recommendations: Recommendation[];
+  selectedProfileId: string;
   onSelect: (recommendation: Recommendation) => void;
   onFeedback: (recommendation: Recommendation, action: FeedbackAction) => Promise<void>;
 }) {
-  const [showHidden, setShowHidden] = useState(false);
-  const visible = showHidden ? recommendations : recommendations.filter((item) => item.status !== "hidden");
+  const [opportunityFilter, setOpportunityFilter] = useState<OpportunityFilter>("all");
+  const [groupFilter, setGroupFilter] = useState<GroupFilter>("all");
+  const [focusedClusterKey, setFocusedClusterKey] = useState("");
+  const [statusFilter, setStatusFilter] = useState<RecommendationStatusFilter>("visible");
+  const [sortState, setSortState] = useState<RecommendationSortState>({
+    key: "rank",
+    direction: "asc"
+  });
+  const [semanticQuery, setSemanticQuery] = useState("");
+  const [semanticSearch, setSemanticSearch] = useState<SemanticSearchState | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const searchScores = semanticSearch?.scores ?? {};
+  const searchIds = useMemo(
+    () => (semanticSearch ? new Set(semanticSearch.ids) : undefined),
+    [semanticSearch]
+  );
+  const focusedClusterLabel = useMemo(() => {
+    if (!focusedClusterKey) return "";
+    return (
+      recommendations.find((item) => item.cluster?.key === focusedClusterKey)?.cluster?.label ??
+      focusedClusterKey
+    );
+  }, [focusedClusterKey, recommendations]);
+
+  const visible = useMemo(() => {
+    const filtered = recommendations
+      .filter((item) => recommendationMatchesOpportunity(item, opportunityFilter))
+      .filter((item) => recommendationMatchesGroup(item, groupFilter, focusedClusterKey))
+      .filter((item) => recommendationMatchesStatus(item, statusFilter))
+      .filter((item) => !searchIds || searchIds.has(item.id));
+
+    return [...filtered].sort((left, right) =>
+      compareRecommendations(left, right, sortState, searchScores)
+    );
+  }, [
+    focusedClusterKey,
+    groupFilter,
+    opportunityFilter,
+    recommendations,
+    searchIds,
+    searchScores,
+    sortState,
+    statusFilter
+  ]);
+
+  async function runSemanticSearch(event?: React.FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    const query = semanticQuery.trim();
+    if (!query) {
+      setSemanticSearch(null);
+      setSortState({ key: "rank", direction: "asc" });
+      return;
+    }
+
+    setIsSearching(true);
+    try {
+      const params = new URLSearchParams({
+        q: query,
+        limit: "100"
+      });
+      if (selectedProfileId) {
+        params.set("profileId", selectedProfileId);
+      }
+      const response = await fetch(`/api/recommendations/search?${params.toString()}`);
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setSemanticSearch({
+          ids: [],
+          scores: {},
+          mode: "lexical",
+          warning: body.error ?? "语义搜索失败。"
+        });
+        return;
+      }
+      const results = Array.isArray(body.results) ? body.results : [];
+      setSemanticSearch({
+        ids: results.map((item: { id: string }) => item.id),
+        scores: Object.fromEntries(
+          results.map((item: { id: string; score: number }) => [item.id, Number(item.score) || 0])
+        ),
+        mode: body.mode ?? "semantic",
+        warning: body.warning
+      });
+      setSortState({ key: "semantic", direction: "desc" });
+    } finally {
+      setIsSearching(false);
+    }
+  }
+
+  function clearSemanticSearch() {
+    setSemanticQuery("");
+    setSemanticSearch(null);
+    setSortState({ key: "rank", direction: "asc" });
+  }
+
+  function toggleSort(key: RecommendationSortKey) {
+    setSortState((current) =>
+      current.key === key
+        ? {
+            key,
+            direction: current.direction === "asc" ? "desc" : "asc"
+          }
+        : {
+            key,
+            direction: key === "rank" ? "asc" : "desc"
+          }
+    );
+  }
+
+  function clearFocusedCluster() {
+    setFocusedClusterKey("");
+  }
 
   return (
     <section className="panel">
@@ -444,18 +565,97 @@ function RecommendationsPanel({
           <h2>推荐项目</h2>
           <p>结合规则、GitHub 上下文、AI 判断和反馈进行排序。</p>
         </div>
-        <button className="button" onClick={() => setShowHidden(!showHidden)} type="button">
-          {showHidden ? "隐藏已隐藏项目" : "显示隐藏项目"}
-        </button>
+        <div className="muted">当前 {visible.length} / {recommendations.length} 个</div>
+      </div>
+      <div className="list-controls">
+        <form className="search-row" onSubmit={runSemanticSearch}>
+          <Search size={16} />
+          <input
+            className="input"
+            value={semanticQuery}
+            onChange={(event) => setSemanticQuery(event.target.value)}
+            placeholder="语义搜索：例如 适合做托管 SaaS 的 RAG 工具"
+          />
+          <button className="button primary" disabled={isSearching} type="submit">
+            {isSearching ? "搜索中" : "语义搜索"}
+          </button>
+          {semanticSearch && (
+            <button className="button" onClick={clearSemanticSearch} type="button">
+              清除
+            </button>
+          )}
+        </form>
+        <div className="filter-row">
+          <label className="field inline-field">
+            <span>机会</span>
+            <select
+              className="select"
+              value={opportunityFilter}
+              onChange={(event) => setOpportunityFilter(event.target.value as OpportunityFilter)}
+            >
+              {opportunityFilterOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field inline-field">
+            <span>分组动作</span>
+            <select
+              className="select"
+              value={groupFilter}
+              onChange={(event) => setGroupFilter(event.target.value as GroupFilter)}
+            >
+              {groupFilterOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field inline-field">
+            <span>状态</span>
+            <select
+              className="select"
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as RecommendationStatusFilter)}
+            >
+              {recommendationStatusFilterOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {focusedClusterKey && (
+            <button className="button" onClick={clearFocusedCluster} type="button">
+              清除当前分组
+            </button>
+          )}
+          {focusedClusterLabel && <span className="muted">当前分组：{focusedClusterLabel}</span>}
+          {semanticSearch?.warning && <span className="muted">{semanticSearch.warning}</span>}
+        </div>
       </div>
       <div className="table-wrap">
         <table className="repo-table">
           <thead>
             <tr>
+              <th>#</th>
               <th>项目</th>
-              <th>分数</th>
+              <th>
+                <button className="sort-button" type="button" onClick={() => toggleSort("score")}>
+                  <span>分数</span>
+                  {renderSortIcon(sortState, "score")}
+                </button>
+              </th>
               <th>机会</th>
-              <th>Stars</th>
+              <th>
+                <button className="sort-button" type="button" onClick={() => toggleSort("stars")}>
+                  <span>Stars</span>
+                  {renderSortIcon(sortState, "stars")}
+                </button>
+              </th>
               <th>语言</th>
               <th>分组</th>
               <th>命中</th>
@@ -466,14 +666,22 @@ function RecommendationsPanel({
             </tr>
           </thead>
           <tbody>
-            {visible.map((recommendation) => (
+            {visible.length === 0 ? (
+              <tr>
+                <td colSpan={12} className="muted">暂无符合当前筛选条件的推荐项目。</td>
+              </tr>
+            ) : visible.map((recommendation, index) => (
               <tr key={recommendation.id}>
+                <td className="row-index">{index + 1}</td>
                 <td>
                   <a className="repo-link" href={recommendation.repo.htmlUrl} target="_blank" rel="noopener noreferrer">
                     <span>{recommendation.repo.fullName}</span>
                     <ExternalLink size={14} />
                   </a>
                   <div className="muted">{getRecommendationSummaryZh(recommendation)}</div>
+                  {semanticSearch && searchScores[recommendation.id] !== undefined && (
+                    <div className="muted">语义相关 {Math.round(searchScores[recommendation.id] * 100)}</div>
+                  )}
                 </td>
                 <td>
                   <div className="score">
@@ -486,6 +694,19 @@ function RecommendationsPanel({
                 <td>
                   <strong>{recommendation.opportunity?.type ?? "机会待分析"}</strong>
                   <div className="muted">机会分 {Math.round((recommendation.scores.opportunity ?? recommendation.scores.final) * 100)}</div>
+                  {(() => {
+                    const opportunityAction = opportunityFeedbackAction(recommendation);
+                    if (!opportunityAction) return null;
+                    return (
+                    <button
+                      className="button compact"
+                      type="button"
+                      onClick={() => onFeedback(recommendation, opportunityAction.action)}
+                    >
+                      {opportunityAction.label}
+                    </button>
+                    );
+                  })()}
                 </td>
                 <td>{recommendation.repo.stars.toLocaleString()}</td>
                 <td>{recommendation.repo.primaryLanguage}</td>
@@ -496,6 +717,11 @@ function RecommendationsPanel({
                       {recommendation.cluster.rankInCluster ?? "-"} / {recommendation.cluster.size}
                     </div>
                   ) : null}
+                  {recommendation.cluster?.key && (
+                    <button className="button compact" type="button" onClick={() => setFocusedClusterKey(recommendation.cluster?.key ?? "")}>
+                      只看本组
+                    </button>
+                  )}
                 </td>
                 <td>
                   <TagList items={recommendation.matchedPreferences.slice(0, 3)} />
@@ -520,7 +746,11 @@ function RecommendationsPanel({
                     <IconButton title="收藏" icon={Save} onClick={() => onFeedback(recommendation, "save")} />
                     <IconButton title="喜欢" icon={ThumbsUp} onClick={() => onFeedback(recommendation, "like")} />
                     <IconButton title="不喜欢" icon={ThumbsDown} onClick={() => onFeedback(recommendation, "dislike")} />
-                    <IconButton title="隐藏" icon={EyeOff} onClick={() => onFeedback(recommendation, "hide")} />
+                    {recommendation.status === "hidden" ? (
+                      <IconButton title="恢复展示" icon={Eye} onClick={() => onFeedback(recommendation, "restore")} />
+                    ) : (
+                      <IconButton title="移出展示" icon={EyeOff} onClick={() => onFeedback(recommendation, "hide")} />
+                    )}
                     <button className="button" type="button" onClick={() => onSelect(recommendation)}>
                       详情
                     </button>
@@ -594,7 +824,11 @@ function RepoDrawer({
             <button className="button" onClick={() => void hideSimilarRecommendations()} disabled={similarRecommendations.length === 0} type="button">
               隐藏类似项目
             </button>
-            <button className="button" onClick={() => onFeedback(recommendation, "hide")} type="button">隐藏</button>
+            {recommendation.status === "hidden" ? (
+              <button className="button" onClick={() => onFeedback(recommendation, "restore")} type="button">恢复展示</button>
+            ) : (
+              <button className="button" onClick={() => onFeedback(recommendation, "hide")} type="button">移出展示</button>
+            )}
           </div>
           <DetailSection title="当前状态">{recommendationStatusText(recommendation.status)}</DetailSection>
           {recommendation.cluster && (
@@ -1792,6 +2026,152 @@ function buildMatchSignals(recommendation: Recommendation) {
   ].filter(Boolean);
 }
 
+type RecommendationStatusFilter =
+  | "visible"
+  | "all"
+  | Recommendation["status"];
+
+type OpportunityFilter = "all" | "has_opportunity" | "no_opportunity" | "observe" | "track" | "validate" | "build" | "ignore";
+type GroupFilter = "all" | "grouped" | "ungrouped";
+type RecommendationSortKey = "rank" | "score" | "stars" | "semantic";
+type SortDirection = "asc" | "desc";
+
+interface RecommendationSortState {
+  key: RecommendationSortKey;
+  direction: SortDirection;
+}
+
+interface SemanticSearchState {
+  ids: string[];
+  scores: Record<string, number>;
+  mode: "semantic" | "hybrid" | "lexical";
+  warning?: string;
+}
+
+const recommendationStatusFilterOptions: Array<{ value: RecommendationStatusFilter; label: string }> = [
+  { value: "visible", label: "可见项目" },
+  { value: "all", label: "全部项目" },
+  { value: "new", label: "新发现" },
+  { value: "viewed", label: "已查看" },
+  { value: "saved", label: "已收藏" },
+  { value: "tracked", label: "重点跟踪" },
+  { value: "to_validate", label: "待验证" },
+  { value: "validating", label: "验证中" },
+  { value: "monetization_ready", label: "准备变现" },
+  { value: "hidden", label: "已隐藏" },
+  { value: "abandoned", label: "已放弃" }
+];
+
+const opportunityFilterOptions: Array<{ value: OpportunityFilter; label: string }> = [
+  { value: "all", label: "全部机会" },
+  { value: "has_opportunity", label: "有机会" },
+  { value: "no_opportunity", label: "无机会" },
+  { value: "observe", label: "观察" },
+  { value: "track", label: "跟踪" },
+  { value: "validate", label: "待验证" },
+  { value: "build", label: "准备变现" },
+  { value: "ignore", label: "放弃" }
+];
+
+const groupFilterOptions: Array<{ value: GroupFilter; label: string }> = [
+  { value: "all", label: "全部分组" },
+  { value: "grouped", label: "已分组" },
+  { value: "ungrouped", label: "未分组" }
+];
+
+function recommendationMatchesOpportunity(
+  recommendation: Recommendation,
+  filter: OpportunityFilter
+) {
+  const action = recommendation.opportunity?.suggestedAction;
+  if (filter === "all") {
+    return true;
+  }
+  if (filter === "has_opportunity") {
+    return Boolean(action);
+  }
+  if (filter === "no_opportunity") {
+    return !action;
+  }
+  return action === filter;
+}
+
+function recommendationMatchesGroup(
+  recommendation: Recommendation,
+  filter: GroupFilter,
+  focusedClusterKey: string
+) {
+  if (focusedClusterKey) {
+    return recommendation.cluster?.key === focusedClusterKey;
+  }
+  if (filter === "all") {
+    return true;
+  }
+  if (filter === "grouped") {
+    return Boolean(recommendation.cluster?.key);
+  }
+  return !recommendation.cluster?.key;
+}
+
+function recommendationMatchesStatus(
+  recommendation: Recommendation,
+  filter: RecommendationStatusFilter
+) {
+  if (filter === "all") {
+    return true;
+  }
+  if (filter === "visible") {
+    return recommendation.status !== "hidden";
+  }
+  return recommendation.status === filter;
+}
+
+function compareRecommendations(
+  left: Recommendation,
+  right: Recommendation,
+  sortState: RecommendationSortState,
+  semanticScores: Record<string, number>
+) {
+  const rankFallback = left.rank - right.rank;
+  const direction = sortState.direction === "asc" ? 1 : -1;
+  switch (sortState.key) {
+    case "score":
+      return direction * (left.scores.final - right.scores.final) || rankFallback;
+    case "stars":
+      return direction * (left.repo.stars - right.repo.stars) || rankFallback;
+    case "semantic":
+      return direction * ((semanticScores[left.id] ?? 0) - (semanticScores[right.id] ?? 0)) || rankFallback;
+    case "rank":
+      return direction * (left.rank - right.rank) || rankFallback;
+  }
+}
+
+function opportunityFeedbackAction(recommendation: Recommendation): { action: FeedbackAction; label: string } | null {
+  if (recommendation.status === "hidden" || recommendation.status === "abandoned") {
+    return null;
+  }
+  switch (recommendation.opportunity?.suggestedAction) {
+    case "validate":
+      return recommendation.status === "to_validate" ? null : { action: "to_validate", label: "待验证" };
+    case "build":
+      return recommendation.status === "monetization_ready" ? null : { action: "monetization_ready", label: "准备变现" };
+    case "track":
+      return recommendation.status === "tracked" ? null : { action: "track", label: "跟踪" };
+    case "ignore":
+      return { action: "abandon", label: "放弃" };
+    case "observe":
+    case undefined:
+      return recommendation.status === "saved" ? null : { action: "save", label: "收藏观察" };
+  }
+}
+
+function renderSortIcon(sortState: RecommendationSortState, key: RecommendationSortKey) {
+  if (sortState.key !== key) {
+    return <ArrowUpDown size={14} />;
+  }
+  return sortState.direction === "asc" ? <ArrowUp size={14} /> : <ArrowDown size={14} />;
+}
+
 function buildOperationAlerts(
   operations: DashboardSnapshot["operations"],
   queueStats: DashboardSnapshot["queueStats"]
@@ -1870,6 +2250,8 @@ function statusFromFeedbackAction(
       return "saved";
     case "hide":
       return "hidden";
+    case "restore":
+      return "viewed";
     case "track":
       return "tracked";
     case "to_validate":

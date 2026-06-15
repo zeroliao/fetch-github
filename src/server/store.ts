@@ -868,17 +868,19 @@ export async function recordFeedback(
         ? "saved"
         : action === "hide"
           ? "hidden"
-          : action === "track"
-            ? "tracked"
-            : action === "to_validate"
-              ? "to_validate"
-              : action === "validating"
-                ? "validating"
-                : action === "monetization_ready"
-                  ? "monetization_ready"
-                  : action === "abandon"
-                    ? "abandoned"
-                    : recommendation.status;
+          : action === "restore"
+            ? "viewed"
+            : action === "track"
+              ? "tracked"
+              : action === "to_validate"
+                ? "to_validate"
+                : action === "validating"
+                  ? "validating"
+                  : action === "monetization_ready"
+                    ? "monetization_ready"
+                    : action === "abandon"
+                      ? "abandoned"
+                      : recommendation.status;
 
     return {
       ...recommendation,
