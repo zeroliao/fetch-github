@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS discovery_jobs (
   updated_repo_count INTEGER NOT NULL DEFAULT 0,
   unchanged_repo_count INTEGER NOT NULL DEFAULT 0,
   candidate_count INTEGER NOT NULL DEFAULT 0,
+  failed_candidate_count INTEGER NOT NULL DEFAULT 0,
   started_at TIMESTAMPTZ,
   finished_at TIMESTAMPTZ,
   error_message TEXT,
@@ -156,6 +157,7 @@ CREATE TABLE IF NOT EXISTS candidate_queue (
   stage TEXT NOT NULL,
   status TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
   next_run_at TIMESTAMPTZ,
   queued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -205,11 +207,13 @@ CREATE TABLE IF NOT EXISTS llm_jobs (
   job_type TEXT NOT NULL,
   status TEXT NOT NULL,
   input_hash TEXT NOT NULL,
+  job_id TEXT REFERENCES discovery_jobs(id) ON DELETE SET NULL,
   provider_id TEXT NOT NULL REFERENCES ai_providers(id),
   model TEXT NOT NULL,
   prompt_version TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
   token_usage_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  error_message TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   finished_at TIMESTAMPTZ
 );
@@ -328,6 +332,16 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status ON discovery_jobs(status, stage);
 CREATE INDEX IF NOT EXISTS idx_candidate_queue_work ON candidate_queue(status, stage, priority_score DESC);
 ALTER TABLE candidate_queue
   ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE candidate_queue
+  ADD COLUMN IF NOT EXISTS error_message TEXT;
+ALTER TABLE discovery_jobs
+  ADD COLUMN IF NOT EXISTS failed_candidate_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE llm_jobs
+  ADD COLUMN IF NOT EXISTS job_id TEXT REFERENCES discovery_jobs(id) ON DELETE SET NULL;
+ALTER TABLE llm_jobs
+  ADD COLUMN IF NOT EXISTS error_message TEXT;
+ALTER TABLE recommendations
+  ADD COLUMN IF NOT EXISTS tags_json JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE llm_results
   ADD COLUMN IF NOT EXISTS input_hash TEXT;
 CREATE INDEX IF NOT EXISTS idx_recommendations_profile ON recommendations(profile_id, final_score DESC);

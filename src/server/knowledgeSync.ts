@@ -172,6 +172,7 @@ export function buildRecommendationMarkdown(recommendation: Recommendation) {
 function isL4Candidate(recommendation: Recommendation, minScore: number) {
   return (
     recommendation.status === "saved" ||
+    recommendation.status === "liked" ||
     recommendation.status === "tracked" ||
     recommendation.scores.final >= minScore
   );

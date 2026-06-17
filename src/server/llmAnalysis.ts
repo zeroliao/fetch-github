@@ -1,6 +1,6 @@
 import { compactMarkdownForAnalysis } from "@/lib/text";
 import type { DiscoveryProfile, OpportunityAnalysis, RepoSummary } from "@/lib/types";
-import { callChatJson } from "./aiClient";
+import { callChatJsonWithUsage } from "./aiClient";
 import { getAiProvider } from "./store";
 
 export const REPO_ANALYSIS_PROMPT_VERSION = "opportunity-radar-v3";
@@ -51,6 +51,12 @@ export interface RepoAnalysisResult {
 export async function analyzeRepoWithLlm(
   input: RepoAnalysisInput
 ): Promise<RepoAnalysisResult> {
+  return (await analyzeRepoWithLlmWithUsage(input)).analysis;
+}
+
+export async function analyzeRepoWithLlmWithUsage(
+  input: RepoAnalysisInput
+): Promise<{ analysis: RepoAnalysisResult; tokenUsage: Record<string, unknown> }> {
   const provider = await getAiProvider(input.profile.config.ai.chatProviderId);
   if (!provider) {
     throw new Error("Chat 模型配置不存在。");
@@ -62,7 +68,7 @@ export async function analyzeRepoWithLlm(
     isDelta ? README_DELTA_ANALYSIS_MAX_CHARS : README_ANALYSIS_MAX_CHARS
   );
 
-  const result = await callChatJson({
+  const result = await callChatJsonWithUsage({
     provider,
     messages: [
       {
@@ -91,7 +97,10 @@ export async function analyzeRepoWithLlm(
     ]
   });
 
-  return normalizeAnalysis(result);
+  return {
+    analysis: normalizeAnalysis(result.data),
+    tokenUsage: result.usage
+  };
 }
 
 export function buildRepoDeltaAnalysisPrompt(input: {

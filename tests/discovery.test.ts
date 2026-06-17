@@ -20,6 +20,7 @@ import {
 import { buildRecommendation } from "../src/server/ranking";
 import { lexicalRecommendationSearchScore } from "../src/server/recommendationSearch";
 import { buildSchedulePlan } from "../src/server/scheduler";
+import { buildTokenSummary } from "../src/server/postgresStore";
 import {
   buildSourceAdapterPlans,
   mapOssInsightTrendingRows,
@@ -736,4 +737,52 @@ test("推荐项目语义搜索缺少向量时仍可用文本信号召回", () =>
 
   assert.ok(lexicalRecommendationSearchScore(recommendation, "托管 rag knowledge") > 0);
   assert.equal(lexicalRecommendationSearchScore(recommendation, "crypto exchange wallet"), 0);
+});
+
+test("Token 汇总会标记 provider 未返回 usage 的 AI 作业", () => {
+  const rows = buildTokenSummary(
+    [
+      {
+        id: "llm-known",
+        repoId: "repo-a",
+        scanJobId: "job-a",
+        providerId: "provider-a",
+        model: "chat-a",
+        jobType: "repo_analysis",
+        status: "completed",
+        promptVersion: "v1",
+        attempts: 1,
+        tokenUsageKnown: true,
+        promptTokens: 100,
+        completionTokens: 50,
+        totalTokens: 150,
+        estimatedCostUsd: 0.001,
+        createdAt: new Date().toISOString()
+      },
+      {
+        id: "llm-unknown",
+        repoId: "repo-a",
+        scanJobId: "job-a",
+        providerId: "provider-a",
+        model: "chat-a",
+        jobType: "repo_analysis",
+        status: "completed",
+        promptVersion: "v1",
+        attempts: 1,
+        tokenUsageKnown: false,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        estimatedCostUsd: 0,
+        createdAt: new Date().toISOString()
+      }
+    ],
+    (job) => job.repoId,
+    (job) => job.repoFullName ?? job.repoId
+  );
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].jobCount, 2);
+  assert.equal(rows[0].unknownJobCount, 1);
+  assert.equal(rows[0].totalTokens, 150);
 });

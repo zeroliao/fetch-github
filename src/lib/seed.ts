@@ -201,6 +201,7 @@ export const seedRecommendations: Recommendation[] = [
     ],
     risks: ["生态覆盖面较大，MVP 阶段接入时需要控制范围。"],
     matchedPreferences: ["ai", "developer-tools", "TypeScript"],
+    tags: [],
     relatedUserRepos: [
       {
         fullName: "your-name/fetchGithub",
@@ -269,6 +270,7 @@ export const seedRecommendations: Recommendation[] = [
     ],
     risks: ["issue 数量较高，可能意味着使用和维护复杂度也较高。"],
     matchedPreferences: ["llm", "rag", "agents", "Python"],
+    tags: [],
     relatedUserRepos: [
       {
         fullName: "your-name/fetchGithub",
@@ -296,6 +298,7 @@ export const seedJobs: ScanJob[] = [
     updatedRepoCount: 0,
     unchangedRepoCount: 0,
     candidateCount: 210,
+    failedCandidateCount: 0,
     startedAt: now,
     createdAt: now
   }
@@ -314,8 +317,11 @@ export const seedSnapshot: DashboardSnapshot = {
   operations: {
     resourceEvents: [],
     aiJobs: [],
+    repoTokenSummary: [],
+    scanTokenSummary: [],
     aiCostSummary: {
       totalJobs: 0,
+      unknownJobCount: 0,
       totalTokens: 0,
       estimatedCostUsd: 0
     }

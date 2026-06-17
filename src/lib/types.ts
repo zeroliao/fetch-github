@@ -183,6 +183,7 @@ export interface Recommendation {
   reasons: string[];
   risks: string[];
   matchedPreferences: string[];
+  tags: string[];
   relatedUserRepos: Array<{
     userRepoId?: string;
     fullName: string;
@@ -194,6 +195,8 @@ export interface Recommendation {
     | "new"
     | "viewed"
     | "saved"
+    | "liked"
+    | "disliked"
     | "hidden"
     | "tracked"
     | "to_validate"
@@ -241,6 +244,7 @@ export interface ScanJob {
   updatedRepoCount: number;
   unchangedRepoCount: number;
   candidateCount: number;
+  failedCandidateCount: number;
   statusReason?: string;
   startedAt?: string;
   finishedAt?: string;
@@ -278,6 +282,7 @@ export interface ResourceEvent {
 export interface AiJobMetric {
   id: string;
   repoId: string;
+  scanJobId?: string;
   repoFullName?: string;
   providerId: string;
   providerName?: string;
@@ -286,19 +291,35 @@ export interface AiJobMetric {
   status: string;
   promptVersion: string;
   attempts: number;
+  tokenUsageKnown: boolean;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
   estimatedCostUsd: number;
+  errorMessage?: string;
   createdAt: string;
   finishedAt?: string;
+}
+
+export interface TokenSummaryMetric {
+  id: string;
+  label: string;
+  jobCount: number;
+  unknownJobCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
 }
 
 export interface OperationsSnapshot {
   resourceEvents: ResourceEvent[];
   aiJobs: AiJobMetric[];
+  repoTokenSummary: TokenSummaryMetric[];
+  scanTokenSummary: TokenSummaryMetric[];
   aiCostSummary: {
     totalJobs: number;
+    unknownJobCount: number;
     totalTokens: number;
     estimatedCostUsd: number;
   };
@@ -405,4 +426,5 @@ export interface QueueStat {
   stage: string;
   status: string;
   count: number;
+  failureReasons?: string[];
 }

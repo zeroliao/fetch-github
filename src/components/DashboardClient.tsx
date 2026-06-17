@@ -273,6 +273,12 @@ export function DashboardClient({
             selectedProfileId={selectedProfileId}
             onSelect={setSelectedRepo}
             onFeedback={sendFeedback}
+            onRefresh={refreshRecommendations}
+            onTagsUpdated={(recommendation) =>
+              setRecommendations((current) =>
+                current.map((item) => (item.id === recommendation.id ? recommendation : item))
+              )
+            }
           />
         )}
         {activeSection === "profiles" && (
@@ -438,17 +444,23 @@ function RecommendationsPanel({
   recommendations,
   selectedProfileId,
   onSelect,
-  onFeedback
+  onFeedback,
+  onRefresh,
+  onTagsUpdated
 }: {
   recommendations: Recommendation[];
   selectedProfileId: string;
   onSelect: (recommendation: Recommendation) => void;
   onFeedback: (recommendation: Recommendation, action: FeedbackAction) => Promise<void>;
+  onRefresh: () => Promise<void>;
+  onTagsUpdated: (recommendation: Recommendation) => void;
 }) {
   const [opportunityFilter, setOpportunityFilter] = useState<OpportunityFilter>("all");
   const [groupFilter, setGroupFilter] = useState<GroupFilter>("all");
+  const [preferenceFilter, setPreferenceFilter] = useState<PreferenceFilter>("unrated");
   const [focusedClusterKey, setFocusedClusterKey] = useState("");
   const [statusFilter, setStatusFilter] = useState<RecommendationStatusFilter>("visible");
+  const [tagEditorRepo, setTagEditorRepo] = useState<Recommendation | null>(null);
   const [sortState, setSortState] = useState<RecommendationSortState>({
     key: "rank",
     direction: "asc"
@@ -473,6 +485,7 @@ function RecommendationsPanel({
     const filtered = recommendations
       .filter((item) => recommendationMatchesOpportunity(item, opportunityFilter))
       .filter((item) => recommendationMatchesGroup(item, groupFilter, focusedClusterKey))
+      .filter((item) => recommendationMatchesPreference(item, preferenceFilter))
       .filter((item) => recommendationMatchesStatus(item, statusFilter))
       .filter((item) => !searchIds || searchIds.has(item.id));
 
@@ -483,6 +496,7 @@ function RecommendationsPanel({
     focusedClusterKey,
     groupFilter,
     opportunityFilter,
+    preferenceFilter,
     recommendations,
     searchIds,
     searchScores,
@@ -558,6 +572,11 @@ function RecommendationsPanel({
     setFocusedClusterKey("");
   }
 
+  async function sendPreferenceFeedback(recommendation: Recommendation, action: "like" | "dislike") {
+    await onFeedback(recommendation, action);
+    await onRefresh();
+  }
+
   return (
     <section className="panel">
       <div className="panel-header">
@@ -628,6 +647,20 @@ function RecommendationsPanel({
               ))}
             </select>
           </label>
+          <label className="field inline-field">
+            <span>喜好</span>
+            <select
+              className="select"
+              value={preferenceFilter}
+              onChange={(event) => setPreferenceFilter(event.target.value as PreferenceFilter)}
+            >
+              {preferenceFilterOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
           {focusedClusterKey && (
             <button className="button" onClick={clearFocusedCluster} type="button">
               清除当前分组
@@ -659,6 +692,7 @@ function RecommendationsPanel({
               <th>语言</th>
               <th>分组</th>
               <th>命中</th>
+              <th>标签</th>
               <th>解释</th>
               <th>动作</th>
               <th>状态</th>
@@ -668,7 +702,7 @@ function RecommendationsPanel({
           <tbody>
             {visible.length === 0 ? (
               <tr>
-                <td colSpan={12} className="muted">暂无符合当前筛选条件的推荐项目。</td>
+                <td colSpan={13} className="muted">暂无符合当前筛选条件的推荐项目。</td>
               </tr>
             ) : visible.map((recommendation, index) => (
               <tr key={recommendation.id}>
@@ -726,6 +760,12 @@ function RecommendationsPanel({
                 <td>
                   <TagList items={recommendation.matchedPreferences.slice(0, 3)} />
                 </td>
+                <td>
+                  <TagList items={recommendation.tags ?? []} />
+                  <button className="button compact" type="button" onClick={() => setTagEditorRepo(recommendation)}>
+                    标签
+                  </button>
+                </td>
                 <td className="explain-cell">
                   <strong>{recommendation.reasons[0] ?? "综合评分较高"}</strong>
                   <div className="muted">
@@ -743,9 +783,20 @@ function RecommendationsPanel({
                     <a className="button icon" href={recommendation.repo.htmlUrl} target="_blank" rel="noopener noreferrer" title="打开 GitHub">
                       <ExternalLink size={15} />
                     </a>
-                    <IconButton title="收藏" icon={Save} onClick={() => onFeedback(recommendation, "save")} />
-                    <IconButton title="喜欢" icon={ThumbsUp} onClick={() => onFeedback(recommendation, "like")} />
-                    <IconButton title="不喜欢" icon={ThumbsDown} onClick={() => onFeedback(recommendation, "dislike")} />
+                    <IconButton
+                      title={recommendation.status === "liked" ? "已喜欢" : "喜欢"}
+                      icon={ThumbsUp}
+                      active={recommendation.status === "liked"}
+                      tone="positive"
+                      onClick={() => void sendPreferenceFeedback(recommendation, "like")}
+                    />
+                    <IconButton
+                      title={recommendation.status === "disliked" ? "已不喜欢" : "不喜欢"}
+                      icon={ThumbsDown}
+                      active={recommendation.status === "disliked"}
+                      tone="danger"
+                      onClick={() => void sendPreferenceFeedback(recommendation, "dislike")}
+                    />
                     {recommendation.status === "hidden" ? (
                       <IconButton title="恢复展示" icon={Eye} onClick={() => onFeedback(recommendation, "restore")} />
                     ) : (
@@ -761,6 +812,17 @@ function RecommendationsPanel({
           </tbody>
         </table>
       </div>
+      {tagEditorRepo && (
+        <RecommendationTagDialog
+          recommendation={tagEditorRepo}
+          recommendations={recommendations}
+          onClose={() => setTagEditorRepo(null)}
+          onUpdated={(recommendation) => {
+            onTagsUpdated(recommendation);
+            setTagEditorRepo(null);
+          }}
+        />
+      )}
     </section>
   );
 }
@@ -818,7 +880,14 @@ function RepoDrawer({
             </button>
             <button className="button" onClick={() => onFeedback(recommendation, "validating")} type="button">验证中</button>
             <button className="button" onClick={() => onFeedback(recommendation, "monetization_ready")} type="button">准备变现</button>
-            <button className="button" onClick={() => onFeedback(recommendation, "save")} type="button">收藏</button>
+            <button className="button" onClick={() => onFeedback(recommendation, "like")} type="button">
+              <ThumbsUp size={15} />
+              {recommendation.status === "liked" ? "已喜欢" : "喜欢"}
+            </button>
+            <button className="button" onClick={() => onFeedback(recommendation, "dislike")} type="button">
+              <ThumbsDown size={15} />
+              {recommendation.status === "disliked" ? "已不喜欢" : "不喜欢"}
+            </button>
             <button className="button" onClick={() => onFeedback(recommendation, "track")} type="button">跟踪</button>
             <button className="button" onClick={() => onFeedback(recommendation, "abandon")} type="button">放弃</button>
             <button className="button" onClick={() => void hideSimilarRecommendations()} disabled={similarRecommendations.length === 0} type="button">
@@ -865,6 +934,121 @@ function RepoDrawer({
   );
 }
 
+function RecommendationTagDialog({
+  recommendation,
+  recommendations,
+  onClose,
+  onUpdated
+}: {
+  recommendation: Recommendation;
+  recommendations: Recommendation[];
+  onClose: () => void;
+  onUpdated: (recommendation: Recommendation) => void;
+}) {
+  const existingTags = useMemo(
+    () => [...new Set(recommendations.flatMap((item) => item.tags ?? []))].sort((a, b) => a.localeCompare(b)),
+    [recommendations]
+  );
+  const [tags, setTags] = useState<string[]>(recommendation.tags ?? []);
+  const [newTag, setNewTag] = useState("");
+  const [message, setMessage] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+
+  function toggleTag(tag: string) {
+    setTags((current) =>
+      current.includes(tag)
+        ? current.filter((item) => item !== tag)
+        : [...current, tag]
+    );
+  }
+
+  function addTag() {
+    const tag = newTag.trim();
+    if (!tag || tags.includes(tag)) {
+      setNewTag("");
+      return;
+    }
+    setTags((current) => [...current, tag].slice(0, 20));
+    setNewTag("");
+  }
+
+  async function saveTags(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSaving(true);
+    setMessage("正在保存标签...");
+    try {
+      const response = await fetch(`/api/recommendations/${recommendation.id}/tags`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tags })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setMessage(body.error ?? "标签保存失败。");
+        return;
+      }
+      onUpdated(body);
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <form className="modal-panel wide-modal" onSubmit={saveTags}>
+        <div className="panel-header">
+          <div className="panel-title">
+            <h2>项目标签</h2>
+            <p>{recommendation.repo.fullName}</p>
+          </div>
+          <button className="button icon" type="button" onClick={onClose} title="关闭" aria-label="关闭">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="list-panel">
+          {message && <div className="notice">{message}</div>}
+          <div className="tag-editor-row">
+            <input
+              className="input"
+              value={newTag}
+              onChange={(event) => setNewTag(event.target.value)}
+              placeholder="新增标签，例如：SaaS、RAG、待验证"
+            />
+            <button className="button" type="button" onClick={addTag}>新增</button>
+          </div>
+          <div className="row-item">
+            <strong>已选标签</strong>
+            <TagList items={tags} />
+          </div>
+          <div className="row-item">
+            <strong>选择已有标签</strong>
+            <div className="tag-choice-list">
+              {existingTags.length === 0 ? (
+                <span className="muted">暂无已添加过的标签。</span>
+              ) : existingTags.map((tag) => (
+                <button
+                  className={`tag-choice ${tags.includes(tag) ? "active" : ""}`}
+                  key={tag}
+                  type="button"
+                  onClick={() => toggleTag(tag)}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="form-actions">
+            <button className="button" type="button" onClick={onClose}>关闭</button>
+            <button className="button primary" type="submit" disabled={isSaving}>
+              {isSaving ? "保存中" : "保存标签"}
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function ProfilesPanel({
   profiles,
   selectedProfile,
@@ -890,8 +1074,10 @@ function ProfilesPanel({
   const [naturalLanguageMode, setNaturalLanguageMode] = useState<"merge" | "replace">("merge");
   const [naturalLanguagePreview, setNaturalLanguagePreview] = useState<NaturalLanguagePreview | null>(null);
   const [isGeneratingPreferences, setIsGeneratingPreferences] = useState(false);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
   const chatProviders = providers.filter((provider) => provider.kind === "chat" && provider.enabled);
   const embeddingProviders = providers.filter((provider) => provider.kind === "embedding" && provider.enabled);
+  const plannedAdapters = discoverySourceCatalog.filter((source) => source.capability === "planned_adapter");
 
   useEffect(() => {
     if (!selectedProfile) return;
@@ -915,6 +1101,8 @@ function ProfilesPanel({
 
   async function saveProfile() {
     if (!selectedProfile || !schedule || !limits || !preferences || !resourcePolicy) return;
+    setIsSavingProfile(true);
+    setMessage("正在保存发现配置...");
     const nextConfig = {
       ...selectedProfile.config,
       schedule,
@@ -928,17 +1116,23 @@ function ProfilesPanel({
         embeddingProviderId
       }
     };
+    try {
     const response = await fetch(`/api/profiles/${selectedProfile.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled, config: nextConfig })
     });
-    const body = await response.json().catch(() => ({}));
-    if (response.ok) {
-      onUpdated(body);
-      setMessage("发现配置已更新。");
-    } else {
-      setMessage(body.error ?? "发现配置更新失败。");
+      const body = await response.json().catch(() => ({}));
+      if (response.ok) {
+        onUpdated(body);
+        setMessage("发现配置已保存。");
+      } else {
+        setMessage(body.error ?? "发现配置保存失败。");
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? `发现配置保存失败：${error.message}` : "发现配置保存失败。");
+    } finally {
+      setIsSavingProfile(false);
     }
   }
 
@@ -1028,7 +1222,10 @@ function ProfilesPanel({
                 </select>
               </label>
               <div className="form-actions">
-                <button className="button primary" type="button" onClick={saveProfile}>保存发现配置</button>
+                <button className="button primary" type="button" onClick={saveProfile} disabled={isSavingProfile}>
+                  {isSavingProfile ? <RefreshCw size={15} /> : <Save size={15} />}
+                  {isSavingProfile ? "保存中" : "保存发现配置"}
+                </button>
               </div>
             </div>
           )}
@@ -1228,6 +1425,13 @@ function ProfilesPanel({
             </div>
           )}
           {selectedProfile && (
+            <div className="list-panel source-planned-list">
+              <strong>待接入 adapter</strong>
+              <span className="muted">这些来源可以先保存启用状态和权重，但当前不会生成真实扫描查询。</span>
+              <TagList items={plannedAdapters.map((source) => source.label)} />
+            </div>
+          )}
+          {selectedProfile && (
             <div className="source-grid">
               {discoverySourceCatalog.map((definition) => {
                 const source = sources.find((item) => item.id === definition.id);
@@ -1282,14 +1486,20 @@ function JobsPanel({
   const [message, setMessage] = useState("");
   const [busyJobId, setBusyJobId] = useState("");
 
-  async function updateJob(jobId: string, action: "pause" | "resume") {
+  async function updateJob(jobId: string, action: "pause" | "resume" | "complete") {
     setBusyJobId(jobId);
     try {
       const response = await fetch(`/api/scans/${jobId}/${action}`, { method: "POST" });
       const body = await response.json().catch(() => ({}));
       if (response.ok) {
         onJobUpdated(body);
-        setMessage(action === "pause" ? "扫描任务已暂停。" : "扫描任务已恢复。");
+        setMessage(
+          action === "pause"
+            ? "扫描任务已暂停。"
+            : action === "resume"
+              ? "扫描任务已恢复。"
+              : "扫描任务已手动完成。"
+        );
         await onRefresh();
       } else {
         setMessage(body.error ?? "扫描任务操作失败。");
@@ -1351,6 +1561,7 @@ function JobsPanel({
                 <th>更新项目</th>
                 <th>未变化</th>
                 <th>候选项目</th>
+                <th>失败项目</th>
                 <th>已处理</th>
                 <th>已分析</th>
                 <th>操作</th>
@@ -1358,12 +1569,12 @@ function JobsPanel({
             </thead>
             <tbody>
               {jobs.length === 0 ? (
-                <tr><td colSpan={11} className="muted">暂无扫描任务</td></tr>
+                <tr><td colSpan={12} className="muted">暂无扫描任务</td></tr>
               ) : (
                 jobs.map((job) => (
                   <tr key={job.id}>
                     <td>{job.type}</td>
-                    <td>
+                    <td title={job.statusReason ?? job.errorMessage ?? undefined}>
                       <span className={`status ${job.status}`}>{job.status}</span>
                       {(job.statusReason || job.errorMessage) && <div className="muted">{job.statusReason ?? job.errorMessage}</div>}
                     </td>
@@ -1373,12 +1584,14 @@ function JobsPanel({
                     <td>{job.updatedRepoCount}</td>
                     <td>{job.unchangedRepoCount}</td>
                     <td>{job.candidateCount} / {job.maxCandidates}</td>
+                    <td>{job.failedCandidateCount}</td>
                     <td>{job.processedCount}</td>
                     <td>{job.analyzedCount}</td>
                     <td>
                       <div className="action-row">
                         {canPauseJob(job.status) && <button className="button" disabled={busyJobId === job.id} onClick={() => updateJob(job.id, "pause")} type="button">暂停</button>}
                         {canResumeJob(job.status) && <button className="button" disabled={busyJobId === job.id} onClick={() => updateJob(job.id, "resume")} type="button">恢复</button>}
+                        {canCompleteJob(job.status) && <button className="button" disabled={busyJobId === job.id} onClick={() => updateJob(job.id, "complete")} type="button">完成</button>}
                         {canArchiveJob(job.status) && <button className="button" disabled={busyJobId === job.id} onClick={() => archiveJob(job.id)} type="button">归档</button>}
                       </div>
                     </td>
@@ -1586,43 +1799,35 @@ function ProvidersPanel({
   onChanged: (provider: AiProvider) => void;
   onDeleted: (providerId: string) => void;
 }) {
-  const [kind, setKind] = useState<"chat" | "embedding">("chat");
-  const [name, setName] = useState("新建 Chat 配置");
-  const [baseUrl, setBaseUrl] = useState("https://api.example.com/v1");
-  const [apiKeyEnv, setApiKeyEnv] = useState("CHAT_API_KEY");
-  const [apiKeyValue, setApiKeyValue] = useState("");
-  const [model, setModel] = useState("chat-model");
-  const [dimensions, setDimensions] = useState(1536);
+  const [editingProvider, setEditingProvider] = useState<AiProvider | "new" | null>(null);
   const [message, setMessage] = useState("");
 
-  function switchKind(nextKind: "chat" | "embedding") {
-    setKind(nextKind);
-    resetProviderForm(nextKind);
-  }
-
-  function resetProviderForm(nextKind = kind) {
-    setName(nextKind === "chat" ? "新建 Chat 配置" : "新建 Embedding 配置");
-    setBaseUrl("https://api.example.com/v1");
-    setApiKeyEnv(nextKind === "chat" ? "CHAT_API_KEY" : "EMBEDDING_API_KEY");
-    setApiKeyValue("");
-    setModel(nextKind === "chat" ? "chat-model" : "embedding-model");
-    setDimensions(nextKind === "embedding" ? 4096 : 1536);
-  }
-
-  async function createProvider() {
-    const response = await fetch("/api/ai-providers", {
-      method: "POST",
+  async function saveProvider(input: AiProviderFormValue) {
+    const isEditing = input.id !== undefined;
+    const response = await fetch(isEditing ? `/api/ai-providers/${input.id}` : "/api/ai-providers", {
+      method: isEditing ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, kind, type: "openai_compatible", baseUrl, apiKeyEnv, apiKeyValue, model, dimensions: kind === "embedding" ? dimensions : undefined, enabled: true })
+      body: JSON.stringify({
+        name: input.name,
+        kind: input.kind,
+        type: "openai_compatible",
+        baseUrl: input.baseUrl,
+        apiKeyEnv: input.apiKeyEnv,
+        apiKeyValue: input.apiKeyValue || undefined,
+        model: input.model,
+        dimensions: input.kind === "embedding" ? input.dimensions : undefined,
+        enabled: input.enabled
+      })
     });
     const body = await response.json().catch(() => ({}));
     if (response.ok) {
       onChanged(body);
-      setMessage("AI 配置已创建。");
-      resetProviderForm();
-    } else {
-      setMessage(body.error ?? "创建失败。");
+      setMessage(isEditing ? "AI 配置已修改。" : "AI 配置已创建。");
+      setEditingProvider(null);
+      return;
     }
+
+    throw new Error(body.error ?? (isEditing ? "修改失败。" : "创建失败。"));
   }
 
   async function patchProvider(provider: AiProvider) {
@@ -1662,20 +1867,15 @@ function ProvidersPanel({
       <section className="panel">
         <div className="panel-header">
           <div className="panel-title">
-            <h2>创建 AI 配置</h2>
-            <p>Base URL、模型和 API Key 在一个地方配置；密钥只写入本地 .env.local。</p>
+            <h2>AI 配置</h2>
+            <p>Chat 和 Embedding 分开配置；Base URL、模型和 API Key 在一个地方维护。</p>
           </div>
+          <button className="button primary" type="button" onClick={() => setEditingProvider("new")}>
+            新增 AI 配置
+          </button>
         </div>
-        <div className="form-grid">
+        <div className="list-panel">
           {message && <div className="notice">{message}</div>}
-          <Field label="类型"><select className="select" value={kind} onChange={(event) => switchKind(event.target.value as "chat" | "embedding")}><option value="chat">chat</option><option value="embedding">embedding</option></select></Field>
-          <Field label="名称"><input className="input" value={name} onChange={(event) => setName(event.target.value)} /></Field>
-          <Field label="Base URL"><input className="input" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></Field>
-          <Field label="API key 环境变量名"><input className="input" value={apiKeyEnv} onChange={(event) => setApiKeyEnv(event.target.value)} /></Field>
-          <Field label="API Key"><input className="input" type="password" value={apiKeyValue} onChange={(event) => setApiKeyValue(event.target.value)} /></Field>
-          <Field label="模型"><input className="input" value={model} onChange={(event) => setModel(event.target.value)} /></Field>
-          {kind === "embedding" && <Field label="向量维度"><input className="input" type="number" value={dimensions} onChange={(event) => setDimensions(Number(event.target.value))} /></Field>}
-          <div className="form-actions"><button className="button primary" type="button" onClick={createProvider}>创建 AI 配置</button></div>
         </div>
       </section>
       <section className="panel">
@@ -1698,13 +1898,135 @@ function ProvidersPanel({
                   <td>{provider.apiKeyEnv}</td>
                   <td>{provider.enabled ? "启用" : "停用"}</td>
                   <td>{providerUsageText(provider, profiles)}</td>
-                  <td><div className="action-row"><button className="button" onClick={() => patchProvider(provider)} type="button">{provider.enabled ? "停用" : "启用"}</button><button className="button" onClick={() => testProvider(provider)} type="button">测试</button><button className="button" onClick={() => deleteProvider(provider)} type="button">删除</button></div></td>
+                  <td><div className="action-row"><button className="button" onClick={() => setEditingProvider(provider)} type="button">修改</button><button className="button" onClick={() => patchProvider(provider)} type="button">{provider.enabled ? "停用" : "启用"}</button><button className="button" onClick={() => testProvider(provider)} type="button">测试</button><button className="button" onClick={() => deleteProvider(provider)} type="button">删除</button></div></td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </section>
+      {editingProvider && (
+        <AiProviderDialog
+          provider={editingProvider === "new" ? undefined : editingProvider}
+          onClose={() => setEditingProvider(null)}
+          onSave={saveProvider}
+        />
+      )}
+    </div>
+  );
+}
+
+interface AiProviderFormValue {
+  id?: string;
+  name: string;
+  kind: "chat" | "embedding";
+  baseUrl: string;
+  apiKeyEnv: string;
+  apiKeyValue: string;
+  model: string;
+  dimensions: number;
+  enabled: boolean;
+}
+
+function AiProviderDialog({
+  provider,
+  onClose,
+  onSave
+}: {
+  provider?: AiProvider;
+  onClose: () => void;
+  onSave: (input: AiProviderFormValue) => Promise<void>;
+}) {
+  const [kind, setKind] = useState<"chat" | "embedding">(provider?.kind ?? "chat");
+  const [name, setName] = useState(provider?.name ?? "新建 Chat 配置");
+  const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "https://api.example.com/v1");
+  const [apiKeyEnv, setApiKeyEnv] = useState(provider?.apiKeyEnv ?? "CHAT_API_KEY");
+  const [apiKeyValue, setApiKeyValue] = useState("");
+  const [model, setModel] = useState(provider?.model ?? "chat-model");
+  const [dimensions, setDimensions] = useState(provider?.dimensions ?? 1536);
+  const [enabled, setEnabled] = useState(provider?.enabled ?? true);
+  const [message, setMessage] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const isEditing = Boolean(provider);
+
+  function switchKind(nextKind: "chat" | "embedding") {
+    setKind(nextKind);
+    if (!isEditing) {
+      setName(nextKind === "chat" ? "新建 Chat 配置" : "新建 Embedding 配置");
+      setApiKeyEnv(nextKind === "chat" ? "CHAT_API_KEY" : "EMBEDDING_API_KEY");
+      setModel(nextKind === "chat" ? "chat-model" : "embedding-model");
+      setDimensions(nextKind === "embedding" ? 4096 : 1536);
+    }
+  }
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSaving(true);
+    setMessage(isEditing ? "正在保存 AI 配置..." : "正在创建 AI 配置...");
+    try {
+      await onSave({
+        id: provider?.id,
+        name,
+        kind,
+        baseUrl,
+        apiKeyEnv,
+        apiKeyValue,
+        model,
+        dimensions,
+        enabled
+      });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "AI 配置保存失败。");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <form className="modal-panel wide-modal" onSubmit={submit}>
+        <div className="panel-header">
+          <div className="panel-title">
+            <h2>{isEditing ? "修改 AI 配置" : "新增 AI 配置"}</h2>
+            <p>API Key 只写入服务器 `.env.local`，不在数据库中保存明文。</p>
+          </div>
+          <button className="button icon" type="button" onClick={onClose} title="关闭" aria-label="关闭">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="form-grid provider-dialog-grid">
+          {message && <div className="notice">{message}</div>}
+          <Field label="类型">
+            <select className="select" value={kind} disabled={isEditing} onChange={(event) => switchKind(event.target.value as "chat" | "embedding")}>
+              <option value="chat">chat</option>
+              <option value="embedding">embedding</option>
+            </select>
+          </Field>
+          <Field label="名称"><input className="input" value={name} onChange={(event) => setName(event.target.value)} /></Field>
+          <Field label="Base URL"><input className="input" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></Field>
+          <Field label="API key 环境变量名"><input className="input" value={apiKeyEnv} onChange={(event) => setApiKeyEnv(event.target.value)} /></Field>
+          <Field label={isEditing ? "新 API Key（可不填）" : "API Key"}>
+            <input className="input" type="password" value={apiKeyValue} onChange={(event) => setApiKeyValue(event.target.value)} />
+          </Field>
+          <Field label="模型"><input className="input" value={model} onChange={(event) => setModel(event.target.value)} /></Field>
+          {kind === "embedding" && (
+            <Field label="向量维度"><input className="input" type="number" min={1} value={dimensions} onChange={(event) => setDimensions(Number(event.target.value))} /></Field>
+          )}
+          <label className="field checkbox-field">
+            <span>状态</span>
+            <span className="checkbox-row">
+              <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+              启用
+            </span>
+          </label>
+          <div className="form-actions">
+            <button className="button" type="button" onClick={onClose}>关闭</button>
+            <button className="button primary" type="submit" disabled={isSaving}>
+              {isSaving ? "保存中" : isEditing ? "保存修改" : "创建配置"}
+            </button>
+          </div>
+        </div>
+      </form>
     </div>
   );
 }
@@ -1723,7 +2045,7 @@ function KnowledgePanel({
   const [target, setTarget] = useState("local-derived-index");
   const [minScore, setMinScore] = useState(0.8);
   const candidates = recommendations.filter((item) =>
-    ["saved", "tracked", "to_validate", "validating", "monetization_ready"].includes(item.status) ||
+    ["liked", "tracked", "to_validate", "validating", "monetization_ready"].includes(item.status) ||
     item.scores.final >= minScore
   );
 
@@ -1768,7 +2090,7 @@ function KnowledgePanel({
         </div>
         <div className="list-panel">
           {message && <div className="notice">{message}</div>}
-          <div className="row-item"><strong>同步范围</strong><span className="muted">L4 项目：已收藏、已跟踪，或最终分数不低于 {Math.round(minScore * 100)}。</span></div>
+          <div className="row-item"><strong>同步范围</strong><span className="muted">L4 项目：已喜欢、已跟踪，或最终分数不低于 {Math.round(minScore * 100)}。</span></div>
           <div className="row-item"><strong>当前目标</strong><span className="muted">{target === "ai-knowledge-base" ? "写入同级 ai-knowledge-base 派生文档目录" : "仅记录 fetchGithub 派生索引状态"}</span></div>
           <div className="row-item"><strong>当前候选数量</strong><span className="muted">{candidates.length}</span></div>
           <div className="row-item"><strong>已记录同步状态</strong><span className="muted">{syncs.length}</span></div>
@@ -1813,7 +2135,10 @@ function OperationsPanel({
   queueStats: DashboardSnapshot["queueStats"];
   onRefresh: () => Promise<void>;
 }) {
-  const alerts = buildOperationAlerts(operations, queueStats);
+  const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([]);
+  const alerts = buildOperationAlerts(operations, queueStats).filter(
+    (alert) => !dismissedAlerts.includes(alert.text)
+  );
 
   return (
     <div className="stack">
@@ -1831,13 +2156,28 @@ function OperationsPanel({
         <div className="summary-grid inline-summary">
           <SummaryTile icon={Activity} label="资源事件" value={operations.resourceEvents.length} />
           <SummaryTile icon={Brain} label="AI 作业" value={operations.aiCostSummary.totalJobs} />
-          <SummaryTile icon={Database} label="Token 用量" value={operations.aiCostSummary.totalTokens.toLocaleString()} />
+          <SummaryTile
+            icon={Database}
+            label="Token 用量"
+            value={formatTokenTotal(operations.aiCostSummary.totalTokens, operations.aiCostSummary.unknownJobCount)}
+          />
           <SummaryTile icon={BarChart3} label="估算成本 USD" value={formatUsd(operations.aiCostSummary.estimatedCostUsd)} />
         </div>
         {alerts.length > 0 && (
           <div className="alert-list">
             {alerts.map((alert) => (
-              <div className={`alert ${alert.level}`} key={alert.text}>{alert.text}</div>
+              <div className={`alert ${alert.level}`} key={alert.text}>
+                <span>{alert.text}</span>
+                <button
+                  className="alert-close"
+                  type="button"
+                  onClick={() => setDismissedAlerts((current) => [...current, alert.text])}
+                  aria-label="关闭提示"
+                  title="关闭提示"
+                >
+                  <X size={14} />
+                </button>
+              </div>
             ))}
           </div>
         )}
@@ -1876,10 +2216,12 @@ function OperationsPanel({
                   <td>{job.repoFullName ?? job.repoId}</td>
                   <td>{job.providerName ?? job.providerId}</td>
                   <td>{job.model}</td>
-                  <td>{job.status}</td>
-                  <td>{job.promptTokens.toLocaleString()}</td>
-                  <td>{job.completionTokens.toLocaleString()}</td>
-                  <td>{formatUsd(job.estimatedCostUsd)}</td>
+                  <td title={job.errorMessage ?? undefined}>
+                    <span className={`status ${job.status}`}>{job.status}</span>
+                  </td>
+                  <td>{formatTokenValue(job.promptTokens, job.tokenUsageKnown)}</td>
+                  <td>{formatTokenValue(job.completionTokens, job.tokenUsageKnown)}</td>
+                  <td>{job.tokenUsageKnown ? formatUsd(job.estimatedCostUsd) : "未知"}</td>
                 </tr>
               ))}
             </tbody>
@@ -1887,8 +2229,24 @@ function OperationsPanel({
         </div>
       </CollapsiblePanel>
 
+      <CollapsiblePanel title="失败原因" subtitle="最近失败的 AI 作业和候选队列原因，便于直接定位配置、限流或模型响应问题。">
+        <FailureReasonsTable operations={operations} queueStats={queueStats} />
+      </CollapsiblePanel>
+
+      <CollapsiblePanel title="项目 Token 汇总" subtitle="按项目汇总最近 AI 分析 token，用于识别高消耗仓库。">
+        <TokenSummaryTable rows={operations.repoTokenSummary} emptyText="暂无项目 Token 统计" />
+      </CollapsiblePanel>
+
+      <CollapsiblePanel title="扫描 Token 汇总" subtitle="按扫描任务汇总最近 AI 分析 token，用于查看单次扫描总消耗。">
+        <TokenSummaryTable rows={operations.scanTokenSummary} emptyText="暂无扫描 Token 统计" />
+      </CollapsiblePanel>
+
       <CollapsiblePanel title="候选队列" subtitle="扫描任务在各阶段的待处理、运行和重试数量。">
-        <SimpleStatsTable rows={queueStats.map((stat) => [stat.stage, stat.status, String(stat.count)])} emptyText="暂无候选队列" />
+        <SimpleStatsTable
+          rows={queueStats.map((stat) => [stat.stage, stat.status, String(stat.count)])}
+          rowTitles={queueStats.map((stat) => stat.failureReasons?.join("\n") ?? "")}
+          emptyText="暂无候选队列"
+        />
       </CollapsiblePanel>
     </div>
   );
@@ -1921,8 +2279,20 @@ function CollapsiblePanel({
   );
 }
 
-function IconButton({ title, icon: Icon, onClick }: { title: string; icon: React.ComponentType<{ size?: number }>; onClick: () => void }) {
-  return <button className="button icon" title={title} aria-label={title} onClick={onClick} type="button"><Icon size={15} /></button>;
+function IconButton({
+  title,
+  icon: Icon,
+  onClick,
+  active = false,
+  tone
+}: {
+  title: string;
+  icon: React.ComponentType<{ size?: number }>;
+  onClick: () => void;
+  active?: boolean;
+  tone?: "positive" | "danger";
+}) {
+  return <button className={`button icon ${active ? "active" : ""} ${active && tone ? tone : ""}`} title={title} aria-label={title} onClick={onClick} type="button"><Icon size={15} /></button>;
 }
 
 function TagList({ items }: { items: string[] }) {
@@ -2033,6 +2403,7 @@ type RecommendationStatusFilter =
 
 type OpportunityFilter = "all" | "has_opportunity" | "no_opportunity" | "observe" | "track" | "validate" | "build" | "ignore";
 type GroupFilter = "all" | "grouped" | "ungrouped";
+type PreferenceFilter = "all" | "liked" | "disliked" | "unrated";
 type RecommendationSortKey = "rank" | "score" | "stars" | "semantic";
 type SortDirection = "asc" | "desc";
 
@@ -2053,7 +2424,8 @@ const recommendationStatusFilterOptions: Array<{ value: RecommendationStatusFilt
   { value: "all", label: "全部项目" },
   { value: "new", label: "新发现" },
   { value: "viewed", label: "已查看" },
-  { value: "saved", label: "已收藏" },
+  { value: "liked", label: "已喜欢" },
+  { value: "disliked", label: "不喜欢" },
   { value: "tracked", label: "重点跟踪" },
   { value: "to_validate", label: "待验证" },
   { value: "validating", label: "验证中" },
@@ -2077,6 +2449,13 @@ const groupFilterOptions: Array<{ value: GroupFilter; label: string }> = [
   { value: "all", label: "全部分组" },
   { value: "grouped", label: "已分组" },
   { value: "ungrouped", label: "未分组" }
+];
+
+const preferenceFilterOptions: Array<{ value: PreferenceFilter; label: string }> = [
+  { value: "all", label: "全部喜好" },
+  { value: "liked", label: "已喜欢" },
+  { value: "disliked", label: "不喜欢" },
+  { value: "unrated", label: "未表态" }
 ];
 
 function recommendationMatchesOpportunity(
@@ -2126,6 +2505,19 @@ function recommendationMatchesStatus(
   return recommendation.status === filter;
 }
 
+function recommendationMatchesPreference(
+  recommendation: Recommendation,
+  filter: PreferenceFilter
+) {
+  if (filter === "all") {
+    return true;
+  }
+  if (filter === "unrated") {
+    return recommendation.status !== "liked" && recommendation.status !== "disliked";
+  }
+  return recommendation.status === filter;
+}
+
 function compareRecommendations(
   left: Recommendation,
   right: Recommendation,
@@ -2161,7 +2553,7 @@ function opportunityFeedbackAction(recommendation: Recommendation): { action: Fe
       return { action: "abandon", label: "放弃" };
     case "observe":
     case undefined:
-      return recommendation.status === "saved" ? null : { action: "save", label: "收藏观察" };
+      return recommendation.status === "liked" ? null : { action: "like", label: "喜欢观察" };
   }
 }
 
@@ -2226,6 +2618,10 @@ function recommendationStatusText(status: Recommendation["status"]) {
       return "已查看";
     case "saved":
       return "已收藏";
+    case "liked":
+      return "已喜欢";
+    case "disliked":
+      return "不喜欢";
     case "hidden":
       return "已隐藏";
     case "tracked":
@@ -2263,8 +2659,9 @@ function statusFromFeedbackAction(
     case "abandon":
       return "abandoned";
     case "like":
+      return "liked";
     case "dislike":
-      return fallback;
+      return "disliked";
   }
 }
 
@@ -2296,12 +2693,126 @@ function parseLanguageWeights(value: string) {
   ) as Record<string, number>;
 }
 
-function SimpleStatsTable({ rows, emptyText }: { rows: string[][]; emptyText: string }) {
+function SimpleStatsTable({
+  rows,
+  rowTitles = [],
+  emptyText
+}: {
+  rows: string[][];
+  rowTitles?: string[];
+  emptyText: string;
+}) {
   return (
     <div className="table-wrap">
       <table className="repo-table">
         <thead><tr><th>阶段</th><th>状态</th><th>数量</th></tr></thead>
-        <tbody>{rows.length === 0 ? <tr><td colSpan={3} className="muted">{emptyText}</td></tr> : rows.map((row) => <tr key={row.join("-")}>{row.map((cell, index) => <td key={index}>{cell}</td>)}</tr>)}</tbody>
+        <tbody>
+          {rows.length === 0 ? (
+            <tr><td colSpan={3} className="muted">{emptyText}</td></tr>
+          ) : (
+            rows.map((row, rowIndex) => (
+              <tr key={row.join("-")} title={rowTitles[rowIndex] || undefined}>
+                {row.map((cell, index) => <td key={index}>{cell}</td>)}
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TokenSummaryTable({
+  rows,
+  emptyText
+}: {
+  rows: DashboardSnapshot["operations"]["repoTokenSummary"];
+  emptyText: string;
+}) {
+  return (
+    <div className="table-wrap module-scroll">
+      <table className="repo-table">
+        <thead>
+          <tr>
+            <th>对象</th>
+            <th>AI 作业</th>
+            <th>Prompt</th>
+            <th>Completion</th>
+            <th>Total</th>
+            <th>未知</th>
+            <th>成本</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 ? (
+            <tr><td colSpan={7} className="muted">{emptyText}</td></tr>
+          ) : (
+            rows.map((row) => (
+              <tr key={row.id}>
+                <td>{row.label}</td>
+                <td>{row.jobCount}</td>
+                <td>{row.promptTokens.toLocaleString()}</td>
+                <td>{row.completionTokens.toLocaleString()}</td>
+                <td>{row.totalTokens.toLocaleString()}</td>
+                <td>{row.unknownJobCount > 0 ? `${row.unknownJobCount} 个作业` : "-"}</td>
+                <td>{formatUsd(row.estimatedCostUsd)}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function FailureReasonsTable({
+  operations,
+  queueStats
+}: {
+  operations: DashboardSnapshot["operations"];
+  queueStats: DashboardSnapshot["queueStats"];
+}) {
+  const rows = [
+    ...operations.aiJobs
+      .filter((job) => job.status === "failed" && job.errorMessage)
+      .map((job) => ({
+        id: `ai-${job.id}`,
+        type: "AI 作业",
+        target: job.repoFullName ?? job.repoId,
+        status: job.status,
+        reason: job.errorMessage ?? ""
+      })),
+    ...queueStats
+      .filter((stat) => (stat.failureReasons?.length ?? 0) > 0)
+      .flatMap((stat) =>
+        (stat.failureReasons ?? []).map((reason, index) => ({
+          id: `queue-${stat.stage}-${stat.status}-${index}`,
+          type: "候选队列",
+          target: `${stat.stage}/${stat.status}`,
+          status: `${stat.count} 个`,
+          reason
+        }))
+      )
+  ].slice(0, 50);
+
+  return (
+    <div className="table-wrap module-scroll">
+      <table className="repo-table">
+        <thead><tr><th>类型</th><th>对象</th><th>状态</th><th>原因</th></tr></thead>
+        <tbody>
+          {rows.length === 0 ? (
+            <tr><td colSpan={4} className="muted">暂无失败原因</td></tr>
+          ) : (
+            rows.map((row) => (
+              <tr key={row.id}>
+                <td>{row.type}</td>
+                <td>{row.target}</td>
+                <td>{row.status}</td>
+                <td className="muted">{row.reason}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
       </table>
     </div>
   );
@@ -2312,6 +2823,10 @@ function canPauseJob(status: string) {
 }
 
 function canResumeJob(status: string) {
+  return ["paused_by_user", "paused_by_memory", "paused_by_runtime", "retry_later"].includes(status);
+}
+
+function canCompleteJob(status: string) {
   return ["paused_by_user", "paused_by_memory", "paused_by_runtime", "retry_later"].includes(status);
 }
 
@@ -2331,6 +2846,15 @@ function formatTime(value: string) {
 
 function formatUsd(value: number) {
   return `$${value.toFixed(value >= 1 ? 2 : 4)}`;
+}
+
+function formatTokenValue(value: number, known: boolean) {
+  return known ? value.toLocaleString() : "未知";
+}
+
+function formatTokenTotal(value: number, unknownJobCount: number) {
+  const known = value.toLocaleString();
+  return unknownJobCount > 0 ? `${known} / ${unknownJobCount} 未知` : known;
 }
 
 function providerUsageText(provider: AiProvider, profiles: DiscoveryProfile[]) {

@@ -11,7 +11,16 @@ export interface ChatJsonOptions {
   temperature?: number;
 }
 
+export interface ChatJsonResult {
+  data: unknown;
+  usage: Record<string, unknown>;
+}
+
 export async function callChatJson(options: ChatJsonOptions) {
+  return (await callChatJsonWithUsage(options)).data;
+}
+
+export async function callChatJsonWithUsage(options: ChatJsonOptions): Promise<ChatJsonResult> {
   assertProviderReady(options.provider, "chat");
   const response = await fetchWithTimeout(
     `${trimSlash(options.provider.baseUrl)}/chat/completions`,
@@ -38,7 +47,10 @@ export async function callChatJson(options: ChatJsonOptions) {
     throw new Error("Chat 模型没有返回可用内容。");
   }
 
-  return JSON.parse(content) as unknown;
+  return {
+    data: JSON.parse(content) as unknown,
+    usage: normalizeUsage(data?.usage)
+  };
 }
 
 export async function callEmbedding(provider: AiProvider, input: string | string[]) {
@@ -122,6 +134,10 @@ function buildHeaders(provider: AiProvider) {
 
 function trimSlash(value: string) {
   return value.replace(/\/+$/, "");
+}
+
+function normalizeUsage(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 async function fetchWithTimeout(

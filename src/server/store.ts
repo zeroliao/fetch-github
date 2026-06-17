@@ -169,7 +169,8 @@ function normalizeScanJobs(jobs: ScanJob[]) {
     newRepoCount: job.newRepoCount ?? 0,
     updatedRepoCount: job.updatedRepoCount ?? 0,
     unchangedRepoCount: job.unchangedRepoCount ?? 0,
-    candidateCount: job.candidateCount ?? job.processedCount ?? 0
+    candidateCount: job.candidateCount ?? job.processedCount ?? 0,
+    failedCandidateCount: job.failedCandidateCount ?? 0
   }));
 }
 
@@ -224,8 +225,11 @@ function buildLocalOperationsSnapshot(state: StoreState): OperationsSnapshot {
   return {
     resourceEvents: state.resourceEvents.slice(0, 80),
     aiJobs: [],
+    repoTokenSummary: [],
+    scanTokenSummary: [],
     aiCostSummary: {
       totalJobs: 0,
+      unknownJobCount: 0,
       totalTokens: 0,
       estimatedCostUsd: 0
     }
@@ -351,7 +355,7 @@ export async function getAiProvider(id: string): Promise<AiProvider | undefined>
 
 export async function updateAiProvider(
   id: string,
-  patch: Partial<Pick<AiProvider, "enabled">>
+  patch: Partial<Omit<AiProvider, "id" | "kind" | "type" | "createdAt" | "updatedAt">>
 ): Promise<{ provider?: AiProvider; reason?: string }> {
   if (await isDatabaseAvailable()) {
     return postgresStore.updateAiProvider(id, patch);
@@ -461,6 +465,36 @@ export async function archiveScanJob(jobId: string): Promise<ScanJob | undefined
   return archived;
 }
 
+export async function completeScanJob(jobId: string): Promise<ScanJob | undefined> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.completeScanJob(jobId);
+  }
+
+  const state = await loadState();
+  let completed: ScanJob | undefined;
+  state.jobs = state.jobs.map((job) => {
+    if (
+      job.id !== jobId ||
+      !["paused_by_user", "paused_by_memory", "paused_by_runtime", "retry_later"].includes(job.status)
+    ) {
+      return job;
+    }
+
+    completed = {
+      ...job,
+      status: "completed",
+      stage: job.stage,
+      statusReason: "已手动完成，后续不再继续扫描。",
+      errorMessage: undefined,
+      finishedAt: new Date().toISOString()
+    };
+    return completed;
+  });
+
+  await saveState(state);
+  return completed;
+}
+
 export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
   if (await isDatabaseAvailable()) {
     return postgresStore.listRunnableScanJobs(limit);
@@ -554,6 +588,7 @@ export async function createScanJob(
     updatedRepoCount: 0,
     unchangedRepoCount: 0,
     candidateCount: 0,
+    failedCandidateCount: 0,
     createdAt: now
   };
 
@@ -681,7 +716,8 @@ export async function upsertRecommendations(
     const displayRecommendation = withChineseDisplay(recommendation);
     byId.set(recommendation.id, {
       ...displayRecommendation,
-      status: existing?.status ?? recommendation.status
+      status: existing?.status ?? recommendation.status,
+      tags: existing?.tags ?? recommendation.tags ?? []
     });
 
     state.repoContextMatches = [
@@ -805,11 +841,47 @@ export async function listRecommendations() {
   return state.recommendations.map(withChineseDisplay).sort((a, b) => a.rank - b.rank);
 }
 
+export async function updateRecommendationTags(
+  id: string,
+  tags: string[]
+): Promise<Recommendation | undefined> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.updateRecommendationTags(id, tags);
+  }
+
+  const state = await loadState();
+  const normalizedTags = normalizeTagInput(tags);
+  let updated: Recommendation | undefined;
+  state.recommendations = state.recommendations.map((recommendation) => {
+    if (recommendation.id !== id) {
+      return recommendation;
+    }
+    updated = {
+      ...recommendation,
+      tags: normalizedTags
+    };
+    return updated;
+  });
+  await saveState(state);
+
+  return updated ? withChineseDisplay(updated) : undefined;
+}
+
+export async function listRecommendationTags(): Promise<string[]> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.listRecommendationTags();
+  }
+
+  const state = await loadState();
+  return normalizeTagInput(state.recommendations.flatMap((recommendation) => recommendation.tags ?? []));
+}
+
 function withChineseDisplay(recommendation: Recommendation): Recommendation {
   const matchedPreferences = normalizeChineseLabels(recommendation.matchedPreferences);
 
   return {
     ...recommendation,
+    tags: recommendation.tags ?? [],
     summaryZh: ensureChineseSummary(
       recommendation.summaryZh ?? recommendation.summary,
       recommendation.repo,
@@ -823,6 +895,10 @@ function withChineseDisplay(recommendation: Recommendation): Recommendation {
       reason: normalizeChineseLabels([repo.reason])[0] ?? ""
     }))
   };
+}
+
+function normalizeTagInput(tags: string[]) {
+  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);
 }
 
 export async function recordFeedback(
@@ -866,21 +942,25 @@ export async function recordFeedback(
     const status =
       action === "save"
         ? "saved"
-        : action === "hide"
-          ? "hidden"
-          : action === "restore"
-            ? "viewed"
-            : action === "track"
-              ? "tracked"
-              : action === "to_validate"
-                ? "to_validate"
-                : action === "validating"
-                  ? "validating"
-                  : action === "monetization_ready"
-                    ? "monetization_ready"
-                    : action === "abandon"
-                      ? "abandoned"
-                      : recommendation.status;
+        : action === "like"
+          ? "liked"
+          : action === "dislike"
+            ? "disliked"
+            : action === "hide"
+              ? "hidden"
+              : action === "restore"
+                ? "viewed"
+                : action === "track"
+                  ? "tracked"
+                  : action === "to_validate"
+                    ? "to_validate"
+                    : action === "validating"
+                      ? "validating"
+                      : action === "monetization_ready"
+                        ? "monetization_ready"
+                        : action === "abandon"
+                          ? "abandoned"
+                          : recommendation.status;
 
     return {
       ...recommendation,
@@ -928,6 +1008,7 @@ export async function rebuildRecommendationScores(profileId: string) {
           ),
           id: recommendation.id,
           status: recommendation.status,
+          tags: recommendation.tags ?? [],
           createdAt: recommendation.createdAt
         }
       : recommendation
@@ -1436,6 +1517,7 @@ export async function rerankRecommendationsWithSemanticFit(input: {
 
 export async function createLlmJob(input: {
   repoId: string;
+  jobId?: string;
   jobType: string;
   status: string;
   inputHash: string;
@@ -1454,15 +1536,17 @@ export async function createLlmJob(input: {
 export async function finishLlmJob(
   id: string,
   status: string,
-  tokenUsage: Record<string, unknown> = {}
+  tokenUsage: Record<string, unknown> = {},
+  errorMessage?: string
 ) {
   if (await isDatabaseAvailable()) {
-    return postgresStore.finishLlmJob(id, status, tokenUsage);
+    return postgresStore.finishLlmJob(id, status, tokenUsage, errorMessage);
   }
 
   void id;
   void status;
   void tokenUsage;
+  void errorMessage;
 }
 
 export async function upsertLlmResult(input: {

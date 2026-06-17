@@ -7,7 +7,7 @@ import { fetchRepositoryReadme, searchRepositories } from "@/server/githubClient
 import { buildRecommendation, repoPassesHardFilters, scoreRepo } from "@/server/ranking";
 import { callEmbedding } from "./aiClient";
 import {
-  analyzeRepoWithLlm,
+  analyzeRepoWithLlmWithUsage,
   buildRepoDeltaAnalysisPrompt,
   buildRepoAnalysisPrompt,
   REPO_DELTA_ANALYSIS_PROMPT_VERSION,
@@ -788,6 +788,7 @@ async function runLlmStage(
             }
             llmJobId = await createLlmJob({
               repoId: item.repo.id,
+              jobId: job.id,
               jobType: "repo_analysis",
               status: "running",
               inputHash,
@@ -795,7 +796,7 @@ async function runLlmStage(
               model: provider.model,
               promptVersion
             });
-            analysis = await analyzeRepoWithLlm({
+            const llmResult = await analyzeRepoWithLlmWithUsage({
               repo: item.repo,
               profile,
               readme,
@@ -804,6 +805,7 @@ async function runLlmStage(
                 ? "仓库元数据、活跃度或 README 发生变化，本轮只需要重点复核变化对变现机会的影响。"
                 : undefined
             });
+            analysis = llmResult.analysis;
             usedLlmCall = true;
             await upsertLlmResult({
               repoId: item.repo.id,
@@ -815,7 +817,7 @@ async function runLlmStage(
               structured: analysis as unknown as Record<string, unknown>,
               rawResponse: JSON.stringify(analysis)
             });
-            await finishLlmJob(llmJobId, "completed");
+            await finishLlmJob(llmJobId, "completed", llmResult.tokenUsage);
           }
         }
         await upgradeRepoDataLevel([item.repo], "L3");
@@ -837,7 +839,7 @@ async function runLlmStage(
       } catch (error) {
         const reason = normalizeAiStageError(error);
         if (llmJobId) {
-          await finishLlmJob(llmJobId, "failed");
+          await finishLlmJob(llmJobId, "failed", {}, reason);
         }
         if (item.attempts < MAX_AI_CANDIDATE_ATTEMPTS) {
           await retryCandidate(item.queueId, retryDelaySeconds(item.attempts));

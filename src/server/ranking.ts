@@ -181,6 +181,7 @@ export function buildRecommendation(
         ? ["当前未关闭 issue 数较高，采用前需要进一步评估维护压力。"]
         : [],
     matchedPreferences,
+    tags: [],
     relatedUserRepos,
     cluster: inferRecommendationCluster(repo, opportunity.type),
     status: "new",

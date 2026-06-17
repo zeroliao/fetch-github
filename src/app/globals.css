@@ -210,6 +210,24 @@ button {
   padding: 0;
 }
 
+.button.active {
+  border-color: var(--accent);
+  background: #eaf3ff;
+  color: var(--accent-strong);
+}
+
+.button.active.positive {
+  border-color: var(--positive);
+  background: #e8f6ef;
+  color: var(--positive);
+}
+
+.button.active.danger {
+  border-color: var(--danger);
+  background: #fceeee;
+  color: var(--danger);
+}
+
 .button.compact {
   min-height: 28px;
   margin-top: 8px;
@@ -423,6 +441,33 @@ button {
   gap: 6px;
 }
 
+.tag-editor-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.tag-choice-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tag-choice {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.tag-choice.active {
+  border-color: var(--accent);
+  background: #eaf3ff;
+  color: var(--accent-strong);
+}
+
 .tag {
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -485,10 +530,32 @@ button {
 }
 
 .alert {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
   border-radius: 8px;
   padding: 10px 12px;
   font-size: 13px;
   font-weight: 700;
+}
+
+.alert-close {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.alert-close:hover {
+  background: rgba(17, 24, 39, 0.08);
 }
 
 .alert.warning {
@@ -557,8 +624,16 @@ button {
   box-shadow: var(--shadow);
 }
 
+.wide-modal {
+  width: min(760px, 100%);
+}
+
 .password-grid {
   grid-template-columns: 1fr;
+}
+
+.provider-dialog-grid {
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
 }
 
 .drawer {
@@ -665,6 +740,11 @@ button {
   grid-template-columns: repeat(2, minmax(240px, 1fr));
   gap: 12px;
   padding: 0 16px 16px;
+}
+
+.source-planned-list {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
 }
 
 .source-item {

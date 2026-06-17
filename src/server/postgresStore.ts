@@ -71,7 +71,7 @@ type QueryRunner = {
 
 const JOB_SELECT_FIELDS = `id, profile_id, type, status, stage, max_candidates, fetched_count,
             processed_count, analyzed_count, new_repo_count, updated_repo_count,
-            unchanged_repo_count, candidate_count, started_at, finished_at,
+            unchanged_repo_count, candidate_count, failed_candidate_count, started_at, finished_at,
             error_message, archived_at, created_at`;
 
 export async function ensureSeedData() {
@@ -131,6 +131,22 @@ export async function ensureSeedData() {
     await client.query(
       `alter table discovery_jobs
        add column if not exists candidate_count integer not null default 0`
+    );
+    await client.query(
+      `alter table discovery_jobs
+       add column if not exists failed_candidate_count integer not null default 0`
+    );
+    await client.query(
+      `alter table candidate_queue
+       add column if not exists error_message text`
+    );
+    await client.query(
+      `alter table llm_jobs
+       add column if not exists job_id text references discovery_jobs(id) on delete set null`
+    );
+    await client.query(
+      `alter table llm_jobs
+       add column if not exists error_message text`
     );
     await client.query(
       `create table if not exists embedding_cache (
@@ -482,7 +498,7 @@ export async function getAiProvider(id: string): Promise<AiProvider | undefined>
 
 export async function updateAiProvider(
   id: string,
-  patch: Partial<Pick<AiProvider, "enabled">>
+  patch: Partial<Omit<AiProvider, "id" | "kind" | "type" | "createdAt" | "updatedAt">>
 ): Promise<{ provider?: AiProvider; reason?: string }> {
   const provider = await getAiProvider(id);
   if (!provider) {
@@ -498,13 +514,37 @@ export async function updateAiProvider(
     }
   }
 
-  const enabled = patch.enabled ?? provider.enabled;
+  const nextProvider: AiProvider = {
+    ...provider,
+    ...patch,
+    rateLimit: patch.rateLimit ?? provider.rateLimit,
+    timeoutSeconds: patch.timeoutSeconds ?? provider.timeoutSeconds
+  };
   const result = await getPool().query(
     `update ai_providers
-     set enabled=$2, updated_at=now()
+     set name=$2,
+         base_url=$3,
+         api_key_env=$4,
+         model=$5,
+         dimensions=$6,
+         config_json=$7,
+         enabled=$8,
+         updated_at=now()
      where id=$1
      returning id, name, kind, type, base_url, api_key_env, model, dimensions, config_json, enabled, created_at, updated_at`,
-    [id, enabled]
+    [
+      id,
+      nextProvider.name,
+      nextProvider.baseUrl,
+      nextProvider.apiKeyEnv,
+      nextProvider.model,
+      nextProvider.dimensions ?? null,
+      JSON.stringify({
+        rateLimit: nextProvider.rateLimit,
+        timeoutSeconds: nextProvider.timeoutSeconds
+      }),
+      nextProvider.enabled
+    ]
   );
 
   return { provider: result.rows[0] ? mapProviderRow(result.rows[0]) : undefined };
@@ -555,6 +595,23 @@ export async function archiveScanJob(jobId: string): Promise<ScanJob | undefined
      set archived_at=now()
      where id=$1
        and status in ('completed', 'failed')
+       and archived_at is null
+     returning ${JOB_SELECT_FIELDS}`,
+    [jobId]
+  );
+
+  return result.rows[0] ? mapJobRow(result.rows[0]) : undefined;
+}
+
+export async function completeScanJob(jobId: string): Promise<ScanJob | undefined> {
+  await requeueRunningCandidates(jobId);
+  const result = await getPool().query(
+    `update discovery_jobs
+     set status='completed',
+         error_message='已手动完成，后续不再继续扫描。',
+         finished_at=now()
+     where id=$1
+       and status in ('paused_by_user', 'paused_by_memory', 'paused_by_runtime', 'retry_later')
        and archived_at is null
      returning ${JOB_SELECT_FIELDS}`,
     [jobId]
@@ -650,14 +707,16 @@ export async function createScanJob(
     updatedRepoCount: 0,
     unchangedRepoCount: 0,
     candidateCount: 0,
+    failedCandidateCount: 0,
     createdAt: now
   };
 
   await getPool().query(
     `insert into discovery_jobs
       (id, profile_id, type, status, stage, max_candidates, fetched_count, processed_count,
-       analyzed_count, new_repo_count, updated_repo_count, unchanged_repo_count, candidate_count, created_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+       analyzed_count, new_repo_count, updated_repo_count, unchanged_repo_count, candidate_count,
+       failed_candidate_count, created_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
     [
       job.id,
       job.profileId,
@@ -672,6 +731,7 @@ export async function createScanJob(
       job.updatedRepoCount,
       job.unchangedRepoCount,
       job.candidateCount,
+      job.failedCandidateCount,
       job.createdAt
     ]
   );
@@ -711,8 +771,8 @@ export async function updateScanJob(
     `update discovery_jobs
      set status=$2, stage=$3, max_candidates=$4, fetched_count=$5, processed_count=$6,
          analyzed_count=$7, new_repo_count=$8, updated_repo_count=$9,
-         unchanged_repo_count=$10, candidate_count=$11, started_at=$12,
-         finished_at=$13, error_message=$14
+         unchanged_repo_count=$10, candidate_count=$11, failed_candidate_count=$12, started_at=$13,
+         finished_at=$14, error_message=$15
      where id=$1
      returning ${JOB_SELECT_FIELDS}`,
     [
@@ -727,6 +787,7 @@ export async function updateScanJob(
       job.updatedRepoCount,
       job.unchangedRepoCount,
       job.candidateCount,
+      job.failedCandidateCount,
       job.startedAt ?? null,
       job.finishedAt ?? null,
       nextErrorMessage ?? null
@@ -977,8 +1038,8 @@ export async function upsertRecommendations(
 
     await pool.query(
       `insert into recommendations
-        (id, profile_id, repo_id, rank, final_score, reasons_json, status, created_at)
-       values ($1,$2,$3,$4,$5,$6,$7,$8)
+        (id, profile_id, repo_id, rank, final_score, reasons_json, status, tags_json, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        on conflict (id) do update set
          rank=excluded.rank,
          final_score=excluded.final_score,
@@ -991,6 +1052,7 @@ export async function upsertRecommendations(
         recommendation.scores.final,
         reasonsPayload,
         recommendation.status,
+        JSON.stringify(recommendation.tags ?? []),
         recommendation.createdAt
       ]
     );
@@ -1461,6 +1523,7 @@ export async function rerankRecommendationsWithSemanticFit(input: {
 
 export async function createLlmJob(input: {
   repoId: string;
+  jobId?: string;
   jobType: string;
   status: string;
   inputHash: string;
@@ -1471,11 +1534,12 @@ export async function createLlmJob(input: {
   const id = crypto.randomUUID();
   await getPool().query(
     `insert into llm_jobs
-      (id, repo_id, job_type, status, input_hash, provider_id, model, prompt_version, attempts, created_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,1,now())`,
+      (id, repo_id, job_id, job_type, status, input_hash, provider_id, model, prompt_version, attempts, created_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,1,now())`,
     [
       id,
       input.repoId,
+      input.jobId ?? null,
       input.jobType,
       input.status,
       input.inputHash,
@@ -1491,33 +1555,46 @@ export async function createLlmJob(input: {
 export async function finishLlmJob(
   id: string,
   status: string,
-  tokenUsage: Record<string, unknown> = {}
+  tokenUsage: Record<string, unknown> = {},
+  errorMessage?: string
 ) {
   await getPool().query(
     `update llm_jobs
-     set status=$2, token_usage_json=$3, finished_at=now()
+     set status=$2, token_usage_json=$3, error_message=$4, finished_at=now()
      where id=$1`,
-    [id, status, JSON.stringify(tokenUsage)]
+    [id, status, JSON.stringify(tokenUsage), errorMessage ?? null]
   );
 }
 
 export async function getOperationsSnapshot(): Promise<OperationsSnapshot> {
-  const [resourceEvents, aiJobs] = await Promise.all([
+  const [resourceEvents, aiJobs, tokenJobs] = await Promise.all([
     listRecentResourceEvents(),
-    listAiJobMetrics()
+    listAiJobMetrics(),
+    listAiJobMetrics(5000, "completed")
   ]);
-  const aiCostSummary = aiJobs.reduce(
+  const aiCostSummary = tokenJobs.reduce(
     (summary, job) => ({
       totalJobs: summary.totalJobs + 1,
+      unknownJobCount: summary.unknownJobCount + (job.tokenUsageKnown ? 0 : 1),
       totalTokens: summary.totalTokens + job.totalTokens,
       estimatedCostUsd: summary.estimatedCostUsd + job.estimatedCostUsd
     }),
-    { totalJobs: 0, totalTokens: 0, estimatedCostUsd: 0 }
+    { totalJobs: 0, unknownJobCount: 0, totalTokens: 0, estimatedCostUsd: 0 }
   );
 
   return {
     resourceEvents,
     aiJobs,
+    repoTokenSummary: buildTokenSummary(
+      tokenJobs,
+      (job) => job.repoId,
+      (job) => job.repoFullName ?? job.repoId
+    ),
+    scanTokenSummary: buildTokenSummary(
+      tokenJobs.filter((job) => job.scanJobId),
+      (job) => job.scanJobId ?? "",
+      (job) => job.scanJobId ? `扫描 ${job.scanJobId.slice(0, 8)}` : "未关联扫描"
+    ),
     aiCostSummary
   };
 }
@@ -1587,7 +1664,7 @@ export async function listRecommendations(): Promise<Recommendation[]> {
   await ensureSeedDataOnce();
   const result = await getPool().query(
     `select
-       rec.id, rec.profile_id, rec.rank, rec.final_score, rec.reasons_json, rec.status, rec.created_at,
+       rec.id, rec.profile_id, rec.rank, rec.final_score, rec.reasons_json, rec.status, rec.tags_json, rec.created_at,
        repo.id as repo_id, repo.github_id, repo.full_name, repo.owner, repo.name, repo.html_url,
        repo.description, repo.primary_language, repo.topics_json, repo.stars, repo.forks,
        repo.open_issues, repo.pushed_at, repo.updated_at, repo.archived, repo.fork,
@@ -1618,6 +1695,31 @@ export async function listRecommendations(): Promise<Recommendation[]> {
   return result.rows.map(mapRecommendationRow);
 }
 
+export async function updateRecommendationTags(
+  id: string,
+  tags: string[]
+): Promise<Recommendation | undefined> {
+  const normalizedTags = normalizeTagInput(tags);
+  await getPool().query(
+    `update recommendations set tags_json=$2 where id=$1`,
+    [id, JSON.stringify(normalizedTags)]
+  );
+
+  return (await listRecommendations()).find((recommendation) => recommendation.id === id);
+}
+
+export async function listRecommendationTags(): Promise<string[]> {
+  await ensureSeedDataOnce();
+  const result = await getPool().query(
+    `select distinct jsonb_array_elements_text(tags_json) as tag
+     from recommendations
+     where jsonb_typeof(tags_json) = 'array'
+     order by tag asc`
+  );
+
+  return result.rows.map((row) => String(row.tag)).filter(Boolean);
+}
+
 export async function recordFeedback(
   repoId: string,
   profileId: string,
@@ -1642,21 +1744,25 @@ export async function recordFeedback(
   const status =
     action === "save"
       ? "saved"
-      : action === "hide"
-        ? "hidden"
-        : action === "restore"
-          ? "viewed"
-          : action === "track"
-            ? "tracked"
-            : action === "to_validate"
-              ? "to_validate"
-              : action === "validating"
-                ? "validating"
-                : action === "monetization_ready"
-                  ? "monetization_ready"
-                  : action === "abandon"
-                    ? "abandoned"
-                    : null;
+      : action === "like"
+        ? "liked"
+        : action === "dislike"
+          ? "disliked"
+          : action === "hide"
+            ? "hidden"
+            : action === "restore"
+              ? "viewed"
+              : action === "track"
+                ? "tracked"
+                : action === "to_validate"
+                  ? "to_validate"
+                  : action === "validating"
+                    ? "validating"
+                    : action === "monetization_ready"
+                      ? "monetization_ready"
+                      : action === "abandon"
+                        ? "abandoned"
+                        : null;
 
   if (status) {
     await getPool().query(
@@ -1920,7 +2026,11 @@ export async function upsertKnowledgeSync(input: {
 
 export async function getQueueStats() {
   const result = await getPool().query(
-    `select stage, status, count(*)::int as count
+    `select
+       stage,
+       status,
+       count(*)::int as count,
+       array_remove(array_agg(distinct error_message) filter (where error_message is not null), null) as failure_reasons
      from candidate_queue
      group by stage, status
      order by stage asc, status asc`
@@ -1929,7 +2039,10 @@ export async function getQueueStats() {
   return result.rows.map((row) => ({
     stage: row.stage,
     status: row.status,
-    count: Number(row.count)
+    count: Number(row.count),
+    failureReasons: Array.isArray(row.failure_reasons)
+      ? row.failure_reasons.map(String).slice(0, 5)
+      : []
   }));
 }
 
@@ -2109,26 +2222,44 @@ export async function failCandidate(
       : null;
 
   await getPool().query(
-    `update candidate_queue
-     set status='failed',
-         next_run_at=$2,
-         updated_at=now()
-     where id=$1`,
-    [id, nextRunAt]
+    `with updated as (
+       update candidate_queue
+       set status='failed',
+           error_message=$2,
+           next_run_at=$3,
+           updated_at=now()
+       where id=$1
+       returning job_id
+     )
+     update discovery_jobs
+     set failed_candidate_count = (
+       select count(*)::int from candidate_queue q
+       where q.job_id = discovery_jobs.id and q.status = 'failed'
+     )
+     where id in (select job_id from updated)`,
+    [id, reason, nextRunAt]
   );
-
-  void reason;
 }
 
 export async function retryCandidate(id: string, retryAfterSeconds: number) {
   const nextRunAt = new Date(Date.now() + Math.max(1, retryAfterSeconds) * 1000).toISOString();
 
   await getPool().query(
-    `update candidate_queue
-     set status='pending',
-         next_run_at=$2,
-         updated_at=now()
-     where id=$1`,
+    `with updated as (
+       update candidate_queue
+       set status='pending',
+           error_message=null,
+           next_run_at=$2,
+           updated_at=now()
+       where id=$1
+       returning job_id
+     )
+     update discovery_jobs
+     set failed_candidate_count = (
+       select count(*)::int from candidate_queue q
+       where q.job_id = discovery_jobs.id and q.status = 'failed'
+     )
+     where id in (select job_id from updated)`,
     [id, nextRunAt]
   );
 }
@@ -2156,12 +2287,14 @@ export async function getJobQueueCount(jobId: string, stage?: string, status?: s
 
 export async function completeCandidate(id: string) {
   await getPool().query(
-    `update candidate_queue set status='done', updated_at=now() where id=$1`,
+    `update candidate_queue set status='done', error_message=null, updated_at=now() where id=$1`,
     [id]
   );
 }
 
 export async function trimRecommendations(profileId: string, limit: number) {
+  if (limit <= 0) return;
+
   await getPool().query(
     `with ranked as (
        select id, row_number() over (order by final_score desc, rank asc, created_at asc) as next_rank
@@ -2220,23 +2353,35 @@ async function listRecentResourceEvents(limit = 80): Promise<ResourceEvent[]> {
   return result.rows.map(mapResourceEventRow);
 }
 
-async function listAiJobMetrics(limit = 80): Promise<OperationsSnapshot["aiJobs"]> {
+async function listAiJobMetrics(
+  limit = 80,
+  status?: string
+): Promise<OperationsSnapshot["aiJobs"]> {
+  const values: unknown[] = [];
+  const whereSql = status ? "where job.status = $1" : "";
+  if (status) {
+    values.push(status);
+  }
+  values.push(limit);
+
   const result = await getPool().query(
     `select
-       job.id, job.repo_id, repo.full_name, job.provider_id, provider.name as provider_name,
+       job.id, job.repo_id, job.job_id, repo.full_name, job.provider_id, provider.name as provider_name,
        provider.config_json, job.model, job.job_type, job.status, job.prompt_version,
-       job.attempts, job.token_usage_json, job.created_at, job.finished_at
+       job.attempts, job.token_usage_json, job.error_message, job.created_at, job.finished_at
      from llm_jobs job
      left join repos repo on repo.id = job.repo_id
      left join ai_providers provider on provider.id = job.provider_id
+     ${whereSql}
      order by job.created_at desc
-     limit $1`,
-    [limit]
+     limit $${values.length}`,
+    values
   );
 
   return result.rows.map((row) => {
     const tokenUsage = normalizeJsonObject(row.token_usage_json);
     const providerConfig = normalizeJsonObject(row.config_json);
+    const tokenUsageKnown = hasTokenUsage(tokenUsage);
     const promptTokens = Number(tokenUsage.prompt_tokens ?? tokenUsage.promptTokens ?? 0);
     const completionTokens = Number(tokenUsage.completion_tokens ?? tokenUsage.completionTokens ?? 0);
     const totalTokens = Number(tokenUsage.total_tokens ?? tokenUsage.totalTokens ?? promptTokens + completionTokens);
@@ -2244,6 +2389,7 @@ async function listAiJobMetrics(limit = 80): Promise<OperationsSnapshot["aiJobs"
     return {
       id: row.id,
       repoId: row.repo_id,
+      scanJobId: row.job_id ?? undefined,
       repoFullName: row.full_name ?? undefined,
       providerId: row.provider_id,
       providerName: row.provider_name ?? undefined,
@@ -2252,14 +2398,63 @@ async function listAiJobMetrics(limit = 80): Promise<OperationsSnapshot["aiJobs"
       status: row.status,
       promptVersion: row.prompt_version,
       attempts: Number(row.attempts ?? 0),
+      tokenUsageKnown,
       promptTokens,
       completionTokens,
       totalTokens,
       estimatedCostUsd: estimateAiJobCostUsd(providerConfig, promptTokens, completionTokens),
+      errorMessage: row.error_message ?? undefined,
       createdAt: toIso(row.created_at),
       finishedAt: row.finished_at ? toIso(row.finished_at) : undefined
     };
   });
+}
+
+export function buildTokenSummary(
+  aiJobs: OperationsSnapshot["aiJobs"],
+  getId: (job: OperationsSnapshot["aiJobs"][number]) => string,
+  getLabel: (job: OperationsSnapshot["aiJobs"][number]) => string
+): OperationsSnapshot["repoTokenSummary"] {
+  const summary = new Map<string, OperationsSnapshot["repoTokenSummary"][number]>();
+  for (const job of aiJobs) {
+    const id = getId(job);
+    if (!id) continue;
+    const current =
+      summary.get(id) ??
+      {
+        id,
+        label: getLabel(job),
+        jobCount: 0,
+        unknownJobCount: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        estimatedCostUsd: 0
+      };
+
+    current.jobCount += 1;
+    current.unknownJobCount += job.tokenUsageKnown ? 0 : 1;
+    current.promptTokens += job.promptTokens;
+    current.completionTokens += job.completionTokens;
+    current.totalTokens += job.totalTokens;
+    current.estimatedCostUsd += job.estimatedCostUsd;
+    summary.set(id, current);
+  }
+
+  return [...summary.values()]
+    .sort((a, b) => b.totalTokens - a.totalTokens)
+    .slice(0, 50);
+}
+
+function hasTokenUsage(tokenUsage: Record<string, unknown>) {
+  return [
+    tokenUsage.prompt_tokens,
+    tokenUsage.promptTokens,
+    tokenUsage.completion_tokens,
+    tokenUsage.completionTokens,
+    tokenUsage.total_tokens,
+    tokenUsage.totalTokens
+  ].some((value) => Number(value) > 0);
 }
 
 function estimateAiJobCostUsd(
@@ -2357,6 +2552,7 @@ function mapJobRow(row: Record<string, any>): ScanJob {
     updatedRepoCount: Number(row.updated_repo_count ?? 0),
     unchangedRepoCount: Number(row.unchanged_repo_count ?? 0),
     candidateCount: Number(row.candidate_count ?? 0),
+    failedCandidateCount: Number(row.failed_candidate_count ?? 0),
     statusReason: row.error_message ?? undefined,
     startedAt: row.started_at ? toIso(row.started_at) : undefined,
     finishedAt: row.finished_at ? toIso(row.finished_at) : undefined,
@@ -2472,6 +2668,7 @@ function mapRecommendationRow(row: Record<string, any>): Recommendation {
     reasons: normalizeChineseLabels(normalizeStringArray(reasonsJson.reasons)),
     risks: normalizeChineseLabels(normalizeStringArray(reasonsJson.risks)),
     matchedPreferences,
+    tags: normalizeStringArray(row.tags_json),
     relatedUserRepos: parseRelatedUserRepos(
       row.context_matches_json,
       reasonsJson.relatedUserRepos
@@ -2652,6 +2849,10 @@ function normalizeStringArray(value: unknown): string[] {
   }
 
   return [];
+}
+
+function normalizeTagInput(tags: string[]) {
+  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);
 }
 
 function toVector(vector: number[]) {
