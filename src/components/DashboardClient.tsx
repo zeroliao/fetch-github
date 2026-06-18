@@ -103,12 +103,14 @@ export function DashboardClient({
   const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId);
   const stats = useMemo(
     () => ({
-      recommendations: recommendations.filter((item) => item.status !== "hidden").length,
+      recommendations: recommendations.filter(
+        (item) => item.profileId === selectedProfileId && item.status !== "hidden"
+      ).length,
       tracked: recommendations.filter((item) => item.status === "tracked").length,
       providers: providers.length,
       jobStatus: jobs[0] ? `${jobs[0].status} / ${jobs[0].stage}` : "idle"
     }),
-    [jobs, providers.length, recommendations]
+    [jobs, providers.length, recommendations, selectedProfileId]
   );
 
   async function refreshJobsAndQueue() {
@@ -2135,10 +2137,17 @@ function OperationsPanel({
   queueStats: DashboardSnapshot["queueStats"];
   onRefresh: () => Promise<void>;
 }) {
-  const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([]);
+  const [dismissedAlerts, setDismissedAlerts] = useState<string[]>(() => readDismissedOperationAlerts());
   const alerts = buildOperationAlerts(operations, queueStats).filter(
-    (alert) => !dismissedAlerts.includes(alert.text)
+    (alert) => !dismissedAlerts.includes(alert.id)
   );
+  function dismissAlert(id: string) {
+    setDismissedAlerts((current) => {
+      const next = [...new Set([...current, id])];
+      writeDismissedOperationAlerts(next);
+      return next;
+    });
+  }
 
   return (
     <div className="stack">
@@ -2166,12 +2175,12 @@ function OperationsPanel({
         {alerts.length > 0 && (
           <div className="alert-list">
             {alerts.map((alert) => (
-              <div className={`alert ${alert.level}`} key={alert.text}>
+              <div className={`alert ${alert.level}`} key={alert.id}>
                 <span>{alert.text}</span>
                 <button
                   className="alert-close"
                   type="button"
-                  onClick={() => setDismissedAlerts((current) => [...current, alert.text])}
+                  onClick={() => dismissAlert(alert.id)}
                   aria-label="关闭提示"
                   title="关闭提示"
                 >
@@ -2393,7 +2402,38 @@ function buildMatchSignals(recommendation: Recommendation) {
       : "",
     `机会分：${Math.round((recommendation.scores.opportunity ?? recommendation.scores.final) * 100)}，变现分：${Math.round((recommendation.scores.monetization ?? recommendation.scores.llmMatch) * 100)}，增长信号：${Math.round((recommendation.scores.growth ?? recommendation.scores.rule) * 100)}`,
     `规则分：${Math.round(recommendation.scores.rule * 100)}，上下文分：${Math.round(recommendation.scores.githubContextFit * 100)}，LLM 分：${Math.round(recommendation.scores.llmMatch * 100)}`
+    , ...buildQualitySignalItems(recommendation)
   ].filter(Boolean);
+}
+
+function buildQualitySignalItems(recommendation: Recommendation) {
+  const signals = recommendation.qualitySignals;
+  if (!signals) {
+    return [];
+  }
+
+  const items = [];
+  if (signals.openssf?.score !== undefined) {
+    items.push(`OpenSSF Scorecard：${signals.openssf.score.toFixed(1)}/10`);
+  }
+  if (signals.ecosystems) {
+    const usages = [
+      signals.ecosystems.dependentReposCount
+        ? `依赖仓库 ${signals.ecosystems.dependentReposCount.toLocaleString()}`
+        : "",
+      signals.ecosystems.packagesCount
+        ? `关联包 ${signals.ecosystems.packagesCount.toLocaleString()}`
+        : "",
+      signals.ecosystems.dockerDownloadsCount
+        ? `Docker 下载 ${signals.ecosystems.dockerDownloadsCount.toLocaleString()}`
+        : ""
+    ].filter(Boolean);
+    if (usages.length) {
+      items.push(`ecosyste.ms：${usages.join("，")}`);
+    }
+  }
+
+  return items;
 }
 
 type RecommendationStatusFilter =
@@ -2564,11 +2604,34 @@ function renderSortIcon(sortState: RecommendationSortState, key: RecommendationS
   return sortState.direction === "asc" ? <ArrowUp size={14} /> : <ArrowDown size={14} />;
 }
 
+const DISMISSED_OPERATION_ALERTS_KEY = "fetchGithub:dismissedOperationAlerts";
+
+function readDismissedOperationAlerts() {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(DISMISSED_OPERATION_ALERTS_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeDismissedOperationAlerts(ids: string[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(DISMISSED_OPERATION_ALERTS_KEY, JSON.stringify(ids));
+}
+
 function buildOperationAlerts(
   operations: DashboardSnapshot["operations"],
   queueStats: DashboardSnapshot["queueStats"]
 ) {
-  const alerts: Array<{ level: "warning" | "danger"; text: string }> = [];
+  const alerts: Array<{ id: string; level: "warning" | "danger"; text: string }> = [];
   const failedAiJobs = operations.aiJobs.filter((job) => job.status === "failed");
   const retryQueue = queueStats
     .filter((stat) => stat.status === "failed" || stat.status === "pending")
@@ -2582,18 +2645,21 @@ function buildOperationAlerts(
 
   if (pressureEvents.length > 0) {
     alerts.push({
+      id: "resource-pressure",
       level: pressureEvents.some((event) => event.status === "paused_by_memory") ? "danger" : "warning",
       text: `资源调节触发 ${pressureEvents.length} 次，最近一次：${pressureEvents[0].reason}`
     });
   }
   if (failedAiJobs.length > 0) {
     alerts.push({
+      id: "ai-job-failed",
       level: "danger",
       text: `最近有 ${failedAiJobs.length} 个 AI 作业失败，请检查 provider、API key 或模型响应。`
     });
   }
   if (rateLimitJobs.length > 0) {
     alerts.push({
+      id: "rate-limit",
       level: "warning",
       text: `检测到疑似 rate limit，请降低批量或调整 provider 限速配置。`
     });
@@ -2601,6 +2667,7 @@ function buildOperationAlerts(
   for (const stat of retryQueue.slice(0, 3)) {
     if (stat.count > 0) {
       alerts.push({
+        id: `queue-${stat.stage}-${stat.status}`,
         level: stat.status === "failed" ? "danger" : "warning",
         text: `${stat.stage} 阶段 ${stat.status} 队列还有 ${stat.count} 个候选。`
       });

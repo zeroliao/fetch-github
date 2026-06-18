@@ -21,6 +21,7 @@ import { buildRecommendation } from "../src/server/ranking";
 import { lexicalRecommendationSearchScore } from "../src/server/recommendationSearch";
 import { buildSchedulePlan } from "../src/server/scheduler";
 import { buildTokenSummary } from "../src/server/postgresStore";
+import { applyQualitySignalsToRecommendation } from "../src/server/qualitySignals";
 import {
   buildSourceAdapterPlans,
   mapOssInsightTrendingRows,
@@ -185,7 +186,8 @@ test("待接入榜单来源可以保存启用状态，但不会生成未实现�
       sources
     }
   });
-  assert.ok(!plans.some((plan) => plan.sourceId === "github_explore"));
+  assert.ok(plans.some((plan) => plan.sourceId === "github_explore"));
+  assert.ok(plans.some((plan) => plan.query.includes("topic:ai")));
 });
 
 test("GitHub Trending 会生成 source adapter plan", () => {
@@ -785,4 +787,24 @@ test("Token 汇总会标记 provider 未返回 usage 的 AI 作业", () => {
   assert.equal(rows[0].jobCount, 2);
   assert.equal(rows[0].unknownJobCount, 1);
   assert.equal(rows[0].totalTokens, 150);
+});
+
+test("OpenSSF 和 ecosyste.ms 质量信号会参与推荐评分", () => {
+  const recommendation = buildRecommendation(baseRepo, baseProfile, 1);
+  const enriched = applyQualitySignalsToRecommendation(recommendation, baseProfile, {
+    openssf: {
+      score: 8.5
+    },
+    ecosystems: {
+      dependentReposCount: 1200,
+      packagesCount: 8,
+      dockerDownloadsCount: 100000,
+      score: 0.82
+    }
+  });
+
+  assert.equal(enriched.qualitySignals?.openssf?.score, 8.5);
+  assert.ok((enriched.scores.technicalQuality ?? 0) >= (recommendation.scores.technicalQuality ?? 0));
+  assert.ok(enriched.reasons.some((reason) => reason.includes("OpenSSF Scorecard")));
+  assert.ok(enriched.reasons.some((reason) => reason.includes("ecosyste.ms")));
 });

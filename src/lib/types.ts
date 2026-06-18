@@ -190,6 +190,22 @@ export interface Recommendation {
     reason: string;
     score: number;
   }>;
+  qualitySignals?: {
+    openssf?: {
+      score?: number;
+      checks?: Array<{
+        name: string;
+        score?: number;
+        reason?: string;
+      }>;
+    };
+    ecosystems?: {
+      dependentReposCount?: number;
+      packagesCount?: number;
+      dockerDownloadsCount?: number;
+      score?: number;
+    };
+  };
   cluster?: RecommendationCluster;
   status:
     | "new"

@@ -838,7 +838,27 @@ export async function listRecommendations() {
   }
 
   const state = await loadState();
-  return state.recommendations.map(withChineseDisplay).sort((a, b) => a.rank - b.rank);
+  const profileLimitById = new Map(
+    state.profiles.map((profile) => [
+      profile.id,
+      Math.max(1, profile.config.limits.finalReportTopK || 100)
+    ])
+  );
+
+  const profileCounts = new Map<string, number>();
+  return state.recommendations
+    .map(withChineseDisplay)
+    .sort((a, b) => b.scores.final - a.scores.final || a.rank - b.rank)
+    .filter((recommendation) => {
+      const profileLimit = profileLimitById.get(recommendation.profileId) ?? 100;
+      const currentCount = profileCounts.get(recommendation.profileId) ?? 0;
+      if (currentCount >= profileLimit) {
+        return false;
+      }
+
+      profileCounts.set(recommendation.profileId, currentCount + 1);
+      return true;
+    });
 }
 
 export async function updateRecommendationTags(

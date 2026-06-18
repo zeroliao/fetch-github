@@ -1003,6 +1003,7 @@ export async function upsertRecommendations(
       opportunity: recommendation.opportunity,
       matchedPreferences: recommendation.matchedPreferences,
       relatedUserRepos: recommendation.relatedUserRepos,
+      qualitySignals: recommendation.qualitySignals,
       cluster: recommendation.cluster,
       scores: recommendation.scores
     });
@@ -1663,15 +1664,22 @@ export async function getLatestLlmResult(
 export async function listRecommendations(): Promise<Recommendation[]> {
   await ensureSeedDataOnce();
   const result = await getPool().query(
-    `select
+    `with ranked as (
+     select
        rec.id, rec.profile_id, rec.rank, rec.final_score, rec.reasons_json, rec.status, rec.tags_json, rec.created_at,
        repo.id as repo_id, repo.github_id, repo.full_name, repo.owner, repo.name, repo.html_url,
        repo.description, repo.primary_language, repo.topics_json, repo.stars, repo.forks,
        repo.open_issues, repo.pushed_at, repo.updated_at, repo.archived, repo.fork,
        score.rule_score, score.github_context_fit, score.llm_match_score, score.feedback_score,
        score.score_version,
-       coalesce(context_matches.matches_json, '[]'::jsonb) as context_matches_json
+       coalesce(context_matches.matches_json, '[]'::jsonb) as context_matches_json,
+       greatest(1, coalesce((profile.config_json #>> '{limits,finalReportTopK}')::int, 100)) as profile_limit,
+       row_number() over (
+         partition by rec.profile_id
+         order by rec.final_score desc, rec.rank asc
+       ) as profile_position
      from recommendations rec
+     join discovery_profiles profile on profile.id = rec.profile_id
      join repos repo on repo.id = rec.repo_id
      left join repo_scores score on score.id = concat('score-', rec.id)
      left join lateral (
@@ -1688,8 +1696,11 @@ export async function listRecommendations(): Promise<Recommendation[]> {
        join user_repos user_repo on user_repo.id = match.user_repo_id
        where match.candidate_repo_id = repo.id
      ) context_matches on true
-     order by rec.final_score desc, rec.rank asc
-     limit 100`
+     )
+     select *
+     from ranked
+     where profile_position <= profile_limit
+     order by final_score desc, rank asc`
   );
 
   return result.rows.map(mapRecommendationRow);
@@ -2673,9 +2684,43 @@ function mapRecommendationRow(row: Record<string, any>): Recommendation {
       row.context_matches_json,
       reasonsJson.relatedUserRepos
     ),
+    qualitySignals: normalizePersistedQualitySignals(reasonsJson.qualitySignals),
     cluster: normalizePersistedCluster(reasonsJson.cluster),
     status: row.status,
     createdAt: toIso(row.created_at)
+  };
+}
+
+function normalizePersistedQualitySignals(value: unknown): Recommendation["qualitySignals"] {
+  const object = value && typeof value === "object" ? normalizeJsonObject(value) : {};
+  if (!Object.keys(object).length) {
+    return undefined;
+  }
+
+  const openssf = normalizeJsonObject(object.openssf);
+  const ecosystems = normalizeJsonObject(object.ecosystems);
+  return {
+    openssf: Object.keys(openssf).length
+      ? {
+          score: optionalScore(openssf.score),
+          checks: normalizeJsonArray(openssf.checks)
+            .map((item) => normalizeJsonObject(item))
+            .map((item) => ({
+              name: String(item.name ?? ""),
+              score: optionalScore(item.score),
+              reason: item.reason ? String(item.reason) : undefined
+            }))
+            .filter((item) => item.name)
+        }
+      : undefined,
+    ecosystems: Object.keys(ecosystems).length
+      ? {
+          dependentReposCount: optionalPositiveNumber(ecosystems.dependentReposCount),
+          packagesCount: optionalPositiveNumber(ecosystems.packagesCount),
+          dockerDownloadsCount: optionalPositiveNumber(ecosystems.dockerDownloadsCount),
+          score: optionalScore(ecosystems.score)
+        }
+      : undefined
   };
 }
 
@@ -2754,6 +2799,11 @@ function normalizeSuggestedAction(value: unknown): OpportunityAnalysis["suggeste
 
 function optionalScore(value: unknown) {
   return value === undefined || value === null ? undefined : Number(value);
+}
+
+function optionalPositiveNumber(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : undefined;
 }
 
 function mapKnowledgeSyncRow(row: Record<string, any>): KnowledgeSync {

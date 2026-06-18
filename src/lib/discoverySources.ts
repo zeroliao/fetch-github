@@ -54,7 +54,7 @@ export const discoverySourceCatalog: DiscoverySourceDefinition[] = [
     id: "github_explore",
     label: "GitHub Explore",
     authority: "github_official",
-    capability: "planned_adapter",
+    capability: "implemented",
     defaultWeight: 1.1,
     description: "GitHub Explore、Collections 和官方推荐主题，适合人工精选信号。"
   },
@@ -78,7 +78,7 @@ export const discoverySourceCatalog: DiscoverySourceDefinition[] = [
     id: "openssf_scorecard",
     label: "OpenSSF Scorecard",
     authority: "third_party",
-    capability: "quality_signal",
+    capability: "implemented",
     defaultWeight: 0.98,
     description: "用于安全与维护质量评分，不直接扩大候选池。"
   },
@@ -86,7 +86,7 @@ export const discoverySourceCatalog: DiscoverySourceDefinition[] = [
     id: "ecosystems_usage",
     label: "ecosyste.ms 使用度",
     authority: "third_party",
-    capability: "quality_signal",
+    capability: "implemented",
     defaultWeight: 1.02,
     description: "用于依赖生态、包发布和真实使用度评分，不直接扩大候选池。"
   }

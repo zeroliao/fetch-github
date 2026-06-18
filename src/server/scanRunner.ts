@@ -17,6 +17,10 @@ import {
 import { evaluateResourcePolicy, recordResourceDecision } from "./resourceGovernor";
 import { buildSourceAdapterPlans, type SourceAdapterPlan } from "./sourceAdapters";
 import {
+  applyQualitySignalsToRecommendation,
+  fetchRepoQualitySignals
+} from "./qualitySignals";
+import {
   claimQueuedRepoBatch,
   completeCandidate,
   createLlmJob,
@@ -822,7 +826,7 @@ async function runLlmStage(
         }
         await upgradeRepoDataLevel([item.repo], "L3");
         recommendations.push(
-          buildRecommendation(
+          await buildRecommendationWithQualitySignals(
             item.repo,
             profile,
             currentJob.analyzedCount + recommendations.length + 1,
@@ -907,6 +911,26 @@ async function runRankStage(job: ScanJob, profile: DiscoveryProfile) {
   });
 }
 
+async function buildRecommendationWithQualitySignals(
+  repo: RepoSummary,
+  profile: DiscoveryProfile,
+  rank: number,
+  analysis: RepoAnalysisResult | undefined,
+  preferenceSignals: Awaited<ReturnType<typeof listPreferenceSignals>>,
+  userRepos: Awaited<ReturnType<typeof listGithubRepos>>
+) {
+  const recommendation = buildRecommendation(
+    repo,
+    profile,
+    rank,
+    analysis,
+    preferenceSignals,
+    userRepos
+  );
+  const qualitySignals = await fetchRepoQualitySignals(repo, profile);
+  return applyQualitySignalsToRecommendation(recommendation, profile, qualitySignals);
+}
+
 async function evaluateLlmGate(input: {
   repo: RepoSummary;
   profile: DiscoveryProfile;
@@ -926,7 +950,7 @@ async function evaluateLlmGate(input: {
     contentHash: input.contentHash,
     profileVector: input.profileVector
   });
-  const recommendation = buildRecommendation(
+  const recommendation = await buildRecommendationWithQualitySignals(
     input.repo,
     input.profile,
     1,

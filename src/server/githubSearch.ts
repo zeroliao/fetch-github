@@ -53,6 +53,23 @@ export function buildGitHubSearchQueryPlans(profile: DiscoveryProfile): GitHubSe
     }
   }
 
+  if (enabled.has("github_explore")) {
+    const exploreTopics = uniqueStrings([
+      ...preferences.topics,
+      ...preferences.keywords,
+      "awesome",
+      "developer-tools",
+      "saas",
+      "ai-agent"
+    ]).slice(0, 8);
+    for (const topic of exploreTopics) {
+      addPlan("github_explore", [`topic:${topic}`, ...baseFilters].join(" "), "stars");
+    }
+    for (const keyword of preferences.keywords.slice(0, 4)) {
+      addPlan("github_explore", [`awesome ${keyword}`, ...baseFilters].join(" "), "stars");
+    }
+  }
+
   if (enabled.has("github_search_stars")) {
     const topicOrKeywords = [...preferences.topics.map((topic) => `topic:${topic}`), ...preferences.keywords];
     for (const query of topicOrKeywords.slice(0, 6)) {
@@ -86,6 +103,10 @@ function dedupePlans(plans: GitHubSearchQueryPlan[]) {
     seen.add(key);
     return true;
   });
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 function daysAgo(days: number) {
