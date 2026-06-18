@@ -166,6 +166,7 @@ export async function ensureSeedData() {
        on conflict (key) do nothing`,
       [JSON.stringify(defaultAppSettings)]
     );
+    await ensurePerformanceIndexes(client);
 
     const seedState = await client.query(
       `select value_json from app_state where key = 'seed_data_initialized'`
@@ -284,6 +285,31 @@ export async function ensureSeedData() {
       .query("select pg_advisory_unlock(hashtext('fetchgithub_seed_data'))")
       .catch(() => undefined);
     client.release();
+  }
+}
+
+async function ensurePerformanceIndexes(queryRunner: QueryRunner) {
+  const indexes = [
+    `create index if not exists idx_recommendations_profile_score_rank
+     on recommendations (profile_id, final_score desc, rank asc)`,
+    `create index if not exists idx_candidate_queue_job_stage_status_next
+     on candidate_queue (job_id, stage, status, next_run_at)`,
+    `create index if not exists idx_candidate_queue_stage_status_next
+     on candidate_queue (stage, status, next_run_at)`,
+    `create index if not exists idx_discovery_jobs_profile_status_stage
+     on discovery_jobs (profile_id, status, stage, created_at desc)`,
+    `create index if not exists idx_llm_jobs_job_status_created
+     on llm_jobs (job_id, status, created_at desc)`,
+    `create index if not exists idx_repo_scores_profile_final
+     on repo_scores (profile_id, final_score desc)`,
+    `create index if not exists idx_repos_full_name
+     on repos (full_name)`,
+    `create index if not exists idx_repos_github_id
+     on repos (github_id)`
+  ];
+
+  for (const sql of indexes) {
+    await queryRunner.query(sql);
   }
 }
 

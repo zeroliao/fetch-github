@@ -114,15 +114,16 @@ export function DashboardClient({
   );
 
   async function refreshJobsAndQueue() {
-    const [jobsResponse, queueResponse] = await Promise.all([fetch("/api/scans"), fetch("/api/queue")]);
+    const [jobsResponse, queueResponse, operationsResponse, settingsResponse] = await Promise.all([
+      fetch("/api/scans"),
+      fetch("/api/queue"),
+      fetch("/api/operations"),
+      fetch("/api/settings")
+    ]);
     if (jobsResponse.ok) setJobs(await jobsResponse.json());
     if (queueResponse.ok) setQueueStats(await queueResponse.json());
-    const dashboardResponse = await fetch("/api/dashboard");
-    if (dashboardResponse.ok) {
-      const snapshot = await dashboardResponse.json() as DashboardSnapshot;
-      setOperations(snapshot.operations);
-      setSettings(snapshot.settings);
-    }
+    if (operationsResponse.ok) setOperations(await operationsResponse.json());
+    if (settingsResponse.ok) setSettings(await settingsResponse.json());
   }
 
   async function refreshRecommendations() {
@@ -146,14 +147,21 @@ export function DashboardClient({
           ? "扫描任务已启动，worker 会按 checkpoint 继续低内存推进。"
           : body.errorMessage ?? body.error ?? "扫描失败，请查看任务状态。"
       );
-      await refreshJobsAndQueue();
-      await refreshRecommendations();
+      void refreshJobsAndQueue();
     } finally {
       setIsScanning(false);
     }
   }
 
   async function sendFeedback(recommendation: Recommendation, action: FeedbackAction) {
+    const previousRecommendations = recommendations;
+    const previousSelectedRepo = selectedRepo;
+    const status = statusFromFeedbackAction(action, recommendation.status);
+    setRecommendations((current) =>
+      current.map((item) => (item.id === recommendation.id ? { ...item, status } : item))
+    );
+    setSelectedRepo((current) => (current?.id === recommendation.id ? { ...current, status } : current));
+
     const response = await fetch(`/api/repositories/${recommendation.repo.id}/feedback`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -161,15 +169,11 @@ export function DashboardClient({
     });
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
+      setRecommendations(previousRecommendations);
+      setSelectedRepo(previousSelectedRepo);
       setMessage(body.error ?? "反馈保存失败。");
       return;
     }
-    const status = statusFromFeedbackAction(action, recommendation.status);
-    setRecommendations((current) =>
-      current.map((item) => (item.id === recommendation.id ? { ...item, status } : item))
-    );
-    setSelectedRepo((current) => (current?.id === recommendation.id ? { ...current, status } : current));
-    await refreshRecommendations();
   }
 
   async function logout() {
@@ -180,6 +184,12 @@ export function DashboardClient({
   function navigateSection(section: Section) {
     router.push(sectionPath(section));
   }
+
+  useEffect(() => {
+    if ((activeSection === "recommendations" || activeSection === "knowledge") && recommendations.length === 0) {
+      void refreshRecommendations();
+    }
+  }, [activeSection, recommendations.length]);
 
   async function toggleGlobalScan(enabled: boolean) {
     const previous = settings;
@@ -470,6 +480,8 @@ function RecommendationsPanel({
   const [semanticQuery, setSemanticQuery] = useState("");
   const [semanticSearch, setSemanticSearch] = useState<SemanticSearchState | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [page, setPage] = useState(1);
+  const pageSize = 50;
   const searchScores = semanticSearch?.scores ?? {};
   const searchIds = useMemo(
     () => (semanticSearch ? new Set(semanticSearch.ids) : undefined),
@@ -502,6 +514,21 @@ function RecommendationsPanel({
     recommendations,
     searchIds,
     searchScores,
+    sortState,
+    statusFilter
+  ]);
+  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pagedVisible = visible.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [
+    focusedClusterKey,
+    groupFilter,
+    opportunityFilter,
+    preferenceFilter,
+    searchIds,
     sortState,
     statusFilter
   ]);
@@ -576,7 +603,6 @@ function RecommendationsPanel({
 
   async function sendPreferenceFeedback(recommendation: Recommendation, action: "like" | "dislike") {
     await onFeedback(recommendation, action);
-    await onRefresh();
   }
 
   return (
@@ -706,9 +732,9 @@ function RecommendationsPanel({
               <tr>
                 <td colSpan={13} className="muted">暂无符合当前筛选条件的推荐项目。</td>
               </tr>
-            ) : visible.map((recommendation, index) => (
+            ) : pagedVisible.map((recommendation, index) => (
               <tr key={recommendation.id}>
-                <td className="row-index">{index + 1}</td>
+                <td className="row-index">{(currentPage - 1) * pageSize + index + 1}</td>
                 <td>
                   <a className="repo-link" href={recommendation.repo.htmlUrl} target="_blank" rel="noopener noreferrer">
                     <span>{recommendation.repo.fullName}</span>
@@ -814,6 +840,17 @@ function RecommendationsPanel({
           </tbody>
         </table>
       </div>
+      {visible.length > pageSize && (
+        <div className="pagination-row">
+          <button className="button" type="button" disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
+            上一页
+          </button>
+          <span className="muted">第 {currentPage} / {totalPages} 页，每页 {pageSize} 条</span>
+          <button className="button" type="button" disabled={currentPage >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>
+            下一页
+          </button>
+        </div>
+      )}
       {tagEditorRepo && (
         <RecommendationTagDialog
           recommendation={tagEditorRepo}

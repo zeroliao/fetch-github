@@ -221,6 +221,60 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
   };
 }
 
+export async function getDashboardShellSnapshot(): Promise<DashboardSnapshot> {
+  if (await isDatabaseAvailable()) {
+    const [
+      settings,
+      profiles,
+      aiProviders,
+      jobs,
+      githubAccounts,
+      githubRepos,
+      knowledgeSyncs,
+      queueStats,
+      operations
+    ] = await Promise.all([
+      postgresStore.getAppSettings(),
+      postgresStore.listProfiles(),
+      postgresStore.listAiProviders(),
+      postgresStore.listScanJobs(),
+      postgresStore.listGithubAccounts(),
+      postgresStore.listGithubRepos(),
+      postgresStore.listKnowledgeSyncs(),
+      postgresStore.getQueueStats(),
+      postgresStore.getOperationsSnapshot()
+    ]);
+
+    return {
+      settings,
+      profiles,
+      aiProviders,
+      recommendations: [],
+      jobs,
+      githubAccounts,
+      githubRepos,
+      knowledgeSyncs,
+      queueStats,
+      operations
+    };
+  }
+
+  const state = await loadState();
+
+  return {
+    settings: state.settings,
+    profiles: state.profiles,
+    aiProviders: state.aiProviders,
+    recommendations: [],
+    jobs: state.jobs,
+    githubAccounts: state.githubAccounts,
+    githubRepos: state.githubRepos,
+    knowledgeSyncs: state.knowledgeSyncs,
+    queueStats: state.queueStats,
+    operations: buildLocalOperationsSnapshot(state)
+  };
+}
+
 function buildLocalOperationsSnapshot(state: StoreState): OperationsSnapshot {
   return {
     resourceEvents: state.resourceEvents.slice(0, 80),
@@ -234,6 +288,14 @@ function buildLocalOperationsSnapshot(state: StoreState): OperationsSnapshot {
       estimatedCostUsd: 0
     }
   };
+}
+
+export async function getOperationsSnapshot(): Promise<OperationsSnapshot> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.getOperationsSnapshot();
+  }
+
+  return buildLocalOperationsSnapshot(await loadState());
 }
 
 export async function getAppSettings(): Promise<AppSettings> {

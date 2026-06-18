@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { DashboardClient } from "@/components/DashboardClient";
 import type { Section } from "@/lib/navigation";
 import { getCurrentUser } from "@/server/auth";
-import { getDashboardSnapshot } from "@/server/store";
+import { getDashboardShellSnapshot } from "@/server/store";
 
 export async function DashboardPage({ section }: { section: Section }) {
   const user = await getCurrentUser();
@@ -10,6 +10,6 @@ export async function DashboardPage({ section }: { section: Section }) {
     redirect("/login");
   }
 
-  const snapshot = await getDashboardSnapshot();
+  const snapshot = await getDashboardShellSnapshot();
   return <DashboardClient initialData={snapshot} initialSection={section} />;
 }

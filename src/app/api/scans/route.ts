@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAuth } from "@/server/auth";
-import { runScanJob } from "@/server/scanRunner";
 import {
   createScanJob,
   findActiveScanJobByProfile,
@@ -59,32 +58,13 @@ export async function POST(request: Request) {
   }
 
   const job = await createScanJob(parsed.data.profileId);
-  await updateScanJob(job.id, {
+  const queuedJob = await updateScanJob(job.id, {
     status: "running",
     stage: "collect",
     startedAt: new Date().toISOString()
   });
 
-  try {
-    const startedJob = await runScanJob({
-      jobId: job.id,
-      maxPages: 1,
-      maxProfileBatches: 1
-    });
-
-    return NextResponse.json(startedJob ?? job, { status: 201 });
-  } catch (error) {
-    const rawMessage = error instanceof Error ? error.message : String(error);
-    const message = normalizeScanError(rawMessage);
-    const isRateLimit = message.toLowerCase().includes("rate limit");
-    const failedJob = await updateScanJob(job.id, {
-      status: isRateLimit ? "retry_later" : "failed",
-      errorMessage: message,
-      finishedAt: new Date().toISOString()
-    });
-
-    return NextResponse.json(failedJob ?? job, { status: isRateLimit ? 429 : 500 });
-  }
+  return NextResponse.json(queuedJob ?? job, { status: 202 });
 }
 
 async function validateScanAiProviders(ai: {
@@ -104,15 +84,4 @@ async function validateScanAiProviders(ai: {
   }
 
   return null;
-}
-
-function normalizeScanError(message: string) {
-  if (message.includes("403") && message.toLowerCase().includes("rate limit")) {
-    return "GitHub API rate limit exceeded. 请配置 GITHUB_TOKEN 或稍后重试。";
-  }
-  if (message.includes("401")) {
-    return "GitHub token 无效，请检查 .env.local 中的 GITHUB_TOKEN。";
-  }
-
-  return message;
 }
