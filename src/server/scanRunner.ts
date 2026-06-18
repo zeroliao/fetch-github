@@ -622,7 +622,7 @@ async function runEmbedStage(
         });
       } catch (error) {
         const reason = normalizeAiStageError(error);
-        if (item.attempts < MAX_AI_CANDIDATE_ATTEMPTS) {
+        if (shouldRetryAiCandidate(reason, item.attempts)) {
           await retryCandidate(item.queueId, retryDelaySeconds(item.attempts));
         } else {
           await failCandidate(item.queueId, reason);
@@ -660,7 +660,7 @@ async function runEmbedStage(
       } catch (error) {
         const reason = normalizeAiStageError(error);
         for (const input of embeddingInputs) {
-          if (input.item.attempts < MAX_AI_CANDIDATE_ATTEMPTS) {
+          if (shouldRetryAiCandidate(reason, input.item.attempts)) {
             await retryCandidate(input.item.queueId, retryDelaySeconds(input.item.attempts));
           } else {
             await failCandidate(input.item.queueId, reason);
@@ -845,7 +845,7 @@ async function runLlmStage(
         if (llmJobId) {
           await finishLlmJob(llmJobId, "failed", {}, reason);
         }
-        if (item.attempts < MAX_AI_CANDIDATE_ATTEMPTS) {
+        if (shouldRetryAiCandidate(reason, item.attempts)) {
           await retryCandidate(item.queueId, retryDelaySeconds(item.attempts));
         } else {
           await failCandidate(item.queueId, reason);
@@ -1163,7 +1163,16 @@ async function moveWhenStageDrained(
 }
 
 function retryDelaySeconds(attempts: number) {
-  return Math.min(300, 15 * 2 ** Math.max(0, attempts - 1));
+  return Math.min(1800, 15 * 2 ** Math.max(0, attempts - 1));
+}
+
+function shouldRetryAiCandidate(reason: string, attempts: number) {
+  return attempts < MAX_AI_CANDIDATE_ATTEMPTS || isTransientAiProviderError(reason);
+}
+
+export function isTransientAiProviderError(reason: string) {
+  return /\b(429|500|502|503|504)\b/i.test(reason) ||
+    /No available accounts|rate limit|temporarily unavailable|timeout|timed out|ECONNRESET|ETIMEDOUT/i.test(reason);
 }
 
 async function isCollectComplete(jobId: string, profile: DiscoveryProfile) {

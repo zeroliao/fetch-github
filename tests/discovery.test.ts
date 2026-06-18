@@ -22,6 +22,7 @@ import { lexicalRecommendationSearchScore } from "../src/server/recommendationSe
 import { buildSchedulePlan } from "../src/server/scheduler";
 import { buildTokenSummary } from "../src/server/postgresStore";
 import { applyQualitySignalsToRecommendation } from "../src/server/qualitySignals";
+import { isTransientAiProviderError } from "../src/server/scanRunner";
 import {
   buildSourceAdapterPlans,
   mapOssInsightTrendingRows,
@@ -807,4 +808,14 @@ test("OpenSSF 和 ecosyste.ms 质量信号会参与推荐评分", () => {
   assert.ok((enriched.scores.technicalQuality ?? 0) >= (recommendation.scores.technicalQuality ?? 0));
   assert.ok(enriched.reasons.some((reason) => reason.includes("OpenSSF Scorecard")));
   assert.ok(enriched.reasons.some((reason) => reason.includes("ecosyste.ms")));
+});
+
+test("上游账号池暂无可用账号会作为临时 AI 错误重试", () => {
+  assert.equal(
+    isTransientAiProviderError(
+      'Chat provider failed: 503 {"error":{"message":"No available accounts: no available accounts","type":"api_error"}}'
+    ),
+    true
+  );
+  assert.equal(isTransientAiProviderError("Chat provider failed: 401 invalid api key"), false);
 });
