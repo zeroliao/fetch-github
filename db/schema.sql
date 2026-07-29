@@ -326,6 +326,48 @@ CREATE TABLE IF NOT EXISTS knowledge_syncs (
   UNIQUE(repo_id, target, dataset_id, content_hash)
 );
 
+CREATE TABLE IF NOT EXISTS mark_directories (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  parent_id TEXT REFERENCES mark_directories(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  deleted_at TIMESTAMPTZ,
+  deleted_root BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (char_length(name) BETWEEN 1 AND 100)
+);
+
+CREATE TABLE IF NOT EXISTS mark_files (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  directory_id TEXT REFERENCES mark_directories(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  deleted_at TIMESTAMPTZ,
+  deleted_root BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (char_length(name) BETWEEN 1 AND 180),
+  CHECK (size_bytes BETWEEN 0 AND 2097152)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mark_directories_active_name
+  ON mark_directories(user_id, COALESCE(parent_id, ''), lower(name))
+  WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mark_files_active_name
+  ON mark_files(user_id, COALESCE(directory_id, ''), lower(name))
+  WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_mark_directories_user_parent
+  ON mark_directories(user_id, parent_id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_mark_files_user_directory
+  ON mark_files(user_id, directory_id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_mark_directories_trash
+  ON mark_directories(user_id, deleted_at DESC) WHERE deleted_root = TRUE;
+CREATE INDEX IF NOT EXISTS idx_mark_files_trash
+  ON mark_files(user_id, deleted_at DESC) WHERE deleted_root = TRUE;
+
 CREATE INDEX IF NOT EXISTS idx_repos_full_name ON repos(full_name);
 CREATE INDEX IF NOT EXISTS idx_repos_stars ON repos(stars DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON discovery_jobs(status, stage);
