@@ -18,7 +18,7 @@ import type {
   ScanCheckpoint,
   ScanJob,
   UpsertRepoStats,
-  UserGitHubRepo
+  UserGitHubRepo,
 } from "@/lib/types";
 import { defaultAppSettings, normalizeAppSettings } from "@/lib/settings";
 import { normalizeDiscoveryLimits } from "@/lib/semanticGate";
@@ -27,18 +27,18 @@ import {
   seedGithubRepos,
   seedProfiles,
   seedProviders,
-  seedRecommendations
+  seedRecommendations,
 } from "@/lib/seed";
 import { normalizeDiscoverySources } from "@/lib/discoverySources";
 import { normalizeOpportunityProfile } from "@/lib/opportunity";
 import { annotateRecommendationClusters } from "@/lib/repoCluster";
 import {
   repoHasMaterialMetadataChanges,
-  shouldAnalyzeDiscoveredRepo
+  shouldAnalyzeDiscoveredRepo,
 } from "@/lib/repoRefresh";
 import {
   ensureChineseSummary,
-  normalizeChineseLabels
+  normalizeChineseLabels,
 } from "@/lib/recommendationText";
 import { calculateFinalScore } from "@/lib/scoring";
 import { getPool } from "./db";
@@ -72,12 +72,14 @@ type QueryRunner = {
 const JOB_SELECT_FIELDS = `id, profile_id, type, status, stage, max_candidates, fetched_count,
             processed_count, analyzed_count, new_repo_count, updated_repo_count,
             unchanged_repo_count, candidate_count, failed_candidate_count, started_at, finished_at,
-            error_message, archived_at, created_at`;
+            error_message, error_code, error_resolution, archived_at, created_at`;
 
 export async function ensureSeedData() {
   const pool = getPool();
   const client = await pool.connect();
-  await client.query("select pg_advisory_lock(hashtext('fetchgithub_seed_data'))");
+  await client.query(
+    "select pg_advisory_lock(hashtext('fetchgithub_seed_data'))",
+  );
 
   try {
     await client.query(
@@ -85,7 +87,7 @@ export async function ensureSeedData() {
         key text primary key,
         value_json jsonb not null default '{}'::jsonb,
         updated_at timestamptz not null default now()
-      )`
+      )`,
     );
     await client.query(
       `create table if not exists auth_sessions (
@@ -93,7 +95,7 @@ export async function ensureSeedData() {
         user_id text not null,
         expires_at timestamptz not null,
         created_at timestamptz not null default now()
-      )`
+      )`,
     );
     await client.query(
       `create table if not exists scan_schedule_state (
@@ -102,51 +104,59 @@ export async function ensureSeedData() {
         last_scheduled_at timestamptz,
         last_job_id text,
         updated_at timestamptz not null default now()
-      )`
+      )`,
     );
     await client.query(
       `alter table candidate_queue
-       add column if not exists updated_at timestamptz not null default now()`
+       add column if not exists updated_at timestamptz not null default now()`,
     );
     await client.query(
       `alter table llm_results
-       add column if not exists input_hash text`
+       add column if not exists input_hash text`,
     );
     await client.query(
       `alter table discovery_jobs
-       add column if not exists archived_at timestamptz`
+       add column if not exists archived_at timestamptz`,
     );
     await client.query(
       `alter table discovery_jobs
-       add column if not exists new_repo_count integer not null default 0`
+       add column if not exists new_repo_count integer not null default 0`,
     );
     await client.query(
       `alter table discovery_jobs
-       add column if not exists updated_repo_count integer not null default 0`
+       add column if not exists updated_repo_count integer not null default 0`,
     );
     await client.query(
       `alter table discovery_jobs
-       add column if not exists unchanged_repo_count integer not null default 0`
+       add column if not exists unchanged_repo_count integer not null default 0`,
     );
     await client.query(
       `alter table discovery_jobs
-       add column if not exists candidate_count integer not null default 0`
+       add column if not exists candidate_count integer not null default 0`,
     );
     await client.query(
       `alter table discovery_jobs
-       add column if not exists failed_candidate_count integer not null default 0`
+       add column if not exists failed_candidate_count integer not null default 0`,
+    );
+    await client.query(
+      `alter table discovery_jobs
+       add column if not exists error_code text`,
+    );
+    await client.query(
+      `alter table discovery_jobs
+       add column if not exists error_resolution text`,
     );
     await client.query(
       `alter table candidate_queue
-       add column if not exists error_message text`
+       add column if not exists error_message text`,
     );
     await client.query(
       `alter table llm_jobs
-       add column if not exists job_id text references discovery_jobs(id) on delete set null`
+       add column if not exists job_id text references discovery_jobs(id) on delete set null`,
     );
     await client.query(
       `alter table llm_jobs
-       add column if not exists error_message text`
+       add column if not exists error_message text`,
     );
     await client.query(
       `create table if not exists embedding_cache (
@@ -158,18 +168,18 @@ export async function ensureSeedData() {
         content_hash text not null,
         vector vector,
         created_at timestamptz not null default now()
-      )`
+      )`,
     );
     await client.query(
       `insert into app_state (key, value_json, updated_at)
        values ('app_settings', $1, now())
        on conflict (key) do nothing`,
-      [JSON.stringify(defaultAppSettings)]
+      [JSON.stringify(defaultAppSettings)],
     );
     await ensurePerformanceIndexes(client);
 
     const seedState = await client.query(
-      `select value_json from app_state where key = 'seed_data_initialized'`
+      `select value_json from app_state where key = 'seed_data_initialized'`,
     );
 
     if (seedState.rows[0]) {
@@ -181,7 +191,7 @@ export async function ensureSeedData() {
         (select count(*)::int from discovery_profiles) as profiles,
         (select count(*)::int from ai_providers) as providers,
         (select count(*)::int from recommendations) as recommendations,
-        (select count(*)::int from user_repos) as user_repos`
+        (select count(*)::int from user_repos) as user_repos`,
     );
     const counts = existingData.rows[0] as Record<string, number>;
     const hasBusinessData =
@@ -213,12 +223,12 @@ export async function ensureSeedData() {
           provider.dimensions ?? null,
           JSON.stringify({
             rateLimit: provider.rateLimit,
-            timeoutSeconds: provider.timeoutSeconds
+            timeoutSeconds: provider.timeoutSeconds,
           }),
           provider.enabled,
           provider.createdAt,
-          provider.updatedAt
-        ]
+          provider.updatedAt,
+        ],
       );
     }
 
@@ -233,8 +243,8 @@ export async function ensureSeedData() {
           profile.enabled,
           JSON.stringify(profile.config),
           profile.createdAt,
-          profile.updatedAt
-        ]
+          profile.updatedAt,
+        ],
       );
     }
 
@@ -253,8 +263,8 @@ export async function ensureSeedData() {
           account.username,
           account.tokenRef ?? null,
           account.connectedAt,
-          account.lastSyncedAt ?? null
-        ]
+          account.lastSyncedAt ?? null,
+        ],
       );
     }
 
@@ -274,8 +284,8 @@ export async function ensureSeedData() {
           repo.visibility,
           repo.readmeSummary ?? null,
           repo.selectedForContext,
-          repo.lastSyncedAt ?? null
-        ]
+          repo.lastSyncedAt ?? null,
+        ],
       );
     }
 
@@ -305,7 +315,7 @@ async function ensurePerformanceIndexes(queryRunner: QueryRunner) {
     `create index if not exists idx_repos_full_name
      on repos (full_name)`,
     `create index if not exists idx_repos_github_id
-     on repos (github_id)`
+     on repos (github_id)`,
   ];
 
   for (const sql of indexes) {
@@ -322,17 +332,16 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
     jobs,
     githubAccounts,
     githubRepos,
-    knowledgeSyncs
-  ] =
-    await Promise.all([
-      listProfiles(),
-      listAiProviders(),
-      listRecommendations(),
-      listScanJobs(),
-      listGithubAccounts(),
-      listGithubRepos(),
-      listKnowledgeSyncs()
-    ]);
+    knowledgeSyncs,
+  ] = await Promise.all([
+    listProfiles(),
+    listAiProviders(),
+    listRecommendations(),
+    listScanJobs(),
+    listGithubAccounts(),
+    listGithubRepos(),
+    listKnowledgeSyncs(),
+  ]);
 
   return {
     settings: await getAppSettings(),
@@ -344,31 +353,35 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
     githubRepos,
     knowledgeSyncs,
     queueStats: await getQueueStats(),
-    operations: await getOperationsSnapshot()
+    operations: await getOperationsSnapshot(),
   };
 }
 
 export async function getAppSettings(): Promise<AppSettings> {
   await ensureSeedDataOnce();
   const result = await getPool().query(
-    `select value_json from app_state where key='app_settings'`
+    `select value_json from app_state where key='app_settings'`,
   );
 
-  return normalizeAppSettings(result.rows[0]?.value_json as Partial<AppSettings> | undefined);
+  return normalizeAppSettings(
+    result.rows[0]?.value_json as Partial<AppSettings> | undefined,
+  );
 }
 
-export async function updateAppSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+export async function updateAppSettings(
+  patch: Partial<AppSettings>,
+): Promise<AppSettings> {
   const current = await getAppSettings();
   const next = normalizeAppSettings({
     ...current,
-    ...patch
+    ...patch,
   });
 
   await getPool().query(
     `insert into app_state (key, value_json, updated_at)
      values ('app_settings', $1, now())
      on conflict (key) do update set value_json=excluded.value_json, updated_at=now()`,
-    [JSON.stringify(next)]
+    [JSON.stringify(next)],
   );
 
   return next;
@@ -379,7 +392,7 @@ export async function listProfiles(): Promise<DiscoveryProfile[]> {
   const result = await getPool().query(
     `select id, name, enabled, config_json, created_at, updated_at
      from discovery_profiles
-     order by created_at asc`
+     order by created_at asc`,
   );
 
   return result.rows.map((row) => ({
@@ -388,19 +401,19 @@ export async function listProfiles(): Promise<DiscoveryProfile[]> {
     enabled: row.enabled,
     config: normalizeProfileConfig(row.config_json),
     createdAt: toIso(row.created_at),
-    updatedAt: toIso(row.updated_at)
+    updatedAt: toIso(row.updated_at),
   }));
 }
 
 export async function createProfile(
-  input: Omit<DiscoveryProfile, "id" | "createdAt" | "updatedAt">
+  input: Omit<DiscoveryProfile, "id" | "createdAt" | "updatedAt">,
 ): Promise<DiscoveryProfile> {
   const now = new Date().toISOString();
   const profile: DiscoveryProfile = {
     ...input,
     id: crypto.randomUUID(),
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
   };
 
   await getPool().query(
@@ -412,8 +425,8 @@ export async function createProfile(
       profile.enabled,
       JSON.stringify(profile.config),
       profile.createdAt,
-      profile.updatedAt
-    ]
+      profile.updatedAt,
+    ],
   );
 
   return profile;
@@ -421,7 +434,7 @@ export async function createProfile(
 
 export async function updateProfile(
   id: string,
-  patch: Partial<Pick<DiscoveryProfile, "config" | "enabled" | "name">>
+  patch: Partial<Pick<DiscoveryProfile, "config" | "enabled" | "name">>,
 ): Promise<DiscoveryProfile | undefined> {
   const existing = (await listProfiles()).find((profile) => profile.id === id);
   if (!existing) {
@@ -432,7 +445,7 @@ export async function updateProfile(
     ...existing,
     ...patch,
     config: patch.config ?? existing.config,
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
   };
 
   const result = await getPool().query(
@@ -445,8 +458,8 @@ export async function updateProfile(
       updated.name,
       updated.enabled,
       JSON.stringify(updated.config),
-      updated.updatedAt
-    ]
+      updated.updatedAt,
+    ],
   );
 
   if (!result.rows[0]) {
@@ -459,7 +472,7 @@ export async function updateProfile(
     enabled: result.rows[0].enabled,
     config: normalizeProfileConfig(result.rows[0].config_json),
     createdAt: toIso(result.rows[0].created_at),
-    updatedAt: toIso(result.rows[0].updated_at)
+    updatedAt: toIso(result.rows[0].updated_at),
   };
 }
 
@@ -468,21 +481,21 @@ export async function listAiProviders(): Promise<AiProvider[]> {
   const result = await getPool().query(
     `select id, name, kind, type, base_url, api_key_env, model, dimensions, config_json, enabled, created_at, updated_at
      from ai_providers
-     order by created_at asc`
+     order by created_at asc`,
   );
 
   return result.rows.map(mapProviderRow);
 }
 
 export async function createAiProvider(
-  input: Omit<AiProvider, "id" | "createdAt" | "updatedAt">
+  input: Omit<AiProvider, "id" | "createdAt" | "updatedAt">,
 ): Promise<AiProvider> {
   const now = new Date().toISOString();
   const provider: AiProvider = {
     ...input,
     id: crypto.randomUUID(),
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
   };
 
   await getPool().query(
@@ -500,23 +513,25 @@ export async function createAiProvider(
       provider.dimensions ?? null,
       JSON.stringify({
         rateLimit: provider.rateLimit,
-        timeoutSeconds: provider.timeoutSeconds
+        timeoutSeconds: provider.timeoutSeconds,
       }),
       provider.enabled,
       provider.createdAt,
-      provider.updatedAt
-    ]
+      provider.updatedAt,
+    ],
   );
 
   return provider;
 }
 
-export async function getAiProvider(id: string): Promise<AiProvider | undefined> {
+export async function getAiProvider(
+  id: string,
+): Promise<AiProvider | undefined> {
   const result = await getPool().query(
     `select id, name, kind, type, base_url, api_key_env, model, dimensions, config_json, enabled, created_at, updated_at
      from ai_providers
      where id = $1`,
-    [id]
+    [id],
   );
 
   return result.rows[0] ? mapProviderRow(result.rows[0]) : undefined;
@@ -524,7 +539,9 @@ export async function getAiProvider(id: string): Promise<AiProvider | undefined>
 
 export async function updateAiProvider(
   id: string,
-  patch: Partial<Omit<AiProvider, "id" | "kind" | "type" | "createdAt" | "updatedAt">>
+  patch: Partial<
+    Omit<AiProvider, "id" | "kind" | "type" | "createdAt" | "updatedAt">
+  >,
 ): Promise<{ provider?: AiProvider; reason?: string }> {
   const provider = await getAiProvider(id);
   if (!provider) {
@@ -535,7 +552,7 @@ export async function updateAiProvider(
     const inUse = await findProfileUsingProvider(id);
     if (inUse) {
       return {
-        reason: `该 AI 配置正在被发现配置「${inUse.name}」使用，请先修改发现配置的 AI 绑定。`
+        reason: `该 AI 配置正在被发现配置「${inUse.name}」使用，请先修改发现配置的 AI 绑定。`,
       };
     }
   }
@@ -544,7 +561,7 @@ export async function updateAiProvider(
     ...provider,
     ...patch,
     rateLimit: patch.rateLimit ?? provider.rateLimit,
-    timeoutSeconds: patch.timeoutSeconds ?? provider.timeoutSeconds
+    timeoutSeconds: patch.timeoutSeconds ?? provider.timeoutSeconds,
   };
   const result = await getPool().query(
     `update ai_providers
@@ -567,13 +584,15 @@ export async function updateAiProvider(
       nextProvider.dimensions ?? null,
       JSON.stringify({
         rateLimit: nextProvider.rateLimit,
-        timeoutSeconds: nextProvider.timeoutSeconds
+        timeoutSeconds: nextProvider.timeoutSeconds,
       }),
-      nextProvider.enabled
-    ]
+      nextProvider.enabled,
+    ],
   );
 
-  return { provider: result.rows[0] ? mapProviderRow(result.rows[0]) : undefined };
+  return {
+    provider: result.rows[0] ? mapProviderRow(result.rows[0]) : undefined,
+  };
 }
 
 export async function deleteAiProvider(id: string): Promise<{
@@ -584,7 +603,7 @@ export async function deleteAiProvider(id: string): Promise<{
   if (inUse) {
     return {
       deleted: false,
-      reason: `该 AI 配置正在被发现配置「${inUse.name}」使用，不能删除。`
+      reason: `该 AI 配置正在被发现配置「${inUse.name}」使用，不能删除。`,
     };
   }
 
@@ -593,29 +612,34 @@ export async function deleteAiProvider(id: string): Promise<{
 }
 
 export async function listScanJobs(): Promise<ScanJob[]> {
+  await ensureSeedDataOnce();
   const result = await getPool().query(
     `select ${JOB_SELECT_FIELDS}
      from discovery_jobs
      where archived_at is null
      order by created_at desc
-     limit 100`
+     limit 100`,
   );
 
   return result.rows.map(mapJobRow);
 }
 
 export async function getScanJob(jobId: string): Promise<ScanJob | undefined> {
+  await ensureSeedDataOnce();
   const result = await getPool().query(
     `select ${JOB_SELECT_FIELDS}
      from discovery_jobs
      where id = $1`,
-    [jobId]
+    [jobId],
   );
 
   return result.rows[0] ? mapJobRow(result.rows[0]) : undefined;
 }
 
-export async function archiveScanJob(jobId: string): Promise<ScanJob | undefined> {
+export async function archiveScanJob(
+  jobId: string,
+): Promise<ScanJob | undefined> {
+  await ensureSeedDataOnce();
   const result = await getPool().query(
     `update discovery_jobs
      set archived_at=now()
@@ -623,13 +647,16 @@ export async function archiveScanJob(jobId: string): Promise<ScanJob | undefined
        and status in ('completed', 'failed')
        and archived_at is null
      returning ${JOB_SELECT_FIELDS}`,
-    [jobId]
+    [jobId],
   );
 
   return result.rows[0] ? mapJobRow(result.rows[0]) : undefined;
 }
 
-export async function completeScanJob(jobId: string): Promise<ScanJob | undefined> {
+export async function completeScanJob(
+  jobId: string,
+): Promise<ScanJob | undefined> {
+  await ensureSeedDataOnce();
   await requeueRunningCandidates(jobId);
   const result = await getPool().query(
     `update discovery_jobs
@@ -640,13 +667,14 @@ export async function completeScanJob(jobId: string): Promise<ScanJob | undefine
        and status in ('paused_by_user', 'paused_by_memory', 'paused_by_runtime', 'retry_later')
        and archived_at is null
      returning ${JOB_SELECT_FIELDS}`,
-    [jobId]
+    [jobId],
   );
 
   return result.rows[0] ? mapJobRow(result.rows[0]) : undefined;
 }
 
 export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
+  await ensureSeedDataOnce();
   const result = await getPool().query(
     `select ${JOB_SELECT_FIELDS}
      from discovery_jobs
@@ -654,13 +682,16 @@ export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
        and archived_at is null
      order by created_at asc
      limit $1`,
-    [limit]
+    [limit],
   );
 
   return result.rows.map(mapJobRow);
 }
 
-export async function findActiveScanJobByProfile(profileId: string): Promise<ScanJob | undefined> {
+export async function findActiveScanJobByProfile(
+  profileId: string,
+): Promise<ScanJob | undefined> {
+  await ensureSeedDataOnce();
   const result = await getPool().query(
     `select ${JOB_SELECT_FIELDS}
      from discovery_jobs
@@ -669,7 +700,7 @@ export async function findActiveScanJobByProfile(profileId: string): Promise<Sca
        and archived_at is null
      order by created_at desc
      limit 1`,
-    [profileId]
+    [profileId],
   );
 
   return result.rows[0] ? mapJobRow(result.rows[0]) : undefined;
@@ -680,7 +711,7 @@ export async function getScheduleState(profileId: string) {
     `select last_checked_at, last_scheduled_at, last_job_id
      from scan_schedule_state
      where profile_id=$1`,
-    [profileId]
+    [profileId],
   );
   const row = result.rows[0];
   if (!row) {
@@ -689,8 +720,10 @@ export async function getScheduleState(profileId: string) {
 
   return {
     lastCheckedAt: row.last_checked_at ? toIso(row.last_checked_at) : undefined,
-    lastScheduledAt: row.last_scheduled_at ? toIso(row.last_scheduled_at) : undefined,
-    lastJobId: row.last_job_id as string | undefined
+    lastScheduledAt: row.last_scheduled_at
+      ? toIso(row.last_scheduled_at)
+      : undefined,
+    lastJobId: row.last_job_id as string | undefined,
   };
 }
 
@@ -709,13 +742,18 @@ export async function touchScheduleState(input: {
        last_scheduled_at=coalesce(excluded.last_scheduled_at, scan_schedule_state.last_scheduled_at),
        last_job_id=coalesce(excluded.last_job_id, scan_schedule_state.last_job_id),
        updated_at=now()`,
-    [input.profileId, input.checkedAt, input.scheduledAt ?? null, input.jobId ?? null]
+    [
+      input.profileId,
+      input.checkedAt,
+      input.scheduledAt ?? null,
+      input.jobId ?? null,
+    ],
   );
 }
 
 export async function createScanJob(
   profileId: string,
-  type: ScanJob["type"] = "manual_scan"
+  type: ScanJob["type"] = "manual_scan",
 ): Promise<ScanJob> {
   const profile = (await listProfiles()).find((item) => item.id === profileId);
   const now = new Date().toISOString();
@@ -734,7 +772,7 @@ export async function createScanJob(
     unchangedRepoCount: 0,
     candidateCount: 0,
     failedCandidateCount: 0,
-    createdAt: now
+    createdAt: now,
   };
 
   await getPool().query(
@@ -758,8 +796,8 @@ export async function createScanJob(
       job.unchangedRepoCount,
       job.candidateCount,
       job.failedCandidateCount,
-      job.createdAt
-    ]
+      job.createdAt,
+    ],
   );
 
   return job;
@@ -767,13 +805,13 @@ export async function createScanJob(
 
 export async function updateScanJob(
   jobId: string,
-  patch: Partial<ScanJob>
+  patch: Partial<ScanJob>,
 ): Promise<ScanJob | undefined> {
   const current = await getPool().query(
     `select ${JOB_SELECT_FIELDS}
      from discovery_jobs
      where id = $1`,
-    [jobId]
+    [jobId],
   );
 
   if (!current.rows[0]) {
@@ -782,23 +820,28 @@ export async function updateScanJob(
 
   const job = {
     ...mapJobRow(current.rows[0]),
-    ...patch
+    ...patch,
   };
-  const hasErrorPatch = Object.prototype.hasOwnProperty.call(patch, "errorMessage");
-  const hasStatusReasonPatch = Object.prototype.hasOwnProperty.call(patch, "statusReason");
-  const nextErrorMessage =
-    hasErrorPatch
-      ? patch.errorMessage
-      : hasStatusReasonPatch
-        ? patch.statusReason
-        : job.errorMessage;
+  const hasErrorPatch = Object.prototype.hasOwnProperty.call(
+    patch,
+    "errorMessage",
+  );
+  const hasStatusReasonPatch = Object.prototype.hasOwnProperty.call(
+    patch,
+    "statusReason",
+  );
+  const nextErrorMessage = hasErrorPatch
+    ? patch.errorMessage
+    : hasStatusReasonPatch
+      ? patch.statusReason
+      : job.errorMessage;
 
   const updated = await getPool().query(
     `update discovery_jobs
      set status=$2, stage=$3, max_candidates=$4, fetched_count=$5, processed_count=$6,
          analyzed_count=$7, new_repo_count=$8, updated_repo_count=$9,
          unchanged_repo_count=$10, candidate_count=$11, failed_candidate_count=$12, started_at=$13,
-         finished_at=$14, error_message=$15
+         finished_at=$14, error_message=$15, error_code=$16, error_resolution=$17
      where id=$1
      returning ${JOB_SELECT_FIELDS}`,
     [
@@ -816,8 +859,10 @@ export async function updateScanJob(
       job.failedCandidateCount,
       job.startedAt ?? null,
       job.finishedAt ?? null,
-      nextErrorMessage ?? null
-    ]
+      nextErrorMessage ?? null,
+      job.errorCode ?? null,
+      job.errorResolution ?? null,
+    ],
   );
 
   return updated.rows[0] ? mapJobRow(updated.rows[0]) : undefined;
@@ -825,29 +870,33 @@ export async function updateScanJob(
 
 export async function upsertRepos(
   repos: RepoSummary[],
-  dataLevel: RepoDataLevel = "L1"
+  dataLevel: RepoDataLevel = "L1",
 ): Promise<UpsertRepoStats> {
   const pool = getPool();
   const stats: UpsertRepoStats = {
     newCount: 0,
     updatedCount: 0,
     unchangedCount: 0,
-    repos: []
+    repos: [],
   };
 
   for (const repo of repos) {
     const existingRepoId = await resolvePersistedRepoId(repo);
     const repoId = existingRepoId ?? repo.id;
-    const existingRepo = existingRepoId ? await getRepoWithDataLevel(existingRepoId) : undefined;
-    const changed = existingRepo ? repoHasMaterialChanges(existingRepo.repo, repo) : true;
+    const existingRepo = existingRepoId
+      ? await getRepoWithDataLevel(existingRepoId)
+      : undefined;
+    const changed = existingRepo
+      ? repoHasMaterialChanges(existingRepo.repo, repo)
+      : true;
     const analysisDecision = shouldAnalyzeDiscoveredRepo({
       existing: existingRepo?.repo,
       existingDataLevel: existingRepo?.dataLevel,
-      next: repo
+      next: repo,
     });
     const result = existingRepoId
       ? await pool.query(
-        `update repos
+          `update repos
          set github_id=coalesce($2, github_id),
              full_name=$3,
              owner=$4,
@@ -873,28 +922,28 @@ export async function upsertRepos(
              last_seen_at=now()
          where id=$1
          returning id`,
-        [
-          repoId,
-          repo.githubId ?? null,
-          repo.fullName,
-          repo.owner,
-          repo.name,
-          repo.htmlUrl,
-          repo.description,
-          repo.primaryLanguage,
-          JSON.stringify(repo.topics ?? []),
-          repo.stars,
-          repo.forks,
-          repo.openIssues,
-          repo.pushedAt,
-          repo.updatedAt,
-          repo.archived,
-          repo.fork,
-          dataLevel
-        ]
-      )
+          [
+            repoId,
+            repo.githubId ?? null,
+            repo.fullName,
+            repo.owner,
+            repo.name,
+            repo.htmlUrl,
+            repo.description,
+            repo.primaryLanguage,
+            JSON.stringify(repo.topics ?? []),
+            repo.stars,
+            repo.forks,
+            repo.openIssues,
+            repo.pushedAt,
+            repo.updatedAt,
+            repo.archived,
+            repo.fork,
+            dataLevel,
+          ],
+        )
       : await pool.query(
-        `insert into repos
+          `insert into repos
         (id, github_id, full_name, owner, name, html_url, description, primary_language,
          topics_json, stars, forks, open_issues, pushed_at, updated_at, archived, fork, data_level,
          first_seen_at, last_seen_at)
@@ -923,26 +972,26 @@ export async function upsertRepos(
          end,
          last_seen_at=now()
        returning id`,
-        [
-          repoId,
-          repo.githubId ?? null,
-          repo.fullName,
-          repo.owner,
-          repo.name,
-          repo.htmlUrl,
-          repo.description,
-          repo.primaryLanguage,
-          JSON.stringify(repo.topics ?? []),
-          repo.stars,
-          repo.forks,
-          repo.openIssues,
-          repo.pushedAt,
-          repo.updatedAt,
-          repo.archived,
-          repo.fork,
-          dataLevel
-        ]
-      );
+          [
+            repoId,
+            repo.githubId ?? null,
+            repo.fullName,
+            repo.owner,
+            repo.name,
+            repo.htmlUrl,
+            repo.description,
+            repo.primaryLanguage,
+            JSON.stringify(repo.topics ?? []),
+            repo.stars,
+            repo.forks,
+            repo.openIssues,
+            repo.pushedAt,
+            repo.updatedAt,
+            repo.archived,
+            repo.fork,
+            dataLevel,
+          ],
+        );
     const persistedRepoId = result.rows[0]?.id as string | undefined;
     if (!persistedRepoId) {
       throw new Error(`Failed to persist repository ${repo.fullName}`);
@@ -963,7 +1012,7 @@ export async function upsertRepos(
       status: existingRepoId ? (changed ? "updated" : "unchanged") : "new",
       existingDataLevel: existingRepo?.dataLevel,
       shouldAnalyze: analysisDecision.shouldAnalyze,
-      analyzeReason: analysisDecision.reason
+      analyzeReason: analysisDecision.reason,
     });
 
     await pool.query(
@@ -977,8 +1026,8 @@ export async function upsertRepos(
         repo.forks,
         repo.stars,
         repo.openIssues,
-        repo.pushedAt
-      ]
+        repo.pushedAt,
+      ],
     );
   }
 
@@ -986,7 +1035,7 @@ export async function upsertRepos(
 }
 
 async function resolvePersistedRepoId(
-  repo: Pick<RepoSummary, "id" | "fullName" | "githubId">
+  repo: Pick<RepoSummary, "id" | "fullName" | "githubId">,
 ): Promise<string | undefined> {
   const result = await getPool().query(
     `select id
@@ -999,18 +1048,20 @@ async function resolvePersistedRepoId(
          else 2
        end
      limit 1`,
-    [repo.id, repo.fullName, repo.githubId ?? null]
+    [repo.id, repo.fullName, repo.githubId ?? null],
   );
 
   return result.rows[0]?.id as string | undefined;
 }
 
 export async function upsertRecommendations(
-  recommendations: Recommendation[]
+  recommendations: Recommendation[],
 ): Promise<void> {
   const pool = getPool();
 
-  for (const recommendation of annotateRecommendationClusters(recommendations)) {
+  for (const recommendation of annotateRecommendationClusters(
+    recommendations,
+  )) {
     const repoId = await resolvePersistedRepoId(recommendation.repo);
     if (!repoId) {
       await upsertRepos([recommendation.repo], "L3");
@@ -1021,17 +1072,19 @@ export async function upsertRecommendations(
       reasons: recommendation.reasons,
       risks: recommendation.risks,
       summary: recommendation.summary,
-      summaryZh: recommendation.summaryZh ?? ensureChineseSummary(
-        recommendation.summary,
-        recommendation.repo,
-        recommendation.matchedPreferences
-      ),
+      summaryZh:
+        recommendation.summaryZh ??
+        ensureChineseSummary(
+          recommendation.summary,
+          recommendation.repo,
+          recommendation.matchedPreferences,
+        ),
       opportunity: recommendation.opportunity,
       matchedPreferences: recommendation.matchedPreferences,
       relatedUserRepos: recommendation.relatedUserRepos,
       qualitySignals: recommendation.qualitySignals,
       cluster: recommendation.cluster,
-      scores: recommendation.scores
+      scores: recommendation.scores,
     });
 
     await pool.query(
@@ -1059,8 +1112,8 @@ export async function upsertRecommendations(
         recommendation.scores.final,
         recommendation.scores.scoreVersion,
         reasonsPayload,
-        recommendation.createdAt
-      ]
+        recommendation.createdAt,
+      ],
     );
 
     await pool.query(
@@ -1080,20 +1133,20 @@ export async function upsertRecommendations(
         reasonsPayload,
         recommendation.status,
         JSON.stringify(recommendation.tags ?? []),
-        recommendation.createdAt
-      ]
+        recommendation.createdAt,
+      ],
     );
 
     await upsertRepoContextMatches(
       persistedRepoId,
-      recommendation.relatedUserRepos
+      recommendation.relatedUserRepos,
     );
   }
 }
 
 async function upsertRepoContextMatches(
   candidateRepoId: string,
-  relatedUserRepos: Recommendation["relatedUserRepos"]
+  relatedUserRepos: Recommendation["relatedUserRepos"],
 ) {
   const pool = getPool();
   const userRepoIds = relatedUserRepos
@@ -1101,9 +1154,10 @@ async function upsertRepoContextMatches(
     .filter((id): id is string => Boolean(id));
 
   if (userRepoIds.length === 0) {
-    await pool.query(`delete from repo_context_matches where candidate_repo_id=$1`, [
-      candidateRepoId
-    ]);
+    await pool.query(
+      `delete from repo_context_matches where candidate_repo_id=$1`,
+      [candidateRepoId],
+    );
     return;
   }
 
@@ -1111,7 +1165,7 @@ async function upsertRepoContextMatches(
     `delete from repo_context_matches
      where candidate_repo_id=$1
        and user_repo_id <> all($2::text[])`,
-    [candidateRepoId, userRepoIds]
+    [candidateRepoId, userRepoIds],
   );
 
   for (const repo of relatedUserRepos) {
@@ -1132,15 +1186,19 @@ async function upsertRepoContextMatches(
         candidateRepoId,
         repo.userRepoId,
         repo.score,
-        JSON.stringify([repo.reason])
-      ]
+        JSON.stringify([repo.reason]),
+      ],
     );
   }
 }
 
 export async function enqueueCandidates(
   jobId: string,
-  candidates: Array<{ repo: RepoSummary; priorityScore: number; stage?: string }>
+  candidates: Array<{
+    repo: RepoSummary;
+    priorityScore: number;
+    stage?: string;
+  }>,
 ): Promise<void> {
   const pool = getPool();
 
@@ -1166,15 +1224,15 @@ export async function enqueueCandidates(
         jobId,
         repoId,
         candidate.priorityScore,
-        candidate.stage ?? "profile"
-      ]
+        candidate.stage ?? "profile",
+      ],
     );
   }
 }
 
 export async function upgradeRepoDataLevel(
   repos: RepoSummary[],
-  dataLevel: RepoDataLevel
+  dataLevel: RepoDataLevel,
 ): Promise<void> {
   const pool = getPool();
 
@@ -1195,14 +1253,14 @@ export async function upgradeRepoDataLevel(
        end,
        last_seen_at=now()
        where id=$1`,
-      [repoId, dataLevel]
+      [repoId, dataLevel],
     );
     repo.id = repoId;
   }
 }
 
 export async function upsertScanCheckpoint(
-  checkpoint: Omit<ScanCheckpoint, "id" | "updatedAt">
+  checkpoint: Omit<ScanCheckpoint, "id" | "updatedAt">,
 ): Promise<ScanCheckpoint> {
   const id = crypto.randomUUID();
   const result = await getPool().query(
@@ -1223,8 +1281,8 @@ export async function upsertScanCheckpoint(
       checkpoint.page,
       checkpoint.cursor ?? null,
       checkpoint.processedCount,
-      checkpoint.stage
-    ]
+      checkpoint.stage,
+    ],
   );
 
   return mapCheckpointRow(result.rows[0]);
@@ -1234,25 +1292,27 @@ export async function getScanCheckpoint(
   jobId: string,
   source: string,
   queryHash: string,
-  stage: string
+  stage: string,
 ): Promise<ScanCheckpoint | undefined> {
   const result = await getPool().query(
     `select id, job_id, source, query_hash, page, cursor, processed_count, stage, updated_at
      from scan_checkpoints
      where job_id=$1 and source=$2 and query_hash=$3 and stage=$4`,
-    [jobId, source, queryHash, stage]
+    [jobId, source, queryHash, stage],
   );
 
   return result.rows[0] ? mapCheckpointRow(result.rows[0]) : undefined;
 }
 
-export async function listScanCheckpoints(jobId: string): Promise<ScanCheckpoint[]> {
+export async function listScanCheckpoints(
+  jobId: string,
+): Promise<ScanCheckpoint[]> {
   const result = await getPool().query(
     `select id, job_id, source, query_hash, page, cursor, processed_count, stage, updated_at
      from scan_checkpoints
      where job_id=$1
      order by updated_at desc`,
-    [jobId]
+    [jobId],
   );
 
   return result.rows.map(mapCheckpointRow);
@@ -1278,8 +1338,8 @@ export async function upsertRepoDocument(input: RepoDocumentInput) {
       input.contentHash,
       input.rawContent ? Buffer.from(input.rawContent, "utf8") : null,
       input.summary ?? null,
-      JSON.stringify(input.extractedKeywords ?? [])
-    ]
+      JSON.stringify(input.extractedKeywords ?? []),
+    ],
   );
 
   return result.rows[0];
@@ -1292,7 +1352,7 @@ export async function getLatestRepoDocument(repoId: string, type: string) {
      where repo_id=$1 and type=$2
      order by captured_at desc
      limit 1`,
-    [repoId, type]
+    [repoId, type],
   );
 
   const row = result.rows[0];
@@ -1311,7 +1371,7 @@ export async function getLatestRepoDocument(repoId: string, type: string) {
       : "",
     summary: row.summary as string | undefined,
     extractedKeywords: normalizeJsonArray(row.extracted_keywords_json),
-    capturedAt: toIso(row.captured_at)
+    capturedAt: toIso(row.captured_at),
   };
 }
 
@@ -1339,8 +1399,8 @@ export async function upsertRepoEmbedding(input: {
       input.model,
       input.dimensions,
       input.contentHash,
-      `[${input.vector.join(",")}]`
-    ]
+      `[${input.vector.join(",")}]`,
+    ],
   );
 }
 
@@ -1356,7 +1416,7 @@ export async function getRepoEmbedding(input: {
      where repo_id=$1 and provider_id=$2 and model=$3 and content_hash=$4
      order by created_at desc
      limit 1`,
-    [input.repoId, input.providerId, input.model, input.contentHash]
+    [input.repoId, input.providerId, input.model, input.contentHash],
   );
 
   const row = result.rows[0];
@@ -1371,7 +1431,7 @@ export async function getRepoEmbedding(input: {
     model: row.model as string,
     dimensions: Number(row.dimensions),
     contentHash: row.content_hash as string,
-    createdAt: toIso(row.created_at)
+    createdAt: toIso(row.created_at),
   };
 }
 
@@ -1399,7 +1459,7 @@ export async function getRepoEmbeddingVector(input: {
      where ${conditions.join(" and ")}
      order by created_at desc
      limit 1`,
-    values
+    values,
   );
 
   const row = result.rows[0];
@@ -1415,7 +1475,7 @@ export async function getRepoEmbeddingVector(input: {
     dimensions: Number(row.dimensions),
     contentHash: row.content_hash as string,
     vector: parseVector(row.vector),
-    createdAt: toIso(row.created_at)
+    createdAt: toIso(row.created_at),
   };
 }
 
@@ -1445,8 +1505,8 @@ export async function upsertCachedEmbedding(input: {
       input.model,
       input.dimensions,
       input.contentHash,
-      toVector(input.vector)
-    ]
+      toVector(input.vector),
+    ],
   );
 }
 
@@ -1460,7 +1520,7 @@ export async function getCachedEmbedding(input: {
     `select provider_id, model, dimensions, content_hash, vector, created_at
      from embedding_cache
      where cache_key=$1 and provider_id=$2 and model=$3 and content_hash=$4`,
-    [input.cacheKey, input.providerId, input.model, input.contentHash]
+    [input.cacheKey, input.providerId, input.model, input.contentHash],
   );
   const row = result.rows[0];
   if (!row) {
@@ -1473,7 +1533,7 @@ export async function getCachedEmbedding(input: {
     dimensions: Number(row.dimensions),
     contentHash: row.content_hash,
     vector: parseVector(row.vector),
-    createdAt: toIso(row.created_at)
+    createdAt: toIso(row.created_at),
   };
 }
 
@@ -1488,7 +1548,7 @@ export async function getRepoEmbeddingSimilarity(input: {
      where repo_id=$1 and provider_id=$2
      order by created_at desc
      limit 1`,
-    [input.repoId, input.providerId, `[${input.queryVector.join(",")}]`]
+    [input.repoId, input.providerId, `[${input.queryVector.join(",")}]`],
   );
 
   return result.rows[0]?.similarity === undefined
@@ -1502,14 +1562,16 @@ export async function rerankRecommendationsWithSemanticFit(input: {
   queryVector: number[];
 }) {
   const recommendations = await listRecommendations();
-  const target = recommendations.filter((item) => item.profileId === input.profileId);
+  const target = recommendations.filter(
+    (item) => item.profileId === input.profileId,
+  );
   const reranked = [];
 
   for (const recommendation of target) {
     const similarity = await getRepoEmbeddingSimilarity({
       repoId: recommendation.repo.id,
       providerId: input.providerId,
-      queryVector: input.queryVector
+      queryVector: input.queryVector,
     });
     const semanticFit =
       similarity === undefined
@@ -1518,7 +1580,10 @@ export async function rerankRecommendationsWithSemanticFit(input: {
 
     const scores = {
       ...recommendation.scores,
-      githubContextFit: Math.max(recommendation.scores.githubContextFit, semanticFit)
+      githubContextFit: Math.max(
+        recommendation.scores.githubContextFit,
+        semanticFit,
+      ),
     };
     scores.final = calculateFinalScore({
       ruleScore: scores.rule,
@@ -1530,12 +1595,12 @@ export async function rerankRecommendationsWithSemanticFit(input: {
       growthSignal: scores.growth,
       executionFit: scores.execution,
       differentiationSpace: scores.differentiation,
-      technicalQuality: scores.technicalQuality
+      technicalQuality: scores.technicalQuality,
     });
 
     reranked.push({
       ...recommendation,
-      scores
+      scores,
     });
   }
 
@@ -1543,8 +1608,8 @@ export async function rerankRecommendationsWithSemanticFit(input: {
   await upsertRecommendations(
     reranked.map((recommendation, index) => ({
       ...recommendation,
-      rank: index + 1
-    }))
+      rank: index + 1,
+    })),
   );
 }
 
@@ -1572,8 +1637,8 @@ export async function createLlmJob(input: {
       input.inputHash,
       input.providerId,
       input.model,
-      input.promptVersion
-    ]
+      input.promptVersion,
+    ],
   );
 
   return id;
@@ -1583,13 +1648,13 @@ export async function finishLlmJob(
   id: string,
   status: string,
   tokenUsage: Record<string, unknown> = {},
-  errorMessage?: string
+  errorMessage?: string,
 ) {
   await getPool().query(
     `update llm_jobs
      set status=$2, token_usage_json=$3, error_message=$4, finished_at=now()
      where id=$1`,
-    [id, status, JSON.stringify(tokenUsage), errorMessage ?? null]
+    [id, status, JSON.stringify(tokenUsage), errorMessage ?? null],
   );
 }
 
@@ -1597,16 +1662,16 @@ export async function getOperationsSnapshot(): Promise<OperationsSnapshot> {
   const [resourceEvents, aiJobs, tokenJobs] = await Promise.all([
     listRecentResourceEvents(),
     listAiJobMetrics(),
-    listAiJobMetrics(5000, "completed")
+    listAiJobMetrics(5000, "completed"),
   ]);
   const aiCostSummary = tokenJobs.reduce(
     (summary, job) => ({
       totalJobs: summary.totalJobs + 1,
       unknownJobCount: summary.unknownJobCount + (job.tokenUsageKnown ? 0 : 1),
       totalTokens: summary.totalTokens + job.totalTokens,
-      estimatedCostUsd: summary.estimatedCostUsd + job.estimatedCostUsd
+      estimatedCostUsd: summary.estimatedCostUsd + job.estimatedCostUsd,
     }),
-    { totalJobs: 0, unknownJobCount: 0, totalTokens: 0, estimatedCostUsd: 0 }
+    { totalJobs: 0, unknownJobCount: 0, totalTokens: 0, estimatedCostUsd: 0 },
   );
 
   return {
@@ -1615,14 +1680,15 @@ export async function getOperationsSnapshot(): Promise<OperationsSnapshot> {
     repoTokenSummary: buildTokenSummary(
       tokenJobs,
       (job) => job.repoId,
-      (job) => job.repoFullName ?? job.repoId
+      (job) => job.repoFullName ?? job.repoId,
     ),
     scanTokenSummary: buildTokenSummary(
       tokenJobs.filter((job) => job.scanJobId),
       (job) => job.scanJobId ?? "",
-      (job) => job.scanJobId ? `扫描 ${job.scanJobId.slice(0, 8)}` : "未关联扫描"
+      (job) =>
+        job.scanJobId ? `扫描 ${job.scanJobId.slice(0, 8)}` : "未关联扫描",
     ),
-    aiCostSummary
+    aiCostSummary,
   };
 }
 
@@ -1640,8 +1706,8 @@ export async function upsertLlmResult(input: LlmResultInput) {
       input.promptVersion,
       input.inputHash ?? null,
       JSON.stringify(input.structured),
-      input.rawResponse ? Buffer.from(input.rawResponse, "utf8") : null
-    ]
+      input.rawResponse ? Buffer.from(input.rawResponse, "utf8") : null,
+    ],
   );
 }
 
@@ -1653,7 +1719,7 @@ export async function getLatestLlmResult(
     model?: string;
     promptVersion?: string;
     inputHash?: string;
-  } = {}
+  } = {},
 ) {
   const conditions = ["repo_id=$1", "job_type=$2"];
   const values: unknown[] = [repoId, jobType];
@@ -1681,7 +1747,7 @@ export async function getLatestLlmResult(
      where ${conditions.join(" and ")}
      order by created_at desc
      limit 1`,
-    values
+    values,
   );
 
   return result.rows[0]?.structured_json as Record<string, unknown> | undefined;
@@ -1726,7 +1792,7 @@ export async function listRecommendations(): Promise<Recommendation[]> {
      select *
      from ranked
      where profile_position <= profile_limit
-     order by final_score desc, rank asc`
+     order by final_score desc, rank asc`,
   );
 
   return result.rows.map(mapRecommendationRow);
@@ -1734,15 +1800,17 @@ export async function listRecommendations(): Promise<Recommendation[]> {
 
 export async function updateRecommendationTags(
   id: string,
-  tags: string[]
+  tags: string[],
 ): Promise<Recommendation | undefined> {
   const normalizedTags = normalizeTagInput(tags);
-  await getPool().query(
-    `update recommendations set tags_json=$2 where id=$1`,
-    [id, JSON.stringify(normalizedTags)]
-  );
+  await getPool().query(`update recommendations set tags_json=$2 where id=$1`, [
+    id,
+    JSON.stringify(normalizedTags),
+  ]);
 
-  return (await listRecommendations()).find((recommendation) => recommendation.id === id);
+  return (await listRecommendations()).find(
+    (recommendation) => recommendation.id === id,
+  );
 }
 
 export async function listRecommendationTags(): Promise<string[]> {
@@ -1751,7 +1819,7 @@ export async function listRecommendationTags(): Promise<string[]> {
     `select distinct jsonb_array_elements_text(tags_json) as tag
      from recommendations
      where jsonb_typeof(tags_json) = 'array'
-     order by tag asc`
+     order by tag asc`,
   );
 
   return result.rows.map((row) => String(row.tag)).filter(Boolean);
@@ -1761,7 +1829,7 @@ export async function recordFeedback(
   repoId: string,
   profileId: string,
   action: FeedbackAction,
-  note?: string
+  note?: string,
 ): Promise<Feedback> {
   const feedback: Feedback = {
     id: crypto.randomUUID(),
@@ -1769,13 +1837,13 @@ export async function recordFeedback(
     profileId,
     action,
     note,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
   };
 
   await getPool().query(
     `insert into feedback (id, repo_id, profile_id, action, note, created_at)
      values ($1,$2,$3,$4,$5,$6)`,
-    [feedback.id, repoId, profileId, action, note ?? null, feedback.createdAt]
+    [feedback.id, repoId, profileId, action, note ?? null, feedback.createdAt],
   );
 
   const status =
@@ -1804,44 +1872,48 @@ export async function recordFeedback(
   if (status) {
     await getPool().query(
       `update recommendations set status=$3 where repo_id=$1 and profile_id=$2`,
-      [repoId, profileId, status]
+      [repoId, profileId, status],
     );
   }
 
   const repo = await getRepoById(repoId);
   if (repo) {
-    await upsertPreferenceSignals(buildPreferenceSignals(repo, profileId, action));
+    await upsertPreferenceSignals(
+      buildPreferenceSignals(repo, profileId, action),
+    );
   }
 
   return feedback;
 }
 
-export async function getRepoById(repoId: string): Promise<RepoSummary | undefined> {
+export async function getRepoById(
+  repoId: string,
+): Promise<RepoSummary | undefined> {
   const row = await getRepoWithDataLevel(repoId);
   return row?.repo;
 }
 
-async function getRepoWithDataLevel(repoId: string): Promise<
-  { repo: RepoSummary; dataLevel: RepoDataLevel } | undefined
-> {
+async function getRepoWithDataLevel(
+  repoId: string,
+): Promise<{ repo: RepoSummary; dataLevel: RepoDataLevel } | undefined> {
   const result = await getPool().query(
     `select id as repo_id, github_id, full_name, owner, name, html_url, description, primary_language,
             topics_json, stars, forks, open_issues, pushed_at, updated_at, archived, fork, data_level
      from repos
      where id=$1`,
-    [repoId]
+    [repoId],
   );
 
   return result.rows[0]
     ? {
         repo: mapRepoRow(result.rows[0]),
-        dataLevel: result.rows[0].data_level
+        dataLevel: result.rows[0].data_level,
       }
     : undefined;
 }
 
 export async function upsertPreferenceSignals(
-  signals: Array<Omit<PreferenceSignal, "id" | "updatedAt">>
+  signals: Array<Omit<PreferenceSignal, "id" | "updatedAt">>,
 ) {
   for (const signal of signals) {
     await getPool().query(
@@ -1857,19 +1929,21 @@ export async function upsertPreferenceSignals(
         signal.signalType,
         signal.value,
         signal.weight,
-        signal.source
-      ]
+        signal.source,
+      ],
     );
   }
 }
 
-export async function listPreferenceSignals(profileId: string): Promise<PreferenceSignal[]> {
+export async function listPreferenceSignals(
+  profileId: string,
+): Promise<PreferenceSignal[]> {
   const result = await getPool().query(
     `select id, profile_id, signal_type, value, weight, source, updated_at
      from preference_signals
      where profile_id=$1
      order by updated_at desc`,
-    [profileId]
+    [profileId],
   );
 
   return result.rows.map((row) => ({
@@ -1879,7 +1953,7 @@ export async function listPreferenceSignals(profileId: string): Promise<Preferen
     value: row.value,
     weight: Number(row.weight),
     source: row.source,
-    updatedAt: toIso(row.updated_at)
+    updatedAt: toIso(row.updated_at),
   }));
 }
 
@@ -1888,7 +1962,7 @@ export async function listGithubRepos(): Promise<UserGitHubRepo[]> {
     `select id, github_account_id, github_id, full_name, description, primary_language, topics_json, visibility,
             readme_summary, selected_for_context, last_synced_at
      from user_repos
-     order by full_name asc`
+     order by full_name asc`,
   );
 
   return result.rows.map((row) => ({
@@ -1902,13 +1976,13 @@ export async function listGithubRepos(): Promise<UserGitHubRepo[]> {
     visibility: row.visibility,
     readmeSummary: row.readme_summary ?? undefined,
     selectedForContext: row.selected_for_context,
-    lastSyncedAt: row.last_synced_at ? toIso(row.last_synced_at) : undefined
+    lastSyncedAt: row.last_synced_at ? toIso(row.last_synced_at) : undefined,
   }));
 }
 
 export async function updateGithubRepoContext(
   id: string,
-  patch: Pick<UserGitHubRepo, "selectedForContext">
+  patch: Pick<UserGitHubRepo, "selectedForContext">,
 ): Promise<UserGitHubRepo | undefined> {
   const result = await getPool().query(
     `update user_repos
@@ -1916,7 +1990,7 @@ export async function updateGithubRepoContext(
      where id=$1
      returning id, full_name, description, primary_language, topics_json, visibility,
        readme_summary, selected_for_context, last_synced_at`,
-    [id, patch.selectedForContext]
+    [id, patch.selectedForContext],
   );
 
   const row = result.rows[0];
@@ -1935,7 +2009,7 @@ export async function updateGithubRepoContext(
     visibility: row.visibility,
     readmeSummary: row.readme_summary ?? undefined,
     selectedForContext: row.selected_for_context,
-    lastSyncedAt: row.last_synced_at ? toIso(row.last_synced_at) : undefined
+    lastSyncedAt: row.last_synced_at ? toIso(row.last_synced_at) : undefined,
   };
 }
 
@@ -1943,7 +2017,7 @@ export async function listGithubAccounts() {
   const result = await getPool().query(
     `select id, username, token_ref, connected_at, last_synced_at
      from github_accounts
-     order by connected_at desc`
+     order by connected_at desc`,
   );
 
   return result.rows.map((row) => ({
@@ -1951,7 +2025,7 @@ export async function listGithubAccounts() {
     username: row.username as string,
     tokenRef: row.token_ref ?? undefined,
     connectedAt: toIso(row.connected_at),
-    lastSyncedAt: row.last_synced_at ? toIso(row.last_synced_at) : undefined
+    lastSyncedAt: row.last_synced_at ? toIso(row.last_synced_at) : undefined,
   }));
 }
 
@@ -1966,7 +2040,7 @@ export async function upsertGithubAccount(input: {
        token_ref=excluded.token_ref,
        last_synced_at=now()
      returning id, username, token_ref, connected_at, last_synced_at`,
-    [crypto.randomUUID(), input.username, input.tokenRef ?? null]
+    [crypto.randomUUID(), input.username, input.tokenRef ?? null],
   );
 
   const row = result.rows[0];
@@ -1975,16 +2049,18 @@ export async function upsertGithubAccount(input: {
     username: row.username as string,
     tokenRef: row.token_ref ?? undefined,
     connectedAt: toIso(row.connected_at),
-    lastSyncedAt: row.last_synced_at ? toIso(row.last_synced_at) : undefined
+    lastSyncedAt: row.last_synced_at ? toIso(row.last_synced_at) : undefined,
   };
 }
 
 export async function replaceUserRepos(
   githubAccountId: string,
-  repos: UserGitHubRepo[]
+  repos: UserGitHubRepo[],
 ) {
   const pool = getPool();
-  await pool.query(`delete from user_repos where github_account_id=$1`, [githubAccountId]);
+  await pool.query(`delete from user_repos where github_account_id=$1`, [
+    githubAccountId,
+  ]);
   for (const repo of repos) {
     await pool.query(
       `insert into user_repos
@@ -2002,8 +2078,8 @@ export async function replaceUserRepos(
         repo.visibility,
         repo.readmeSummary ?? null,
         JSON.stringify({}),
-        repo.selectedForContext
-      ]
+        repo.selectedForContext,
+      ],
     );
   }
 }
@@ -2017,7 +2093,7 @@ export async function listKnowledgeSyncs(): Promise<KnowledgeSync[]> {
      from knowledge_syncs sync
      join repos repo on repo.id = sync.repo_id
      order by coalesce(sync.synced_at, now()) desc, repo.full_name asc
-     limit 200`
+     limit 200`,
   );
 
   return result.rows.map(mapKnowledgeSyncRow);
@@ -2052,8 +2128,8 @@ export async function upsertKnowledgeSync(input: {
       input.contentHash,
       input.status,
       input.syncedAt ?? null,
-      input.errorMessage ?? null
-    ]
+      input.errorMessage ?? null,
+    ],
   );
 
   const row = result.rows[0];
@@ -2070,7 +2146,7 @@ export async function getQueueStats() {
        array_remove(array_agg(distinct error_message) filter (where error_message is not null), null) as failure_reasons
      from candidate_queue
      group by stage, status
-     order by stage asc, status asc`
+     order by stage asc, status asc`,
   );
 
   return result.rows.map((row) => ({
@@ -2079,7 +2155,7 @@ export async function getQueueStats() {
     count: Number(row.count),
     failureReasons: Array.isArray(row.failure_reasons)
       ? row.failure_reasons.map(String).slice(0, 5)
-      : []
+      : [],
   }));
 }
 
@@ -2102,7 +2178,7 @@ export async function claimCandidateBatch(stage = "profile", limit = 10) {
      from picked
      where q.id = picked.id
      returning q.id, q.job_id, q.repo_id, q.priority_score, q.stage, q.status, q.attempts`,
-    [stage, limit]
+    [stage, limit],
   );
 
   return result.rows.map((row) => ({
@@ -2112,7 +2188,7 @@ export async function claimCandidateBatch(stage = "profile", limit = 10) {
     priorityScore: Number(row.priority_score),
     stage: row.stage as string,
     status: row.status as string,
-    attempts: Number(row.attempts)
+    attempts: Number(row.attempts),
   }));
 }
 
@@ -2120,8 +2196,10 @@ export async function getQueuedRepoBatch(
   jobId: string,
   stage = "profile",
   status = "pending",
-  limit = 10
-): Promise<Array<{ queueId: string; priorityScore: number; repo: RepoSummary }>> {
+  limit = 10,
+): Promise<
+  Array<{ queueId: string; priorityScore: number; repo: RepoSummary }>
+> {
   const result = await getPool().query(
     `select
        q.id as queue_id, q.priority_score,
@@ -2133,21 +2211,28 @@ export async function getQueuedRepoBatch(
      where q.job_id=$1 and q.stage=$2 and q.status=$3
      order by q.priority_score desc, q.queued_at asc
      limit $4`,
-    [jobId, stage, status, limit]
+    [jobId, stage, status, limit],
   );
 
   return result.rows.map((row) => ({
     queueId: row.queue_id as string,
     priorityScore: Number(row.priority_score),
-    repo: mapRepoRow(row)
+    repo: mapRepoRow(row),
   }));
 }
 
 export async function claimQueuedRepoBatch(
   jobId: string,
   stage = "profile",
-  limit = 10
-): Promise<Array<{ queueId: string; priorityScore: number; attempts: number; repo: RepoSummary }>> {
+  limit = 10,
+): Promise<
+  Array<{
+    queueId: string;
+    priorityScore: number;
+    attempts: number;
+    repo: RepoSummary;
+  }>
+> {
   const result = await getPool().query(
     `with picked as (
        select id
@@ -2177,14 +2262,14 @@ export async function claimQueuedRepoBatch(
      from updated
      join repos repo on repo.id = updated.repo_id
      order by updated.priority_score desc`,
-    [jobId, stage, limit]
+    [jobId, stage, limit],
   );
 
   return result.rows.map((row) => ({
     queueId: row.queue_id as string,
     priorityScore: Number(row.priority_score),
     attempts: Number(row.attempts),
-    repo: mapRepoRow(row)
+    repo: mapRepoRow(row),
   }));
 }
 
@@ -2203,18 +2288,20 @@ export async function requeueRunningCandidates(jobId: string, stage?: string) {
      where job_id=$1
        ${stageSql}
        and status='running'`,
-    values
+    values,
   );
 }
 
-export async function requeueStaleRunningCandidates(staleAfterMinutes = 5): Promise<
+export async function requeueStaleRunningCandidates(
+  staleAfterMinutes = 5,
+): Promise<
   Array<{ jobId: string; stage: string; count: number; total: number }>
 > {
   const runningCandidates = await getPool().query(
     `select job_id, stage, count(*)::int as count
      from candidate_queue
      where status='running'
-     group by job_id, stage`
+     group by job_id, stage`,
   );
 
   const result = await getPool().query(
@@ -2223,7 +2310,7 @@ export async function requeueStaleRunningCandidates(staleAfterMinutes = 5): Prom
          next_run_at=now(),
          updated_at=now()
      where status='running'
-     returning job_id, stage`
+     returning job_id, stage`,
   );
 
   const countByStage = new Map<string, number>();
@@ -2243,7 +2330,7 @@ export async function requeueStaleRunningCandidates(staleAfterMinutes = 5): Prom
       jobId,
       stage,
       count,
-      total: countByStage.get(key) ?? count
+      total: countByStage.get(key) ?? count,
     };
   });
 }
@@ -2251,7 +2338,7 @@ export async function requeueStaleRunningCandidates(staleAfterMinutes = 5): Prom
 export async function failCandidate(
   id: string,
   reason: string,
-  retryAfterSeconds?: number
+  retryAfterSeconds?: number,
 ) {
   const nextRunAt =
     retryAfterSeconds && retryAfterSeconds > 0
@@ -2274,12 +2361,14 @@ export async function failCandidate(
        where q.job_id = discovery_jobs.id and q.status = 'failed'
      )
      where id in (select job_id from updated)`,
-    [id, reason, nextRunAt]
+    [id, reason, nextRunAt],
   );
 }
 
 export async function retryCandidate(id: string, retryAfterSeconds: number) {
-  const nextRunAt = new Date(Date.now() + Math.max(1, retryAfterSeconds) * 1000).toISOString();
+  const nextRunAt = new Date(
+    Date.now() + Math.max(1, retryAfterSeconds) * 1000,
+  ).toISOString();
 
   await getPool().query(
     `with updated as (
@@ -2297,11 +2386,15 @@ export async function retryCandidate(id: string, retryAfterSeconds: number) {
        where q.job_id = discovery_jobs.id and q.status = 'failed'
      )
      where id in (select job_id from updated)`,
-    [id, nextRunAt]
+    [id, nextRunAt],
   );
 }
 
-export async function getJobQueueCount(jobId: string, stage?: string, status?: string) {
+export async function getJobQueueCount(
+  jobId: string,
+  stage?: string,
+  status?: string,
+) {
   const conditions = ["job_id=$1"];
   const values: unknown[] = [jobId];
 
@@ -2316,7 +2409,7 @@ export async function getJobQueueCount(jobId: string, stage?: string, status?: s
 
   const result = await getPool().query(
     `select count(*)::int as count from candidate_queue where ${conditions.join(" and ")}`,
-    values
+    values,
   );
 
   return Number(result.rows[0]?.count ?? 0);
@@ -2325,7 +2418,7 @@ export async function getJobQueueCount(jobId: string, stage?: string, status?: s
 export async function completeCandidate(id: string) {
   await getPool().query(
     `update candidate_queue set status='done', error_message=null, updated_at=now() where id=$1`,
-    [id]
+    [id],
   );
 }
 
@@ -2348,12 +2441,12 @@ export async function trimRecommendations(profileId: string, limit: number) {
      delete from recommendations
      where profile_id=$1
        and id in (select id from updated where rank > $2)`,
-    [profileId, limit]
+    [profileId, limit],
   );
 }
 
 export async function recordResourceEvent(
-  event: Omit<ResourceEvent, "id" | "createdAt">
+  event: Omit<ResourceEvent, "id" | "createdAt">,
 ): Promise<ResourceEvent> {
   const result = await getPool().query(
     `insert into resource_events
@@ -2370,8 +2463,8 @@ export async function recordResourceEvent(
       event.heapUsedMb,
       event.totalMb,
       event.batchSize,
-      event.reason
-    ]
+      event.reason,
+    ],
   );
 
   return mapResourceEventRow(result.rows[0]);
@@ -2384,7 +2477,7 @@ async function listRecentResourceEvents(limit = 80): Promise<ResourceEvent[]> {
      from resource_events
      order by created_at desc
      limit $1`,
-    [limit]
+    [limit],
   );
 
   return result.rows.map(mapResourceEventRow);
@@ -2392,7 +2485,7 @@ async function listRecentResourceEvents(limit = 80): Promise<ResourceEvent[]> {
 
 async function listAiJobMetrics(
   limit = 80,
-  status?: string
+  status?: string,
 ): Promise<OperationsSnapshot["aiJobs"]> {
   const values: unknown[] = [];
   const whereSql = status ? "where job.status = $1" : "";
@@ -2412,16 +2505,24 @@ async function listAiJobMetrics(
      ${whereSql}
      order by job.created_at desc
      limit $${values.length}`,
-    values
+    values,
   );
 
   return result.rows.map((row) => {
     const tokenUsage = normalizeJsonObject(row.token_usage_json);
     const providerConfig = normalizeJsonObject(row.config_json);
     const tokenUsageKnown = hasTokenUsage(tokenUsage);
-    const promptTokens = Number(tokenUsage.prompt_tokens ?? tokenUsage.promptTokens ?? 0);
-    const completionTokens = Number(tokenUsage.completion_tokens ?? tokenUsage.completionTokens ?? 0);
-    const totalTokens = Number(tokenUsage.total_tokens ?? tokenUsage.totalTokens ?? promptTokens + completionTokens);
+    const promptTokens = Number(
+      tokenUsage.prompt_tokens ?? tokenUsage.promptTokens ?? 0,
+    );
+    const completionTokens = Number(
+      tokenUsage.completion_tokens ?? tokenUsage.completionTokens ?? 0,
+    );
+    const totalTokens = Number(
+      tokenUsage.total_tokens ??
+        tokenUsage.totalTokens ??
+        promptTokens + completionTokens,
+    );
 
     return {
       id: row.id,
@@ -2439,10 +2540,14 @@ async function listAiJobMetrics(
       promptTokens,
       completionTokens,
       totalTokens,
-      estimatedCostUsd: estimateAiJobCostUsd(providerConfig, promptTokens, completionTokens),
+      estimatedCostUsd: estimateAiJobCostUsd(
+        providerConfig,
+        promptTokens,
+        completionTokens,
+      ),
       errorMessage: row.error_message ?? undefined,
       createdAt: toIso(row.created_at),
-      finishedAt: row.finished_at ? toIso(row.finished_at) : undefined
+      finishedAt: row.finished_at ? toIso(row.finished_at) : undefined,
     };
   });
 }
@@ -2450,24 +2555,25 @@ async function listAiJobMetrics(
 export function buildTokenSummary(
   aiJobs: OperationsSnapshot["aiJobs"],
   getId: (job: OperationsSnapshot["aiJobs"][number]) => string,
-  getLabel: (job: OperationsSnapshot["aiJobs"][number]) => string
+  getLabel: (job: OperationsSnapshot["aiJobs"][number]) => string,
 ): OperationsSnapshot["repoTokenSummary"] {
-  const summary = new Map<string, OperationsSnapshot["repoTokenSummary"][number]>();
+  const summary = new Map<
+    string,
+    OperationsSnapshot["repoTokenSummary"][number]
+  >();
   for (const job of aiJobs) {
     const id = getId(job);
     if (!id) continue;
-    const current =
-      summary.get(id) ??
-      {
-        id,
-        label: getLabel(job),
-        jobCount: 0,
-        unknownJobCount: 0,
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        estimatedCostUsd: 0
-      };
+    const current = summary.get(id) ?? {
+      id,
+      label: getLabel(job),
+      jobCount: 0,
+      unknownJobCount: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      estimatedCostUsd: 0,
+    };
 
     current.jobCount += 1;
     current.unknownJobCount += job.tokenUsageKnown ? 0 : 1;
@@ -2490,19 +2596,22 @@ function hasTokenUsage(tokenUsage: Record<string, unknown>) {
     tokenUsage.completion_tokens,
     tokenUsage.completionTokens,
     tokenUsage.total_tokens,
-    tokenUsage.totalTokens
+    tokenUsage.totalTokens,
   ].some((value) => Number(value) > 0);
 }
 
 function estimateAiJobCostUsd(
   providerConfig: Record<string, unknown>,
   promptTokens: number,
-  completionTokens: number
+  completionTokens: number,
 ) {
   const pricing = normalizeJsonObject(providerConfig.pricing);
   const inputPerMillion = Number(pricing.inputPerMillionTokens ?? 0);
   const outputPerMillion = Number(pricing.outputPerMillionTokens ?? 0);
-  return (promptTokens / 1_000_000) * inputPerMillion + (completionTokens / 1_000_000) * outputPerMillion;
+  return (
+    (promptTokens / 1_000_000) * inputPerMillion +
+    (completionTokens / 1_000_000) * outputPerMillion
+  );
 }
 
 let seedPromise: Promise<void> | null = null;
@@ -2517,7 +2626,7 @@ async function ensureSeedDataOnce() {
 
 async function markSeedDataInitialized(
   insertedDemoData: boolean,
-  queryRunner: QueryRunner = getPool()
+  queryRunner: QueryRunner = getPool(),
 ) {
   await queryRunner.query(
     `insert into app_state (key, value_json, updated_at)
@@ -2526,23 +2635,27 @@ async function markSeedDataInitialized(
     [
       JSON.stringify({
         insertedDemoData,
-        version: 1
-      })
-    ]
+        version: 1,
+      }),
+    ],
   );
 }
 
-async function findProfileUsingProvider(id: string): Promise<{ id: string; name: string } | null> {
+async function findProfileUsingProvider(
+  id: string,
+): Promise<{ id: string; name: string } | null> {
   const inUse = await getPool().query(
     `select id, name
      from discovery_profiles
      where config_json #>> '{ai,chatProviderId}' = $1
         or config_json #>> '{ai,embeddingProviderId}' = $1
      limit 1`,
-    [id]
+    [id],
   );
 
-  return inUse.rows[0] ? { id: inUse.rows[0].id, name: inUse.rows[0].name } : null;
+  return inUse.rows[0]
+    ? { id: inUse.rows[0].id, name: inUse.rows[0].name }
+    : null;
 }
 
 function mapProviderRow(row: Record<string, any>): AiProvider {
@@ -2561,16 +2674,18 @@ function mapProviderRow(row: Record<string, any>): AiProvider {
     rateLimit: config.rateLimit as AiProvider["rateLimit"],
     timeoutSeconds: config.timeoutSeconds as number | undefined,
     createdAt: toIso(row.created_at),
-    updatedAt: toIso(row.updated_at)
+    updatedAt: toIso(row.updated_at),
   };
 }
 
-function normalizeProfileConfig(config: DiscoveryProfile["config"]): DiscoveryProfile["config"] {
+function normalizeProfileConfig(
+  config: DiscoveryProfile["config"],
+): DiscoveryProfile["config"] {
   return {
     ...config,
     limits: normalizeDiscoveryLimits(config.limits),
     opportunity: normalizeOpportunityProfile(config.opportunity),
-    sources: normalizeDiscoverySources(config.sources)
+    sources: normalizeDiscoverySources(config.sources),
   };
 }
 
@@ -2594,8 +2709,10 @@ function mapJobRow(row: Record<string, any>): ScanJob {
     startedAt: row.started_at ? toIso(row.started_at) : undefined,
     finishedAt: row.finished_at ? toIso(row.finished_at) : undefined,
     errorMessage: row.error_message ?? undefined,
+    errorCode: row.error_code ?? undefined,
+    errorResolution: row.error_resolution ?? undefined,
     archivedAt: row.archived_at ? toIso(row.archived_at) : undefined,
-    createdAt: toIso(row.created_at)
+    createdAt: toIso(row.created_at),
   };
 }
 
@@ -2609,7 +2726,7 @@ function mapCheckpointRow(row: Record<string, any>): ScanCheckpoint {
     cursor: row.cursor ?? undefined,
     processedCount: Number(row.processed_count ?? 0),
     stage: row.stage,
-    updatedAt: toIso(row.updated_at)
+    updatedAt: toIso(row.updated_at),
   };
 }
 
@@ -2625,7 +2742,7 @@ function mapResourceEventRow(row: Record<string, any>): ResourceEvent {
     totalMb: Number(row.total_mb),
     batchSize: Number(row.batch_size),
     reason: row.reason,
-    createdAt: toIso(row.created_at)
+    createdAt: toIso(row.created_at),
   };
 }
 
@@ -2646,7 +2763,7 @@ function mapRepoRow(row: Record<string, any>): RepoSummary {
     pushedAt: row.pushed_at ? toIso(row.pushed_at) : "",
     updatedAt: row.updated_at ? toIso(row.updated_at) : "",
     archived: row.archived,
-    fork: row.fork
+    fork: row.fork,
   };
 }
 
@@ -2669,10 +2786,10 @@ function mapRecommendationRow(row: Record<string, any>): Recommendation {
     pushedAt: row.pushed_at ? toIso(row.pushed_at) : "",
     updatedAt: row.updated_at ? toIso(row.updated_at) : "",
     archived: row.archived,
-    fork: row.fork
+    fork: row.fork,
   };
   const matchedPreferences = normalizeChineseLabels(
-    normalizeStringArray(reasonsJson.matchedPreferences)
+    normalizeStringArray(reasonsJson.matchedPreferences),
   );
   const summary = String(reasonsJson.summary ?? row.description ?? "");
 
@@ -2683,7 +2800,9 @@ function mapRecommendationRow(row: Record<string, any>): Recommendation {
     repo,
     scores: {
       rule: Number(row.rule_score ?? scores.rule ?? 0),
-      githubContextFit: Number(row.github_context_fit ?? scores.githubContextFit ?? 0),
+      githubContextFit: Number(
+        row.github_context_fit ?? scores.githubContextFit ?? 0,
+      ),
       llmMatch: Number(row.llm_match_score ?? scores.llmMatch ?? 0),
       feedback: Number(row.feedback_score ?? scores.feedback ?? 0),
       opportunity: optionalScore(scores.opportunity),
@@ -2693,13 +2812,14 @@ function mapRecommendationRow(row: Record<string, any>): Recommendation {
       differentiation: optionalScore(scores.differentiation),
       technicalQuality: optionalScore(scores.technicalQuality),
       final: Number(row.final_score ?? scores.final ?? 0),
-      scoreVersion: row.score_version ?? String(scores.scoreVersion ?? "mvp-v1")
+      scoreVersion:
+        row.score_version ?? String(scores.scoreVersion ?? "mvp-v1"),
     },
     summary,
     summaryZh: ensureChineseSummary(
       String(reasonsJson.summaryZh ?? summary),
       repo,
-      matchedPreferences
+      matchedPreferences,
     ),
     opportunity: normalizePersistedOpportunity(reasonsJson.opportunity),
     reasons: normalizeChineseLabels(normalizeStringArray(reasonsJson.reasons)),
@@ -2708,17 +2828,22 @@ function mapRecommendationRow(row: Record<string, any>): Recommendation {
     tags: normalizeStringArray(row.tags_json),
     relatedUserRepos: parseRelatedUserRepos(
       row.context_matches_json,
-      reasonsJson.relatedUserRepos
+      reasonsJson.relatedUserRepos,
     ),
-    qualitySignals: normalizePersistedQualitySignals(reasonsJson.qualitySignals),
+    qualitySignals: normalizePersistedQualitySignals(
+      reasonsJson.qualitySignals,
+    ),
     cluster: normalizePersistedCluster(reasonsJson.cluster),
     status: row.status,
-    createdAt: toIso(row.created_at)
+    createdAt: toIso(row.created_at),
   };
 }
 
-function normalizePersistedQualitySignals(value: unknown): Recommendation["qualitySignals"] {
-  const object = value && typeof value === "object" ? normalizeJsonObject(value) : {};
+function normalizePersistedQualitySignals(
+  value: unknown,
+): Recommendation["qualitySignals"] {
+  const object =
+    value && typeof value === "object" ? normalizeJsonObject(value) : {};
   if (!Object.keys(object).length) {
     return undefined;
   }
@@ -2734,24 +2859,29 @@ function normalizePersistedQualitySignals(value: unknown): Recommendation["quali
             .map((item) => ({
               name: String(item.name ?? ""),
               score: optionalScore(item.score),
-              reason: item.reason ? String(item.reason) : undefined
+              reason: item.reason ? String(item.reason) : undefined,
             }))
-            .filter((item) => item.name)
+            .filter((item) => item.name),
         }
       : undefined,
     ecosystems: Object.keys(ecosystems).length
       ? {
-          dependentReposCount: optionalPositiveNumber(ecosystems.dependentReposCount),
+          dependentReposCount: optionalPositiveNumber(
+            ecosystems.dependentReposCount,
+          ),
           packagesCount: optionalPositiveNumber(ecosystems.packagesCount),
-          dockerDownloadsCount: optionalPositiveNumber(ecosystems.dockerDownloadsCount),
-          score: optionalScore(ecosystems.score)
+          dockerDownloadsCount: optionalPositiveNumber(
+            ecosystems.dockerDownloadsCount,
+          ),
+          score: optionalScore(ecosystems.score),
         }
-      : undefined
+      : undefined,
   };
 }
 
 function normalizePersistedCluster(value: unknown): Recommendation["cluster"] {
-  const object = value && typeof value === "object" ? normalizeJsonObject(value) : null;
+  const object =
+    value && typeof value === "object" ? normalizeJsonObject(value) : null;
   if (!object) {
     return undefined;
   }
@@ -2762,33 +2892,41 @@ function normalizePersistedCluster(value: unknown): Recommendation["cluster"] {
     reason: String(object.reason ?? ""),
     representativeTerms: normalizeStringArray(object.representativeTerms),
     size: object.size === undefined ? undefined : Number(object.size),
-    rankInCluster: object.rankInCluster === undefined ? undefined : Number(object.rankInCluster)
+    rankInCluster:
+      object.rankInCluster === undefined
+        ? undefined
+        : Number(object.rankInCluster),
   };
 }
 
 function parseRelatedUserRepos(
   persistedMatches: unknown,
-  fallbackMatches: unknown
+  fallbackMatches: unknown,
 ): Recommendation["relatedUserRepos"] {
-  const matches = Array.isArray(persistedMatches) && persistedMatches.length > 0
-    ? persistedMatches
-    : Array.isArray(fallbackMatches)
-      ? fallbackMatches
-      : [];
+  const matches =
+    Array.isArray(persistedMatches) && persistedMatches.length > 0
+      ? persistedMatches
+      : Array.isArray(fallbackMatches)
+        ? fallbackMatches
+        : [];
 
   return matches
     .map((item) => normalizeJsonObject(item))
     .map((item) => ({
-      userRepoId: typeof item.userRepoId === "string" ? item.userRepoId : undefined,
+      userRepoId:
+        typeof item.userRepoId === "string" ? item.userRepoId : undefined,
       fullName: String(item.fullName ?? ""),
       reason: normalizeChineseLabels([String(item.reason ?? "")])[0] ?? "",
-      score: Number(item.score ?? 0)
+      score: Number(item.score ?? 0),
     }))
     .filter((item) => item.fullName);
 }
 
-function normalizePersistedOpportunity(value: unknown): OpportunityAnalysis | undefined {
-  const object = value && typeof value === "object" ? normalizeJsonObject(value) : null;
+function normalizePersistedOpportunity(
+  value: unknown,
+): OpportunityAnalysis | undefined {
+  const object =
+    value && typeof value === "object" ? normalizeJsonObject(value) : null;
   if (!object) {
     return undefined;
   }
@@ -2805,7 +2943,7 @@ function normalizePersistedOpportunity(value: unknown): OpportunityAnalysis | un
     monetizationPaths: normalizeStringArray(object.monetizationPaths),
     validationSteps: normalizeStringArray(object.validationSteps),
     suggestedAction: normalizeSuggestedAction(object.suggestedAction),
-    evidence: normalizeStringArray(object.evidence)
+    evidence: normalizeStringArray(object.evidence),
   };
 }
 
@@ -2813,7 +2951,9 @@ function repoHasMaterialChanges(existing: RepoSummary, next: RepoSummary) {
   return repoHasMaterialMetadataChanges(existing, next);
 }
 
-function normalizeSuggestedAction(value: unknown): OpportunityAnalysis["suggestedAction"] {
+function normalizeSuggestedAction(
+  value: unknown,
+): OpportunityAnalysis["suggestedAction"] {
   return value === "build" ||
     value === "validate" ||
     value === "track" ||
@@ -2843,14 +2983,14 @@ function mapKnowledgeSyncRow(row: Record<string, any>): KnowledgeSync {
     contentHash: row.content_hash,
     status: row.status,
     syncedAt: row.synced_at ? toIso(row.synced_at) : undefined,
-    errorMessage: row.error_message ?? undefined
+    errorMessage: row.error_message ?? undefined,
   };
 }
 
 function buildPreferenceSignals(
   repo: RepoSummary,
   profileId: string,
-  action: FeedbackAction
+  action: FeedbackAction,
 ): Array<Omit<PreferenceSignal, "id" | "updatedAt">> {
   const delta =
     action === "save" ||
@@ -2871,14 +3011,19 @@ function buildPreferenceSignals(
     return [];
   }
 
-  const values: Array<{ signalType: PreferenceSignal["signalType"]; value: string }> = [];
+  const values: Array<{
+    signalType: PreferenceSignal["signalType"];
+    value: string;
+  }> = [];
   if (repo.primaryLanguage && repo.primaryLanguage !== "Unknown") {
     values.push({ signalType: "language", value: repo.primaryLanguage });
   }
   for (const topic of repo.topics) {
     values.push({ signalType: "topic", value: topic.toLowerCase() });
   }
-  for (const keyword of extractKeywords(`${repo.fullName} ${repo.description}`)) {
+  for (const keyword of extractKeywords(
+    `${repo.fullName} ${repo.description}`,
+  )) {
     values.push({ signalType: "keyword", value: keyword });
   }
 
@@ -2887,7 +3032,7 @@ function buildPreferenceSignals(
     signalType: signal.signalType,
     value: signal.value,
     weight: delta,
-    source: `feedback:${action}`
+    source: `feedback:${action}`,
   }));
 }
 
@@ -2898,8 +3043,12 @@ function extractKeywords(text: string) {
         .toLowerCase()
         .split(/[^a-z0-9+#.-]+/i)
         .map((item) => item.trim())
-        .filter((item) => item.length >= 3 && !["github", "repository", "tool"].includes(item))
-    )
+        .filter(
+          (item) =>
+            item.length >= 3 &&
+            !["github", "repository", "tool"].includes(item),
+        ),
+    ),
   ].slice(0, 8);
 }
 
@@ -2928,7 +3077,10 @@ function normalizeStringArray(value: unknown): string[] {
 }
 
 function normalizeTagInput(tags: string[]) {
-  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);
+  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(
+    0,
+    20,
+  );
 }
 
 function toVector(vector: number[]) {
@@ -2951,5 +3103,7 @@ function parseVector(value: unknown) {
 }
 
 function toIso(value: string | Date): string {
-  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+  return value instanceof Date
+    ? value.toISOString()
+    : new Date(value).toISOString();
 }

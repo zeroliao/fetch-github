@@ -1,11 +1,16 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/server/auth";
 import { resumeScanJob } from "@/server/scanRunner";
-import { getAppSettings, getScanJob, requeueRunningCandidates, updateScanJob } from "@/server/store";
+import {
+  getAppSettings,
+  getScanJob,
+  requeueRunningCandidates,
+  updateScanJob,
+} from "@/server/store";
 
 export async function POST(
   _request: Request,
-  context: { params: Promise<{ id: string }> }
+  context: { params: Promise<{ id: string }> },
 ) {
   const auth = await requireAuth();
   if (auth.response) return auth.response;
@@ -13,7 +18,10 @@ export async function POST(
   const { id } = await context.params;
   const settings = await getAppSettings();
   if (!settings.scanEnabled) {
-    return NextResponse.json({ error: "全局扫描任务已关闭，当前不能恢复扫描任务。" }, { status: 409 });
+    return NextResponse.json(
+      { error: "全局扫描任务已关闭，当前不能恢复扫描任务。" },
+      { status: 409 },
+    );
   }
 
   const existing = await getScanJob(id);
@@ -30,13 +38,15 @@ export async function POST(
     stage: existing.stage,
     statusReason: undefined,
     errorMessage: undefined,
-    finishedAt: undefined
+    errorCode: undefined,
+    errorResolution: undefined,
+    finishedAt: undefined,
   });
 
   const job = await resumeScanJob({
     jobId: id,
     maxPages: 1,
-    maxProfileBatches: 1
+    maxProfileBatches: 1,
   });
 
   return NextResponse.json(job ?? existing);

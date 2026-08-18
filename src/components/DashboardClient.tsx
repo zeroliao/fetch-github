@@ -2,13 +2,16 @@
 
 import {
   Activity,
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
   Brain,
   BarChart3,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Compass,
   Database,
   ExternalLink,
   EyeOff,
@@ -21,17 +24,30 @@ import {
   Save,
   Search,
   Settings,
+  SlidersHorizontal,
   Star,
   ThumbsDown,
   ThumbsUp,
   ClipboardCheck,
-  X
+  X,
 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
-import { discoverySourceCatalog, normalizeDiscoverySources } from "@/lib/discoverySources";
-import { sectionDefinitions, sectionFromPath, sectionLabel, sectionPath, type Section } from "@/lib/navigation";
-import { normalizeOpportunityProfile, opportunityActionText } from "@/lib/opportunity";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import {
+  discoverySourceCatalog,
+  normalizeDiscoverySources,
+} from "@/lib/discoverySources";
+import {
+  sectionDefinitions,
+  sectionFromPath,
+  sectionLabel,
+  sectionPath,
+  type Section,
+} from "@/lib/navigation";
+import {
+  normalizeOpportunityProfile,
+  opportunityActionText,
+} from "@/lib/opportunity";
 import { getRecommendationSummaryZh } from "@/lib/recommendationText";
 import type { GitHubSearchQueryPlan } from "@/server/githubSearch";
 import type {
@@ -43,7 +59,7 @@ import type {
   KnowledgeSync,
   Recommendation,
   ScanJob,
-  UserGitHubRepo
+  UserGitHubRepo,
 } from "@/lib/types";
 
 type GeneratedPreferences = DiscoveryProfile["config"]["preferences"] & {
@@ -66,17 +82,23 @@ const sectionIcons: Record<Section, React.ComponentType<{ size?: number }>> = {
   github: GitBranch,
   providers: Brain,
   knowledge: Database,
-  operations: BarChart3
+  operations: BarChart3,
 };
 
 const sections = sectionDefinitions.map((section) => ({
   ...section,
-  icon: sectionIcons[section.id]
+  icon: sectionIcons[section.id],
 }));
+
+const navigationGroups: Array<{ label: string; items: Section[] }> = [
+  { label: "发现", items: ["recommendations", "profiles", "jobs"] },
+  { label: "数据与同步", items: ["github", "knowledge"] },
+  { label: "系统", items: ["providers", "operations"] },
+];
 
 export function DashboardClient({
   initialData,
-  initialSection = "recommendations"
+  initialSection = "recommendations",
 }: {
   initialData: DashboardSnapshot;
   initialSection?: Section;
@@ -86,40 +108,56 @@ export function DashboardClient({
   const activeSection = sectionFromPath(pathname) ?? initialSection;
   const [profiles, setProfiles] = useState(initialData.profiles);
   const [providers, setProviders] = useState(initialData.aiProviders);
-  const [recommendations, setRecommendations] = useState(initialData.recommendations);
+  const [recommendations, setRecommendations] = useState(
+    initialData.recommendations,
+  );
   const [jobs, setJobs] = useState(initialData.jobs);
-  const [githubAccounts, setGithubAccounts] = useState(initialData.githubAccounts);
+  const [githubAccounts, setGithubAccounts] = useState(
+    initialData.githubAccounts,
+  );
   const [githubRepos, setGithubRepos] = useState(initialData.githubRepos);
-  const [knowledgeSyncs, setKnowledgeSyncs] = useState(initialData.knowledgeSyncs);
+  const [knowledgeSyncs, setKnowledgeSyncs] = useState(
+    initialData.knowledgeSyncs,
+  );
   const [queueStats, setQueueStats] = useState(initialData.queueStats);
   const [operations, setOperations] = useState(initialData.operations);
   const [settings, setSettings] = useState(initialData.settings);
-  const [selectedProfileId, setSelectedProfileId] = useState(initialData.profiles[0]?.id ?? "");
+  const [selectedProfileId, setSelectedProfileId] = useState(
+    initialData.profiles[0]?.id ?? "",
+  );
   const [selectedRepo, setSelectedRepo] = useState<Recommendation | null>(null);
   const [showPasswordDialog, setShowPasswordDialog] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [message, setMessage] = useState("");
 
-  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId);
-  const stats = useMemo(
-    () => ({
-      recommendations: recommendations.filter(
-        (item) => item.profileId === selectedProfileId && item.status !== "hidden"
-      ).length,
-      tracked: recommendations.filter((item) => item.status === "tracked").length,
-      providers: providers.length,
-      jobStatus: jobs[0] ? `${jobs[0].status} / ${jobs[0].stage}` : "idle"
-    }),
-    [jobs, providers.length, recommendations, selectedProfileId]
+  const selectedProfile = profiles.find(
+    (profile) => profile.id === selectedProfileId,
   );
+  const stats = useMemo(() => {
+    const profileItems = recommendations.filter(
+      (item) => item.profileId === selectedProfileId,
+    );
+    return {
+      recommendations: profileItems.filter(
+        (item) =>
+          !["hidden", "liked", "disliked", "tracked", "abandoned"].includes(
+            item.status,
+          ),
+      ).length,
+      tracked: profileItems.filter((item) => item.status === "tracked").length,
+      providers: providers.length,
+      jobStatus: jobs[0] ? `${jobs[0].status} / ${jobs[0].stage}` : "idle",
+    };
+  }, [jobs, providers.length, recommendations, selectedProfileId]);
 
   async function refreshJobsAndQueue() {
-    const [jobsResponse, queueResponse, operationsResponse, settingsResponse] = await Promise.all([
-      fetch("/api/scans"),
-      fetch("/api/queue"),
-      fetch("/api/operations"),
-      fetch("/api/settings")
-    ]);
+    const [jobsResponse, queueResponse, operationsResponse, settingsResponse] =
+      await Promise.all([
+        fetch("/api/scans"),
+        fetch("/api/queue"),
+        fetch("/api/operations"),
+        fetch("/api/settings"),
+      ]);
     if (jobsResponse.ok) setJobs(await jobsResponse.json());
     if (queueResponse.ok) setQueueStats(await queueResponse.json());
     if (operationsResponse.ok) setOperations(await operationsResponse.json());
@@ -138,14 +176,18 @@ export function DashboardClient({
       const response = await fetch("/api/scans", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profileId: selectedProfileId })
+        body: JSON.stringify({ profileId: selectedProfileId }),
       });
       const body = await response.json().catch(() => ({}));
-      if (body?.id) setJobs((current) => [body, ...current.filter((job) => job.id !== body.id)]);
+      if (body?.id)
+        setJobs((current) => [
+          body,
+          ...current.filter((job) => job.id !== body.id),
+        ]);
       setMessage(
         response.ok
           ? "扫描任务已启动，worker 会按 checkpoint 继续低内存推进。"
-          : body.errorMessage ?? body.error ?? "扫描失败，请查看任务状态。"
+          : (body.errorMessage ?? body.error ?? "扫描失败，请查看任务状态。"),
       );
       void refreshJobsAndQueue();
     } finally {
@@ -153,20 +195,30 @@ export function DashboardClient({
     }
   }
 
-  async function sendFeedback(recommendation: Recommendation, action: FeedbackAction) {
+  async function sendFeedback(
+    recommendation: Recommendation,
+    action: FeedbackAction,
+  ) {
     const previousRecommendations = recommendations;
     const previousSelectedRepo = selectedRepo;
     const status = statusFromFeedbackAction(action, recommendation.status);
     setRecommendations((current) =>
-      current.map((item) => (item.id === recommendation.id ? { ...item, status } : item))
+      current.map((item) =>
+        item.id === recommendation.id ? { ...item, status } : item,
+      ),
     );
-    setSelectedRepo((current) => (current?.id === recommendation.id ? { ...current, status } : current));
+    setSelectedRepo((current) =>
+      current?.id === recommendation.id ? { ...current, status } : current,
+    );
 
-    const response = await fetch(`/api/repositories/${recommendation.repo.id}/feedback`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profileId: recommendation.profileId, action })
-    });
+    const response = await fetch(
+      `/api/repositories/${recommendation.repo.id}/feedback`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profileId: recommendation.profileId, action }),
+      },
+    );
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
       setRecommendations(previousRecommendations);
@@ -186,10 +238,25 @@ export function DashboardClient({
   }
 
   useEffect(() => {
-    if ((activeSection === "recommendations" || activeSection === "knowledge") && recommendations.length === 0) {
+    if (
+      (activeSection === "recommendations" || activeSection === "knowledge") &&
+      recommendations.length === 0
+    ) {
       void refreshRecommendations();
     }
   }, [activeSection, recommendations.length]);
+
+  useEffect(() => {
+    if (!selectedRepo && !showPasswordDialog) return;
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        if (showPasswordDialog) setShowPasswordDialog(false);
+        else setSelectedRepo(null);
+      }
+    }
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [selectedRepo, showPasswordDialog]);
 
   async function toggleGlobalScan(enabled: boolean) {
     const previous = settings;
@@ -197,12 +264,16 @@ export function DashboardClient({
     const response = await fetch("/api/settings", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scanEnabled: enabled })
+      body: JSON.stringify({ scanEnabled: enabled }),
     });
     const body = await response.json().catch(() => ({}));
     if (response.ok) {
       setSettings(body);
-      setMessage(enabled ? "全局扫描任务已开启。" : "全局扫描任务已关闭，不会启动新的扫描任务。");
+      setMessage(
+        enabled
+          ? "全局扫描任务已开启。"
+          : "全局扫描任务已关闭，不会启动新的扫描任务。",
+      );
     } else {
       setSettings(previous);
       setMessage(body.error ?? "全局扫描开关更新失败。");
@@ -211,84 +282,151 @@ export function DashboardClient({
 
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        跳到主要内容
+      </a>
       <aside className="sidebar">
         <div className="brand">
-          <GitBranch size={22} />
-          <span>fetchGithub</span>
+          <span className="brand-mark" aria-hidden="true">
+            <GitBranch size={20} />
+          </span>
+          <span className="brand-copy">
+            <strong>fetchGithub</strong>
+            <small>发现工作台</small>
+          </span>
         </div>
         <nav className="nav-list" aria-label="主导航">
-          {sections.map((section) => {
-            const Icon = section.icon;
-            return (
-              <button
-                key={section.id}
-                className={`nav-button ${activeSection === section.id ? "active" : ""}`}
-                onClick={() => navigateSection(section.id)}
-                type="button"
-              >
-                <Icon size={17} />
-                <span>{section.label}</span>
-              </button>
-            );
-          })}
+          {navigationGroups.map((group) => (
+            <div className="nav-group" key={group.label}>
+              <div className="nav-group-label">{group.label}</div>
+              {group.items.map((sectionId) => {
+                const section = sections.find((item) => item.id === sectionId)!;
+                const Icon = section.icon;
+                return (
+                  <button
+                    key={section.id}
+                    className={`nav-button ${activeSection === section.id ? "active" : ""}`}
+                    onClick={() => navigateSection(section.id)}
+                    type="button"
+                    aria-current={
+                      activeSection === section.id ? "page" : undefined
+                    }
+                  >
+                    <Icon size={17} />
+                    <span>{section.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
+        <div className="sidebar-footer">
+          <label
+            className="scan-status"
+            title="关闭后不会创建、启动或恢复扫描任务"
+          >
+            <span
+              className={`status-dot ${settings.scanEnabled ? "online" : ""}`}
+              aria-hidden="true"
+            />
+            <span>
+              <strong>
+                {settings.scanEnabled ? "自动扫描已开启" : "自动扫描已暂停"}
+              </strong>
+              <small>{stats.jobStatus}</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={settings.scanEnabled}
+              onChange={(event) => void toggleGlobalScan(event.target.checked)}
+              aria-label="全局扫描"
+            />
+          </label>
+          <div className="sidebar-account-actions">
+            <button
+              className="sidebar-action"
+              onClick={() => setShowPasswordDialog(true)}
+              type="button"
+            >
+              <LockKeyhole size={16} />
+              <span>账户安全</span>
+            </button>
+            <button
+              className="sidebar-action icon-only"
+              onClick={logout}
+              type="button"
+              title="退出登录"
+              aria-label="退出登录"
+            >
+              <LogOut size={16} />
+            </button>
+          </div>
+        </div>
       </aside>
 
-      <main className="main">
+      <main className="main" id="main-content" tabIndex={-1}>
         <div className="toolbar">
           <div className="toolbar-title">
             <h1>{sectionTitle(activeSection)}</h1>
             <p>{sectionSubtitle(activeSection)}</p>
           </div>
           <div className="toolbar-actions">
-            <label className="switch-row" title="关闭后不会创建、启动或恢复扫描任务">
-              <input
-                type="checkbox"
-                checked={settings.scanEnabled}
-                onChange={(event) => void toggleGlobalScan(event.target.checked)}
-              />
-              <span>全局扫描</span>
-            </label>
-            <select className="select" value={selectedProfileId} onChange={(event) => setSelectedProfileId(event.target.value)}>
-              {profiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.name}
-                </option>
-              ))}
-            </select>
-            <button className="button primary" disabled={!selectedProfileId || isScanning || !settings.scanEnabled} onClick={startScan} type="button">
-              {isScanning ? <RefreshCw size={16} /> : <Play size={16} />}
-              <span>立即扫描</span>
-            </button>
-            <button className="button" onClick={() => setShowPasswordDialog(true)} type="button" title="修改密码" aria-label="修改密码">
-              <LockKeyhole size={16} />
-              <span>修改密码</span>
-            </button>
-            <button className="button icon" onClick={logout} type="button" title="退出登录" aria-label="退出登录">
-              <LogOut size={16} />
-            </button>
+            {(activeSection === "recommendations" ||
+              activeSection === "profiles" ||
+              activeSection === "jobs") && (
+              <select
+                className="select profile-select"
+                aria-label="当前发现配置"
+                value={selectedProfileId}
+                onChange={(event) => setSelectedProfileId(event.target.value)}
+              >
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            {(activeSection === "recommendations" ||
+              activeSection === "jobs") && (
+              <button
+                className="button primary"
+                disabled={
+                  !selectedProfileId || isScanning || !settings.scanEnabled
+                }
+                onClick={startScan}
+                type="button"
+              >
+                {isScanning ? (
+                  <RefreshCw className="spin" size={16} />
+                ) : (
+                  <Play size={16} />
+                )}
+                <span>{isScanning ? "正在创建" : "开始扫描"}</span>
+              </button>
+            )}
           </div>
         </div>
 
-        <div className="summary-grid">
-          <SummaryTile icon={Search} label="可见推荐" value={stats.recommendations} />
-          <SummaryTile icon={Star} label="跟踪项目" value={stats.tracked} />
-          <SummaryTile icon={Brain} label="AI 配置" value={stats.providers} />
-          <SummaryTile icon={Activity} label="最新任务" value={stats.jobStatus} />
-        </div>
-
-        {message && <div className="notice page-notice">{message}</div>}
+        {message && (
+          <div className="notice page-notice" role="status">
+            {message}
+          </div>
+        )}
 
         {activeSection === "recommendations" && (
           <RecommendationsPanel
             recommendations={recommendations}
             selectedProfileId={selectedProfileId}
+            stats={stats}
             onSelect={setSelectedRepo}
             onFeedback={sendFeedback}
             onRefresh={refreshRecommendations}
             onTagsUpdated={(recommendation) =>
               setRecommendations((current) =>
-                current.map((item) => (item.id === recommendation.id ? recommendation : item))
+                current.map((item) =>
+                  item.id === recommendation.id ? recommendation : item,
+                ),
               )
             }
           />
@@ -298,7 +436,13 @@ export function DashboardClient({
             profiles={profiles}
             selectedProfile={selectedProfile}
             providers={providers}
-            onUpdated={(profile) => setProfiles((current) => current.map((item) => (item.id === profile.id ? profile : item)))}
+            onUpdated={(profile) =>
+              setProfiles((current) =>
+                current.map((item) =>
+                  item.id === profile.id ? profile : item,
+                ),
+              )
+            }
           />
         )}
         {activeSection === "jobs" && (
@@ -306,8 +450,14 @@ export function DashboardClient({
             jobs={jobs}
             queueStats={queueStats}
             onRefresh={refreshJobsAndQueue}
-            onJobUpdated={(job) => setJobs((current) => current.map((item) => (item.id === job.id ? job : item)))}
-            onJobArchived={(jobId) => setJobs((current) => current.filter((item) => item.id !== jobId))}
+            onJobUpdated={(job) =>
+              setJobs((current) =>
+                current.map((item) => (item.id === job.id ? job : item)),
+              )
+            }
+            onJobArchived={(jobId) =>
+              setJobs((current) => current.filter((item) => item.id !== jobId))
+            }
           />
         )}
         {activeSection === "github" && (
@@ -316,7 +466,11 @@ export function DashboardClient({
             accounts={githubAccounts}
             repos={githubRepos}
             onSettingsChanged={setSettings}
-            onRepoUpdated={(repo) => setGithubRepos((current) => current.map((item) => (item.id === repo.id ? repo : item)))}
+            onRepoUpdated={(repo) =>
+              setGithubRepos((current) =>
+                current.map((item) => (item.id === repo.id ? repo : item)),
+              )
+            }
             onSynced={(accounts, repos) => {
               setGithubAccounts(accounts);
               setGithubRepos(repos);
@@ -331,11 +485,17 @@ export function DashboardClient({
             onChanged={(provider) =>
               setProviders((current) => {
                 return current.some((item) => item.id === provider.id)
-                  ? current.map((item) => (item.id === provider.id ? provider : item))
+                  ? current.map((item) =>
+                      item.id === provider.id ? provider : item,
+                    )
                   : [...current, provider];
               })
             }
-            onDeleted={(providerId) => setProviders((current) => current.filter((item) => item.id !== providerId))}
+            onDeleted={(providerId) =>
+              setProviders((current) =>
+                current.filter((item) => item.id !== providerId),
+              )
+            }
           />
         )}
         {activeSection === "knowledge" && (
@@ -346,7 +506,11 @@ export function DashboardClient({
           />
         )}
         {activeSection === "operations" && (
-          <OperationsPanel operations={operations} queueStats={queueStats} onRefresh={refreshJobsAndQueue} />
+          <OperationsPanel
+            operations={operations}
+            queueStats={queueStats}
+            onRefresh={refreshJobsAndQueue}
+          />
         )}
       </main>
 
@@ -358,7 +522,9 @@ export function DashboardClient({
           onFeedback={sendFeedback}
         />
       )}
-      {showPasswordDialog && <PasswordDialog onClose={() => setShowPasswordDialog(false)} />}
+      {showPasswordDialog && (
+        <PasswordDialog onClose={() => setShowPasswordDialog(false)} />
+      )}
     </div>
   );
 }
@@ -388,7 +554,7 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
       const response = await fetch("/api/auth/password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ currentPassword, newPassword })
+        body: JSON.stringify({ currentPassword, newPassword }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -413,24 +579,54 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
             <h2>修改管理员密码</h2>
             <p>新密码会更新到服务器 `.env.local` 的 `ADMIN_PASSWORD_HASH`。</p>
           </div>
-          <button className="button icon" type="button" onClick={onClose} title="关闭" aria-label="关闭">
+          <button
+            className="button icon"
+            type="button"
+            onClick={onClose}
+            title="关闭"
+            aria-label="关闭"
+          >
             <X size={16} />
           </button>
         </div>
         <div className="form-grid password-grid">
           {message && <div className="notice">{message}</div>}
           <Field label="当前密码">
-            <input className="input" type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
+            <input
+              className="input"
+              type="password"
+              autoComplete="current-password"
+              value={currentPassword}
+              onChange={(event) => setCurrentPassword(event.target.value)}
+            />
           </Field>
           <Field label="新密码">
-            <input className="input" type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+            <input
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(event) => setNewPassword(event.target.value)}
+            />
           </Field>
           <Field label="确认新密码">
-            <input className="input" type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+            <input
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+            />
           </Field>
           <div className="form-actions">
-            <button className="button" type="button" onClick={onClose}>关闭</button>
-            <button className="button primary" type="submit" disabled={isSubmitting}>
+            <button className="button" type="button" onClick={onClose}>
+              关闭
+            </button>
+            <button
+              className="button primary"
+              type="submit"
+              disabled={isSubmitting}
+            >
               {isSubmitting ? "保存中" : "保存密码"}
             </button>
           </div>
@@ -440,7 +636,15 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function SummaryTile({ icon: Icon, label, value }: { icon: React.ComponentType<{ size?: number }>; label: string; value: string | number }) {
+function SummaryTile({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: React.ComponentType<{ size?: number }>;
+  label: string;
+  value: string | number;
+}) {
   return (
     <div className="summary-tile">
       <div className="summary-label">
@@ -455,71 +659,151 @@ function SummaryTile({ icon: Icon, label, value }: { icon: React.ComponentType<{
 function RecommendationsPanel({
   recommendations,
   selectedProfileId,
+  stats,
   onSelect,
   onFeedback,
   onRefresh,
-  onTagsUpdated
+  onTagsUpdated,
 }: {
   recommendations: Recommendation[];
   selectedProfileId: string;
+  stats: {
+    recommendations: number;
+    tracked: number;
+    providers: number;
+    jobStatus: string;
+  };
   onSelect: (recommendation: Recommendation) => void;
-  onFeedback: (recommendation: Recommendation, action: FeedbackAction) => Promise<void>;
+  onFeedback: (
+    recommendation: Recommendation,
+    action: FeedbackAction,
+  ) => Promise<void>;
   onRefresh: () => Promise<void>;
   onTagsUpdated: (recommendation: Recommendation) => void;
 }) {
-  const [opportunityFilter, setOpportunityFilter] = useState<OpportunityFilter>("all");
+  const [opportunityFilter, setOpportunityFilter] =
+    useState<OpportunityFilter>("all");
   const [groupFilter, setGroupFilter] = useState<GroupFilter>("all");
-  const [preferenceFilter, setPreferenceFilter] = useState<PreferenceFilter>("unrated");
+  const [preferenceFilter, setPreferenceFilter] =
+    useState<PreferenceFilter>("unrated");
   const [focusedClusterKey, setFocusedClusterKey] = useState("");
-  const [statusFilter, setStatusFilter] = useState<RecommendationStatusFilter>("visible");
-  const [tagEditorRepo, setTagEditorRepo] = useState<Recommendation | null>(null);
+  const [statusFilter, setStatusFilter] =
+    useState<RecommendationStatusFilter>("visible");
+  const [tagEditorRepo, setTagEditorRepo] = useState<Recommendation | null>(
+    null,
+  );
   const [sortState, setSortState] = useState<RecommendationSortState>({
     key: "rank",
-    direction: "asc"
+    direction: "asc",
   });
   const [semanticQuery, setSemanticQuery] = useState("");
-  const [semanticSearch, setSemanticSearch] = useState<SemanticSearchState | null>(null);
+  const [semanticSearch, setSemanticSearch] =
+    useState<SemanticSearchState | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [page, setPage] = useState(1);
   const pageSize = 50;
   const searchScores = semanticSearch?.scores ?? {};
   const searchIds = useMemo(
     () => (semanticSearch ? new Set(semanticSearch.ids) : undefined),
-    [semanticSearch]
+    [semanticSearch],
   );
   const focusedClusterLabel = useMemo(() => {
     if (!focusedClusterKey) return "";
     return (
-      recommendations.find((item) => item.cluster?.key === focusedClusterKey)?.cluster?.label ??
-      focusedClusterKey
+      recommendations.find((item) => item.cluster?.key === focusedClusterKey)
+        ?.cluster?.label ?? focusedClusterKey
     );
   }, [focusedClusterKey, recommendations]);
+  const profileRecommendations = useMemo(
+    () =>
+      recommendations.filter(
+        (item) => !selectedProfileId || item.profileId === selectedProfileId,
+      ),
+    [recommendations, selectedProfileId],
+  );
 
   const visible = useMemo(() => {
-    const filtered = recommendations
-      .filter((item) => recommendationMatchesOpportunity(item, opportunityFilter))
-      .filter((item) => recommendationMatchesGroup(item, groupFilter, focusedClusterKey))
+    const filtered = profileRecommendations
+      .filter((item) =>
+        recommendationMatchesOpportunity(item, opportunityFilter),
+      )
+      .filter((item) =>
+        recommendationMatchesGroup(item, groupFilter, focusedClusterKey),
+      )
       .filter((item) => recommendationMatchesPreference(item, preferenceFilter))
       .filter((item) => recommendationMatchesStatus(item, statusFilter))
       .filter((item) => !searchIds || searchIds.has(item.id));
 
     return [...filtered].sort((left, right) =>
-      compareRecommendations(left, right, sortState, searchScores)
+      compareRecommendations(left, right, sortState, searchScores),
     );
   }, [
     focusedClusterKey,
     groupFilter,
     opportunityFilter,
     preferenceFilter,
-    recommendations,
+    profileRecommendations,
     searchIds,
     searchScores,
     sortState,
-    statusFilter
+    statusFilter,
   ]);
   const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
   const currentPage = Math.min(page, totalPages);
-  const pagedVisible = visible.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const pagedVisible = visible.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize,
+  );
+  const activeFilterCount = [
+    opportunityFilter !== "all",
+    groupFilter !== "all" || Boolean(focusedClusterKey),
+    preferenceFilter !== "unrated",
+    statusFilter !== "visible",
+  ].filter(Boolean).length;
+  const activeQuickView =
+    opportunityFilter === "all" &&
+    preferenceFilter === "unrated" &&
+    statusFilter === "visible"
+      ? "inbox"
+      : opportunityFilter === "has_opportunity" &&
+          preferenceFilter === "all" &&
+          statusFilter === "visible"
+        ? "opportunity"
+        : opportunityFilter === "all" &&
+            preferenceFilter === "all" &&
+            statusFilter === "tracked"
+          ? "tracked"
+          : opportunityFilter === "all" &&
+              preferenceFilter === "all" &&
+              statusFilter === "all"
+            ? "all"
+            : "custom";
+
+  function applyQuickView(view: "inbox" | "opportunity" | "tracked" | "all") {
+    setFocusedClusterKey("");
+    setGroupFilter("all");
+    setSemanticSearch(null);
+    setSemanticQuery("");
+    if (view === "inbox") {
+      setOpportunityFilter("all");
+      setPreferenceFilter("unrated");
+      setStatusFilter("visible");
+    } else if (view === "opportunity") {
+      setOpportunityFilter("has_opportunity");
+      setPreferenceFilter("all");
+      setStatusFilter("visible");
+    } else if (view === "tracked") {
+      setOpportunityFilter("all");
+      setPreferenceFilter("all");
+      setStatusFilter("tracked");
+    } else {
+      setOpportunityFilter("all");
+      setPreferenceFilter("all");
+      setStatusFilter("all");
+    }
+  }
 
   useEffect(() => {
     setPage(1);
@@ -530,7 +814,7 @@ function RecommendationsPanel({
     preferenceFilter,
     searchIds,
     sortState,
-    statusFilter
+    statusFilter,
   ]);
 
   async function runSemanticSearch(event?: React.FormEvent<HTMLFormElement>) {
@@ -546,19 +830,21 @@ function RecommendationsPanel({
     try {
       const params = new URLSearchParams({
         q: query,
-        limit: "100"
+        limit: "100",
       });
       if (selectedProfileId) {
         params.set("profileId", selectedProfileId);
       }
-      const response = await fetch(`/api/recommendations/search?${params.toString()}`);
+      const response = await fetch(
+        `/api/recommendations/search?${params.toString()}`,
+      );
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
         setSemanticSearch({
           ids: [],
           scores: {},
           mode: "lexical",
-          warning: body.error ?? "语义搜索失败。"
+          warning: body.error ?? "语义搜索失败。",
         });
         return;
       }
@@ -566,10 +852,13 @@ function RecommendationsPanel({
       setSemanticSearch({
         ids: results.map((item: { id: string }) => item.id),
         scores: Object.fromEntries(
-          results.map((item: { id: string; score: number }) => [item.id, Number(item.score) || 0])
+          results.map((item: { id: string; score: number }) => [
+            item.id,
+            Number(item.score) || 0,
+          ]),
         ),
         mode: body.mode ?? "semantic",
-        warning: body.warning
+        warning: body.warning,
       });
       setSortState({ key: "semantic", direction: "desc" });
     } finally {
@@ -588,12 +877,12 @@ function RecommendationsPanel({
       current.key === key
         ? {
             key,
-            direction: current.direction === "asc" ? "desc" : "asc"
+            direction: current.direction === "asc" ? "desc" : "asc",
           }
         : {
             key,
-            direction: key === "rank" ? "asc" : "desc"
-          }
+            direction: key === "rank" ? "asc" : "desc",
+          },
     );
   }
 
@@ -601,268 +890,429 @@ function RecommendationsPanel({
     setFocusedClusterKey("");
   }
 
-  async function sendPreferenceFeedback(recommendation: Recommendation, action: "like" | "dislike") {
+  async function sendPreferenceFeedback(
+    recommendation: Recommendation,
+    action: "like" | "dislike",
+  ) {
     await onFeedback(recommendation, action);
   }
 
+  async function refreshList() {
+    setIsRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
   return (
-    <section className="panel">
-      <div className="panel-header">
-        <div className="panel-title">
-          <h2>推荐项目</h2>
-          <p>结合规则、GitHub 上下文、AI 判断和反馈进行排序。</p>
-        </div>
-        <div className="muted">当前 {visible.length} / {recommendations.length} 个</div>
-      </div>
-      <div className="list-controls">
-        <form className="search-row" onSubmit={runSemanticSearch}>
-          <Search size={16} />
-          <input
-            className="input"
-            value={semanticQuery}
-            onChange={(event) => setSemanticQuery(event.target.value)}
-            placeholder="语义搜索：例如 适合做托管 SaaS 的 RAG 工具"
-          />
-          <button className="button primary" disabled={isSearching} type="submit">
-            {isSearching ? "搜索中" : "语义搜索"}
-          </button>
-          {semanticSearch && (
-            <button className="button" onClick={clearSemanticSearch} type="button">
-              清除
+    <div className="discovery-workspace">
+      <section className="discovery-overview" aria-label="发现概览">
+        <button
+          className={`metric-button ${activeQuickView === "inbox" ? "active" : ""}`}
+          type="button"
+          onClick={() => applyQuickView("inbox")}
+        >
+          <span className="metric-icon">
+            <Compass size={17} />
+          </span>
+          <span>
+            <small>待判断</small>
+            <strong>{stats.recommendations}</strong>
+          </span>
+        </button>
+        <button
+          className={`metric-button ${activeQuickView === "opportunity" ? "active" : ""}`}
+          type="button"
+          onClick={() => applyQuickView("opportunity")}
+        >
+          <span className="metric-icon opportunity">
+            <CheckCircle2 size={17} />
+          </span>
+          <span>
+            <small>有机会</small>
+            <strong>
+              {
+                profileRecommendations.filter(
+                  (item) => item.opportunity?.suggestedAction,
+                ).length
+              }
+            </strong>
+          </span>
+        </button>
+        <button
+          className={`metric-button ${activeQuickView === "tracked" ? "active" : ""}`}
+          type="button"
+          onClick={() => applyQuickView("tracked")}
+        >
+          <span className="metric-icon tracked">
+            <Star size={17} />
+          </span>
+          <span>
+            <small>重点跟踪</small>
+            <strong>{stats.tracked}</strong>
+          </span>
+        </button>
+        <button
+          className={`metric-button ${activeQuickView === "all" ? "active" : ""}`}
+          type="button"
+          onClick={() => applyQuickView("all")}
+        >
+          <span className="metric-icon total">
+            <Database size={17} />
+          </span>
+          <span>
+            <small>全部结果</small>
+            <strong>{profileRecommendations.length}</strong>
+          </span>
+        </button>
+      </section>
+
+      <section className="panel discovery-panel">
+        <div className="discovery-heading">
+          <div>
+            <h2>项目队列</h2>
+            <p>优先处理高分且尚未表态的项目，打开详情后完成判断。</p>
+          </div>
+          <div className="heading-actions">
+            <span className="result-count">{visible.length} 个结果</span>
+            <button
+              className="button icon"
+              type="button"
+              onClick={() => void refreshList()}
+              disabled={isRefreshing}
+              title="刷新推荐"
+              aria-label="刷新推荐"
+            >
+              <RefreshCw
+                className={isRefreshing ? "spin" : undefined}
+                size={16}
+              />
             </button>
-          )}
-        </form>
-        <div className="filter-row">
-          <label className="field inline-field">
-            <span>机会</span>
-            <select
-              className="select"
-              value={opportunityFilter}
-              onChange={(event) => setOpportunityFilter(event.target.value as OpportunityFilter)}
-            >
-              {opportunityFilterOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field inline-field">
-            <span>分组动作</span>
-            <select
-              className="select"
-              value={groupFilter}
-              onChange={(event) => setGroupFilter(event.target.value as GroupFilter)}
-            >
-              {groupFilterOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field inline-field">
-            <span>状态</span>
-            <select
-              className="select"
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value as RecommendationStatusFilter)}
-            >
-              {recommendationStatusFilterOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field inline-field">
-            <span>喜好</span>
-            <select
-              className="select"
-              value={preferenceFilter}
-              onChange={(event) => setPreferenceFilter(event.target.value as PreferenceFilter)}
-            >
-              {preferenceFilterOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          {focusedClusterKey && (
-            <button className="button" onClick={clearFocusedCluster} type="button">
-              清除当前分组
-            </button>
-          )}
-          {focusedClusterLabel && <span className="muted">当前分组：{focusedClusterLabel}</span>}
-          {semanticSearch?.warning && <span className="muted">{semanticSearch.warning}</span>}
+          </div>
         </div>
-      </div>
-      <div className="table-wrap">
-        <table className="repo-table">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>项目</th>
-              <th>
-                <button className="sort-button" type="button" onClick={() => toggleSort("score")}>
-                  <span>分数</span>
-                  {renderSortIcon(sortState, "score")}
+        <div className="list-controls">
+          <form className="search-row" onSubmit={runSemanticSearch}>
+            <div className="search-box">
+              <Search size={17} aria-hidden="true" />
+              <input
+                className="input"
+                value={semanticQuery}
+                onChange={(event) => setSemanticQuery(event.target.value)}
+                placeholder="描述你要找的项目，例如：适合做托管 SaaS 的 RAG 工具"
+                aria-label="语义搜索项目"
+              />
+            </div>
+            <button
+              className="button primary"
+              disabled={isSearching}
+              type="submit"
+            >
+              {isSearching ? "搜索中" : "语义搜索"}
+            </button>
+            {semanticSearch && (
+              <button
+                className="button"
+                onClick={clearSemanticSearch}
+                type="button"
+              >
+                清除
+              </button>
+            )}
+            <button
+              className={`button filter-toggle ${showAdvancedFilters ? "active" : ""}`}
+              onClick={() => setShowAdvancedFilters((value) => !value)}
+              type="button"
+              aria-expanded={showAdvancedFilters}
+            >
+              <SlidersHorizontal size={16} />
+              <span>
+                筛选{activeFilterCount ? ` ${activeFilterCount}` : ""}
+              </span>
+            </button>
+          </form>
+          {showAdvancedFilters && (
+            <div className="filter-row advanced-filters">
+              <label className="field inline-field">
+                <span>机会</span>
+                <select
+                  className="select"
+                  value={opportunityFilter}
+                  onChange={(event) =>
+                    setOpportunityFilter(
+                      event.target.value as OpportunityFilter,
+                    )
+                  }
+                >
+                  {opportunityFilterOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field inline-field">
+                <span>分组动作</span>
+                <select
+                  className="select"
+                  value={groupFilter}
+                  onChange={(event) =>
+                    setGroupFilter(event.target.value as GroupFilter)
+                  }
+                >
+                  {groupFilterOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field inline-field">
+                <span>状态</span>
+                <select
+                  className="select"
+                  value={statusFilter}
+                  onChange={(event) =>
+                    setStatusFilter(
+                      event.target.value as RecommendationStatusFilter,
+                    )
+                  }
+                >
+                  {recommendationStatusFilterOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field inline-field">
+                <span>喜好</span>
+                <select
+                  className="select"
+                  value={preferenceFilter}
+                  onChange={(event) =>
+                    setPreferenceFilter(event.target.value as PreferenceFilter)
+                  }
+                >
+                  {preferenceFilterOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {focusedClusterKey && (
+                <button
+                  className="button"
+                  onClick={clearFocusedCluster}
+                  type="button"
+                >
+                  清除当前分组
                 </button>
-              </th>
-              <th>机会</th>
-              <th>
-                <button className="sort-button" type="button" onClick={() => toggleSort("stars")}>
-                  <span>Stars</span>
-                  {renderSortIcon(sortState, "stars")}
-                </button>
-              </th>
-              <th>语言</th>
-              <th>分组</th>
-              <th>命中</th>
-              <th>标签</th>
-              <th>解释</th>
-              <th>动作</th>
-              <th>状态</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visible.length === 0 ? (
+              )}
+              {focusedClusterLabel && (
+                <span className="muted">当前分组：{focusedClusterLabel}</span>
+              )}
+              {semanticSearch?.warning && (
+                <span className="muted">{semanticSearch.warning}</span>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="table-wrap">
+          <table className="repo-table">
+            <thead>
               <tr>
-                <td colSpan={13} className="muted">暂无符合当前筛选条件的推荐项目。</td>
-              </tr>
-            ) : pagedVisible.map((recommendation, index) => (
-              <tr key={recommendation.id}>
-                <td className="row-index">{(currentPage - 1) * pageSize + index + 1}</td>
-                <td>
-                  <a className="repo-link" href={recommendation.repo.htmlUrl} target="_blank" rel="noopener noreferrer">
-                    <span>{recommendation.repo.fullName}</span>
-                    <ExternalLink size={14} />
-                  </a>
-                  <div className="muted">{getRecommendationSummaryZh(recommendation)}</div>
-                  {semanticSearch && searchScores[recommendation.id] !== undefined && (
-                    <div className="muted">语义相关 {Math.round(searchScores[recommendation.id] * 100)}</div>
-                  )}
-                </td>
-                <td>
-                  <div className="score">
-                    <strong>{Math.round(recommendation.scores.final * 100)}</strong>
-                    <div className="score-bar">
-                      <div className="score-fill" style={{ width: `${recommendation.scores.final * 100}%` }} />
-                    </div>
-                  </div>
-                </td>
-                <td>
-                  <strong>{recommendation.opportunity?.type ?? "机会待分析"}</strong>
-                  <div className="muted">机会分 {Math.round((recommendation.scores.opportunity ?? recommendation.scores.final) * 100)}</div>
-                  {(() => {
-                    const opportunityAction = opportunityFeedbackAction(recommendation);
-                    if (!opportunityAction) return null;
-                    return (
-                    <button
-                      className="button compact"
-                      type="button"
-                      onClick={() => onFeedback(recommendation, opportunityAction.action)}
-                    >
-                      {opportunityAction.label}
-                    </button>
-                    );
-                  })()}
-                </td>
-                <td>{recommendation.repo.stars.toLocaleString()}</td>
-                <td>{recommendation.repo.primaryLanguage}</td>
-                <td>
-                  <strong>{recommendation.cluster?.label ?? "未分组"}</strong>
-                  {recommendation.cluster?.size ? (
-                    <div className="muted">
-                      {recommendation.cluster.rankInCluster ?? "-"} / {recommendation.cluster.size}
-                    </div>
-                  ) : null}
-                  {recommendation.cluster?.key && (
-                    <button className="button compact" type="button" onClick={() => setFocusedClusterKey(recommendation.cluster?.key ?? "")}>
-                      只看本组
-                    </button>
-                  )}
-                </td>
-                <td>
-                  <TagList items={recommendation.matchedPreferences.slice(0, 3)} />
-                </td>
-                <td>
-                  <TagList items={recommendation.tags ?? []} />
-                  <button className="button compact" type="button" onClick={() => setTagEditorRepo(recommendation)}>
-                    标签
+                <th>项目</th>
+                <th>
+                  <button
+                    className="sort-button"
+                    type="button"
+                    onClick={() => toggleSort("score")}
+                  >
+                    <span>分数</span>
+                    {renderSortIcon(sortState, "score")}
                   </button>
-                </td>
-                <td className="explain-cell">
-                  <strong>{recommendation.reasons[0] ?? "综合评分较高"}</strong>
-                  <div className="muted">
-                    {recommendation.opportunity?.monetizationPaths[0]
-                      ? `变现方向：${recommendation.opportunity.monetizationPaths[0]}`
-                      : `变现分：${Math.round((recommendation.scores.monetization ?? recommendation.scores.final) * 100)}`}
-                  </div>
-                </td>
-                <td>{recommendation.opportunity ? opportunityActionText(recommendation.opportunity.suggestedAction) : "观察"}</td>
-                <td>
-                  <span className={`status ${recommendation.status}`}>{recommendationStatusText(recommendation.status)}</span>
-                </td>
-                <td>
-                  <div className="action-row">
-                    <a className="button icon" href={recommendation.repo.htmlUrl} target="_blank" rel="noopener noreferrer" title="打开 GitHub">
-                      <ExternalLink size={15} />
-                    </a>
-                    <IconButton
-                      title={recommendation.status === "liked" ? "已喜欢" : "喜欢"}
-                      icon={ThumbsUp}
-                      active={recommendation.status === "liked"}
-                      tone="positive"
-                      onClick={() => void sendPreferenceFeedback(recommendation, "like")}
-                    />
-                    <IconButton
-                      title={recommendation.status === "disliked" ? "已不喜欢" : "不喜欢"}
-                      icon={ThumbsDown}
-                      active={recommendation.status === "disliked"}
-                      tone="danger"
-                      onClick={() => void sendPreferenceFeedback(recommendation, "dislike")}
-                    />
-                    {recommendation.status === "hidden" ? (
-                      <IconButton title="恢复展示" icon={Eye} onClick={() => onFeedback(recommendation, "restore")} />
-                    ) : (
-                      <IconButton title="移出展示" icon={EyeOff} onClick={() => onFeedback(recommendation, "hide")} />
-                    )}
-                    <button className="button" type="button" onClick={() => onSelect(recommendation)}>
-                      详情
-                    </button>
-                  </div>
-                </td>
+                </th>
+                <th>
+                  <button
+                    className="sort-button"
+                    type="button"
+                    onClick={() => toggleSort("stars")}
+                  >
+                    <span>Stars</span>
+                    {renderSortIcon(sortState, "stars")}
+                  </button>
+                </th>
+                <th>语言</th>
+                <th>判断依据</th>
+                <th>状态</th>
+                <th>操作</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {visible.length > pageSize && (
-        <div className="pagination-row">
-          <button className="button" type="button" disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
-            上一页
-          </button>
-          <span className="muted">第 {currentPage} / {totalPages} 页，每页 {pageSize} 条</span>
-          <button className="button" type="button" disabled={currentPage >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>
-            下一页
-          </button>
+            </thead>
+            <tbody>
+              {visible.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="empty-table-cell">
+                    <Search size={22} />
+                    <strong>没有符合条件的项目</strong>
+                    <span>调整搜索词或清除筛选后重试。</span>
+                  </td>
+                </tr>
+              ) : (
+                pagedVisible.map((recommendation, index) => (
+                  <tr key={recommendation.id}>
+                    <td className="project-cell">
+                      <a
+                        className="repo-link"
+                        href={recommendation.repo.htmlUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <span>{recommendation.repo.fullName}</span>
+                        <ExternalLink size={14} />
+                      </a>
+                      <div className="repo-summary">
+                        {getRecommendationSummaryZh(recommendation)}
+                      </div>
+                      <div className="repo-meta">
+                        <span>#{(currentPage - 1) * pageSize + index + 1}</span>
+                        <span>{recommendation.cluster?.label ?? "未分组"}</span>
+                        {(recommendation.tags ?? []).slice(0, 2).map((tag) => (
+                          <span key={tag}>{tag}</span>
+                        ))}
+                      </div>
+                      {semanticSearch &&
+                        searchScores[recommendation.id] !== undefined && (
+                          <div className="muted">
+                            语义相关{" "}
+                            {Math.round(searchScores[recommendation.id] * 100)}
+                          </div>
+                        )}
+                    </td>
+                    <td>
+                      <div className="score">
+                        <strong>
+                          {Math.round(recommendation.scores.final * 100)}
+                        </strong>
+                        <div className="score-bar">
+                          <div
+                            className="score-fill"
+                            style={{
+                              width: `${recommendation.scores.final * 100}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </td>
+                    <td>{recommendation.repo.stars.toLocaleString()}</td>
+                    <td>{recommendation.repo.primaryLanguage}</td>
+                    <td className="reason-cell">
+                      <span className="opportunity-label">
+                        {recommendation.opportunity?.type ?? "机会待分析"}
+                      </span>
+                      <strong>
+                        {recommendation.reasons[0] ?? "综合评分较高"}
+                      </strong>
+                      <span>
+                        {recommendation.opportunity
+                          ? opportunityActionText(
+                              recommendation.opportunity.suggestedAction,
+                            )
+                          : "建议继续观察"}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`status ${recommendation.status}`}>
+                        {recommendationStatusText(recommendation.status)}
+                      </span>
+                    </td>
+                    <td>
+                      <div className="action-row">
+                        <IconButton
+                          title={
+                            recommendation.status === "liked"
+                              ? "已喜欢"
+                              : "喜欢"
+                          }
+                          icon={ThumbsUp}
+                          active={recommendation.status === "liked"}
+                          tone="positive"
+                          onClick={() =>
+                            void sendPreferenceFeedback(recommendation, "like")
+                          }
+                        />
+                        <IconButton
+                          title={
+                            recommendation.status === "disliked"
+                              ? "已不喜欢"
+                              : "不喜欢"
+                          }
+                          icon={ThumbsDown}
+                          active={recommendation.status === "disliked"}
+                          tone="danger"
+                          onClick={() =>
+                            void sendPreferenceFeedback(
+                              recommendation,
+                              "dislike",
+                            )
+                          }
+                        />
+                        <button
+                          className="button detail-button"
+                          type="button"
+                          onClick={() => onSelect(recommendation)}
+                        >
+                          查看详情
+                          <ChevronRight size={15} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
-      )}
-      {tagEditorRepo && (
-        <RecommendationTagDialog
-          recommendation={tagEditorRepo}
-          recommendations={recommendations}
-          onClose={() => setTagEditorRepo(null)}
-          onUpdated={(recommendation) => {
-            onTagsUpdated(recommendation);
-            setTagEditorRepo(null);
-          }}
-        />
-      )}
-    </section>
+        {visible.length > pageSize && (
+          <div className="pagination-row">
+            <button
+              className="button"
+              type="button"
+              disabled={currentPage <= 1}
+              onClick={() => setPage((value) => Math.max(1, value - 1))}
+            >
+              上一页
+            </button>
+            <span className="muted">
+              第 {currentPage} / {totalPages} 页，每页 {pageSize} 条
+            </span>
+            <button
+              className="button"
+              type="button"
+              disabled={currentPage >= totalPages}
+              onClick={() =>
+                setPage((value) => Math.min(totalPages, value + 1))
+              }
+            >
+              下一页
+            </button>
+          </div>
+        )}
+        {tagEditorRepo && (
+          <RecommendationTagDialog
+            recommendation={tagEditorRepo}
+            recommendations={recommendations}
+            onClose={() => setTagEditorRepo(null)}
+            onUpdated={(recommendation) => {
+              onTagsUpdated(recommendation);
+              setTagEditorRepo(null);
+            }}
+          />
+        )}
+      </section>
+    </div>
   );
 }
 
@@ -870,12 +1320,15 @@ function RepoDrawer({
   recommendation,
   recommendations,
   onClose,
-  onFeedback
+  onFeedback,
 }: {
   recommendation: Recommendation;
   recommendations: Recommendation[];
   onClose: () => void;
-  onFeedback: (recommendation: Recommendation, action: FeedbackAction) => Promise<void>;
+  onFeedback: (
+    recommendation: Recommendation,
+    action: FeedbackAction,
+  ) => Promise<void>;
 }) {
   const similarRecommendations = recommendations.filter(
     (item) =>
@@ -883,7 +1336,7 @@ function RepoDrawer({
       item.cluster?.key &&
       item.cluster.key === recommendation.cluster?.key &&
       item.status !== "hidden" &&
-      item.status !== "abandoned"
+      item.status !== "abandoned",
   );
 
   async function hideSimilarRecommendations() {
@@ -893,79 +1346,191 @@ function RepoDrawer({
   }
 
   return (
-    <div className="drawer-backdrop">
-      <aside className="drawer" aria-label="项目详情">
+    <div
+      className="drawer-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <aside
+        className="drawer"
+        aria-label="项目详情"
+        role="dialog"
+        aria-modal="true"
+      >
         <div className="drawer-header">
           <div>
-            <a className="repo-link" href={recommendation.repo.htmlUrl} target="_blank" rel="noopener noreferrer">
+            <a
+              className="repo-link"
+              href={recommendation.repo.htmlUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
               <span>{recommendation.repo.fullName}</span>
               <ExternalLink size={15} />
             </a>
-            <p className="muted">{getRecommendationSummaryZh(recommendation)}</p>
+            <p className="muted">
+              {getRecommendationSummaryZh(recommendation)}
+            </p>
           </div>
-          <button className="button icon" onClick={onClose} type="button" aria-label="关闭">
+          <button
+            className="button icon"
+            onClick={onClose}
+            type="button"
+            aria-label="关闭"
+          >
             <X size={16} />
           </button>
         </div>
         <div className="drawer-content">
           <div className="action-row">
-            <a className="button primary" href={recommendation.repo.htmlUrl} target="_blank" rel="noopener noreferrer">
+            <a
+              className="button primary"
+              href={recommendation.repo.htmlUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
               <ExternalLink size={15} />
               <span>打开 GitHub</span>
             </a>
-            <button className="button" onClick={() => onFeedback(recommendation, "to_validate")} type="button">
+            <button
+              className="button"
+              onClick={() => onFeedback(recommendation, "to_validate")}
+              type="button"
+            >
               <ClipboardCheck size={15} />
               待验证
             </button>
-            <button className="button" onClick={() => onFeedback(recommendation, "validating")} type="button">验证中</button>
-            <button className="button" onClick={() => onFeedback(recommendation, "monetization_ready")} type="button">准备变现</button>
-            <button className="button" onClick={() => onFeedback(recommendation, "like")} type="button">
+            <button
+              className="button"
+              onClick={() => onFeedback(recommendation, "validating")}
+              type="button"
+            >
+              验证中
+            </button>
+            <button
+              className="button"
+              onClick={() => onFeedback(recommendation, "monetization_ready")}
+              type="button"
+            >
+              准备变现
+            </button>
+            <button
+              className="button"
+              onClick={() => onFeedback(recommendation, "like")}
+              type="button"
+            >
               <ThumbsUp size={15} />
               {recommendation.status === "liked" ? "已喜欢" : "喜欢"}
             </button>
-            <button className="button" onClick={() => onFeedback(recommendation, "dislike")} type="button">
+            <button
+              className="button"
+              onClick={() => onFeedback(recommendation, "dislike")}
+              type="button"
+            >
               <ThumbsDown size={15} />
               {recommendation.status === "disliked" ? "已不喜欢" : "不喜欢"}
             </button>
-            <button className="button" onClick={() => onFeedback(recommendation, "track")} type="button">跟踪</button>
-            <button className="button" onClick={() => onFeedback(recommendation, "abandon")} type="button">放弃</button>
-            <button className="button" onClick={() => void hideSimilarRecommendations()} disabled={similarRecommendations.length === 0} type="button">
+            <button
+              className="button"
+              onClick={() => onFeedback(recommendation, "track")}
+              type="button"
+            >
+              跟踪
+            </button>
+            <button
+              className="button"
+              onClick={() => onFeedback(recommendation, "abandon")}
+              type="button"
+            >
+              放弃
+            </button>
+            <button
+              className="button"
+              onClick={() => void hideSimilarRecommendations()}
+              disabled={similarRecommendations.length === 0}
+              type="button"
+            >
               隐藏类似项目
             </button>
             {recommendation.status === "hidden" ? (
-              <button className="button" onClick={() => onFeedback(recommendation, "restore")} type="button">恢复展示</button>
+              <button
+                className="button"
+                onClick={() => onFeedback(recommendation, "restore")}
+                type="button"
+              >
+                恢复展示
+              </button>
             ) : (
-              <button className="button" onClick={() => onFeedback(recommendation, "hide")} type="button">移出展示</button>
+              <button
+                className="button"
+                onClick={() => onFeedback(recommendation, "hide")}
+                type="button"
+              >
+                移出展示
+              </button>
             )}
           </div>
-          <DetailSection title="当前状态">{recommendationStatusText(recommendation.status)}</DetailSection>
+          <DetailSection title="当前状态">
+            {recommendationStatusText(recommendation.status)}
+          </DetailSection>
           {recommendation.cluster && (
             <DetailSection title="项目分组">
               {`${recommendation.cluster.label}。${recommendation.cluster.reason} 组内第 ${recommendation.cluster.rankInCluster ?? "-"} / ${recommendation.cluster.size ?? 1}。`}
             </DetailSection>
           )}
-          <DetailSection title="项目摘要">{getRecommendationSummaryZh(recommendation)}</DetailSection>
+          <DetailSection title="项目摘要">
+            {getRecommendationSummaryZh(recommendation)}
+          </DetailSection>
           {recommendation.opportunity && (
             <>
               <DetailSection title="商业机会">
                 {`${recommendation.opportunity.type}，建议动作：${opportunityActionText(recommendation.opportunity.suggestedAction)}。机会分 ${Math.round(recommendation.opportunity.score * 100)}，变现潜力 ${Math.round(recommendation.opportunity.monetizationScore * 100)}。`}
               </DetailSection>
-              <ListSection title="目标客户" items={recommendation.opportunity.targetCustomers} />
-              <ListSection title="变现路径" items={recommendation.opportunity.monetizationPaths} />
-              <ChecklistSection title="机会验证清单" items={recommendation.opportunity.validationSteps} />
-              <ListSection title="机会依据" items={recommendation.opportunity.evidence} />
+              <ListSection
+                title="目标客户"
+                items={recommendation.opportunity.targetCustomers}
+              />
+              <ListSection
+                title="变现路径"
+                items={recommendation.opportunity.monetizationPaths}
+              />
+              <ChecklistSection
+                title="机会验证清单"
+                items={recommendation.opportunity.validationSteps}
+              />
+              <ListSection
+                title="机会依据"
+                items={recommendation.opportunity.evidence}
+              />
             </>
           )}
           {recommendation.repo.description && (
-            <DetailSection title="GitHub 原始描述">{recommendation.repo.description}</DetailSection>
+            <DetailSection title="GitHub 原始描述">
+              {recommendation.repo.description}
+            </DetailSection>
           )}
           <ListSection title="推荐原因" items={recommendation.reasons} />
-          <ListSection title="匹配信号" items={buildMatchSignals(recommendation)} />
+          <ListSection
+            title="匹配信号"
+            items={buildMatchSignals(recommendation)}
+          />
           <ListSection title="风险点" items={recommendation.risks} />
-          <ListSection title="关联我的项目" items={recommendation.relatedUserRepos.map((repo) => `${repo.fullName}: ${repo.reason}`)} />
+          <ListSection
+            title="关联我的项目"
+            items={recommendation.relatedUserRepos.map(
+              (repo) => `${repo.fullName}: ${repo.reason}`,
+            )}
+          />
           <ListSection
             title="同组类似项目"
-            items={similarRecommendations.slice(0, 8).map((item) => `${item.repo.fullName}：${getRecommendationSummaryZh(item)}`)}
+            items={similarRecommendations
+              .slice(0, 8)
+              .map(
+                (item) =>
+                  `${item.repo.fullName}：${getRecommendationSummaryZh(item)}`,
+              )}
           />
         </div>
       </aside>
@@ -977,7 +1542,7 @@ function RecommendationTagDialog({
   recommendation,
   recommendations,
   onClose,
-  onUpdated
+  onUpdated,
 }: {
   recommendation: Recommendation;
   recommendations: Recommendation[];
@@ -985,8 +1550,11 @@ function RecommendationTagDialog({
   onUpdated: (recommendation: Recommendation) => void;
 }) {
   const existingTags = useMemo(
-    () => [...new Set(recommendations.flatMap((item) => item.tags ?? []))].sort((a, b) => a.localeCompare(b)),
-    [recommendations]
+    () =>
+      [...new Set(recommendations.flatMap((item) => item.tags ?? []))].sort(
+        (a, b) => a.localeCompare(b),
+      ),
+    [recommendations],
   );
   const [tags, setTags] = useState<string[]>(recommendation.tags ?? []);
   const [newTag, setNewTag] = useState("");
@@ -997,7 +1565,7 @@ function RecommendationTagDialog({
     setTags((current) =>
       current.includes(tag)
         ? current.filter((item) => item !== tag)
-        : [...current, tag]
+        : [...current, tag],
     );
   }
 
@@ -1016,11 +1584,14 @@ function RecommendationTagDialog({
     setIsSaving(true);
     setMessage("正在保存标签...");
     try {
-      const response = await fetch(`/api/recommendations/${recommendation.id}/tags`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tags })
-      });
+      const response = await fetch(
+        `/api/recommendations/${recommendation.id}/tags`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tags }),
+        },
+      );
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
         setMessage(body.error ?? "标签保存失败。");
@@ -1040,7 +1611,13 @@ function RecommendationTagDialog({
             <h2>项目标签</h2>
             <p>{recommendation.repo.fullName}</p>
           </div>
-          <button className="button icon" type="button" onClick={onClose} title="关闭" aria-label="关闭">
+          <button
+            className="button icon"
+            type="button"
+            onClick={onClose}
+            title="关闭"
+            aria-label="关闭"
+          >
             <X size={16} />
           </button>
         </div>
@@ -1053,7 +1630,9 @@ function RecommendationTagDialog({
               onChange={(event) => setNewTag(event.target.value)}
               placeholder="新增标签，例如：SaaS、RAG、待验证"
             />
-            <button className="button" type="button" onClick={addTag}>新增</button>
+            <button className="button" type="button" onClick={addTag}>
+              新增
+            </button>
           </div>
           <div className="row-item">
             <strong>已选标签</strong>
@@ -1064,21 +1643,29 @@ function RecommendationTagDialog({
             <div className="tag-choice-list">
               {existingTags.length === 0 ? (
                 <span className="muted">暂无已添加过的标签。</span>
-              ) : existingTags.map((tag) => (
-                <button
-                  className={`tag-choice ${tags.includes(tag) ? "active" : ""}`}
-                  key={tag}
-                  type="button"
-                  onClick={() => toggleTag(tag)}
-                >
-                  {tag}
-                </button>
-              ))}
+              ) : (
+                existingTags.map((tag) => (
+                  <button
+                    className={`tag-choice ${tags.includes(tag) ? "active" : ""}`}
+                    key={tag}
+                    type="button"
+                    onClick={() => toggleTag(tag)}
+                  >
+                    {tag}
+                  </button>
+                ))
+              )}
             </div>
           </div>
           <div className="form-actions">
-            <button className="button" type="button" onClick={onClose}>关闭</button>
-            <button className="button primary" type="submit" disabled={isSaving}>
+            <button className="button" type="button" onClick={onClose}>
+              关闭
+            </button>
+            <button
+              className="button primary"
+              type="submit"
+              disabled={isSaving}
+            >
               {isSaving ? "保存中" : "保存标签"}
             </button>
           </div>
@@ -1092,7 +1679,7 @@ function ProfilesPanel({
   profiles,
   selectedProfile,
   providers,
-  onUpdated
+  onUpdated,
 }: {
   profiles: DiscoveryProfile[];
   selectedProfile?: DiscoveryProfile;
@@ -1101,22 +1688,43 @@ function ProfilesPanel({
 }) {
   const [message, setMessage] = useState("");
   const [enabled, setEnabled] = useState(selectedProfile?.enabled ?? true);
-  const [chatProviderId, setChatProviderId] = useState(selectedProfile?.config.ai.chatProviderId ?? "");
-  const [embeddingProviderId, setEmbeddingProviderId] = useState(selectedProfile?.config.ai.embeddingProviderId ?? "");
-  const [sources, setSources] = useState(normalizeDiscoverySources(selectedProfile?.config.sources));
+  const [chatProviderId, setChatProviderId] = useState(
+    selectedProfile?.config.ai.chatProviderId ?? "",
+  );
+  const [embeddingProviderId, setEmbeddingProviderId] = useState(
+    selectedProfile?.config.ai.embeddingProviderId ?? "",
+  );
+  const [sources, setSources] = useState(
+    normalizeDiscoverySources(selectedProfile?.config.sources),
+  );
   const [schedule, setSchedule] = useState(selectedProfile?.config.schedule);
   const [limits, setLimits] = useState(selectedProfile?.config.limits);
-  const [preferences, setPreferences] = useState(selectedProfile?.config.preferences);
-  const [opportunity, setOpportunity] = useState(normalizeOpportunityProfile(selectedProfile?.config.opportunity));
-  const [resourcePolicy, setResourcePolicy] = useState(selectedProfile?.config.resourcePolicy);
+  const [preferences, setPreferences] = useState(
+    selectedProfile?.config.preferences,
+  );
+  const [opportunity, setOpportunity] = useState(
+    normalizeOpportunityProfile(selectedProfile?.config.opportunity),
+  );
+  const [resourcePolicy, setResourcePolicy] = useState(
+    selectedProfile?.config.resourcePolicy,
+  );
   const [naturalLanguagePrompt, setNaturalLanguagePrompt] = useState("");
-  const [naturalLanguageMode, setNaturalLanguageMode] = useState<"merge" | "replace">("merge");
-  const [naturalLanguagePreview, setNaturalLanguagePreview] = useState<NaturalLanguagePreview | null>(null);
+  const [naturalLanguageMode, setNaturalLanguageMode] = useState<
+    "merge" | "replace"
+  >("merge");
+  const [naturalLanguagePreview, setNaturalLanguagePreview] =
+    useState<NaturalLanguagePreview | null>(null);
   const [isGeneratingPreferences, setIsGeneratingPreferences] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
-  const chatProviders = providers.filter((provider) => provider.kind === "chat" && provider.enabled);
-  const embeddingProviders = providers.filter((provider) => provider.kind === "embedding" && provider.enabled);
-  const plannedAdapters = discoverySourceCatalog.filter((source) => source.capability === "planned_adapter");
+  const chatProviders = providers.filter(
+    (provider) => provider.kind === "chat" && provider.enabled,
+  );
+  const embeddingProviders = providers.filter(
+    (provider) => provider.kind === "embedding" && provider.enabled,
+  );
+  const plannedAdapters = discoverySourceCatalog.filter(
+    (source) => source.capability === "planned_adapter",
+  );
 
   useEffect(() => {
     if (!selectedProfile) return;
@@ -1127,19 +1735,33 @@ function ProfilesPanel({
     setSchedule(selectedProfile.config.schedule);
     setLimits(selectedProfile.config.limits);
     setPreferences(selectedProfile.config.preferences);
-    setOpportunity(normalizeOpportunityProfile(selectedProfile.config.opportunity));
+    setOpportunity(
+      normalizeOpportunityProfile(selectedProfile.config.opportunity),
+    );
     setResourcePolicy(selectedProfile.config.resourcePolicy);
     setNaturalLanguagePreview(null);
   }, [selectedProfile]);
 
-  function updateSource(id: string, patch: { enabled?: boolean; weight?: number }) {
+  function updateSource(
+    id: string,
+    patch: { enabled?: boolean; weight?: number },
+  ) {
     setSources((current) =>
-      current.map((source) => (source.id === id ? { ...source, ...patch } : source))
+      current.map((source) =>
+        source.id === id ? { ...source, ...patch } : source,
+      ),
     );
   }
 
   async function saveProfile() {
-    if (!selectedProfile || !schedule || !limits || !preferences || !resourcePolicy) return;
+    if (
+      !selectedProfile ||
+      !schedule ||
+      !limits ||
+      !preferences ||
+      !resourcePolicy
+    )
+      return;
     setIsSavingProfile(true);
     setMessage("正在保存发现配置...");
     const nextConfig = {
@@ -1152,15 +1774,15 @@ function ProfilesPanel({
       sources,
       ai: {
         chatProviderId,
-        embeddingProviderId
-      }
+        embeddingProviderId,
+      },
     };
     try {
-    const response = await fetch(`/api/profiles/${selectedProfile.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled, config: nextConfig })
-    });
+      const response = await fetch(`/api/profiles/${selectedProfile.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled, config: nextConfig }),
+      });
       const body = await response.json().catch(() => ({}));
       if (response.ok) {
         onUpdated(body);
@@ -1169,7 +1791,11 @@ function ProfilesPanel({
         setMessage(body.error ?? "发现配置保存失败。");
       }
     } catch (error) {
-      setMessage(error instanceof Error ? `发现配置保存失败：${error.message}` : "发现配置保存失败。");
+      setMessage(
+        error instanceof Error
+          ? `发现配置保存失败：${error.message}`
+          : "发现配置保存失败。",
+      );
     } finally {
       setIsSavingProfile(false);
     }
@@ -1180,14 +1806,17 @@ function ProfilesPanel({
     setIsGeneratingPreferences(true);
     setMessage("");
     try {
-      const response = await fetch(`/api/profiles/${selectedProfile.id}/natural-language`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: naturalLanguagePrompt,
-          mode: naturalLanguageMode
-        })
-      });
+      const response = await fetch(
+        `/api/profiles/${selectedProfile.id}/natural-language`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: naturalLanguagePrompt,
+            mode: naturalLanguageMode,
+          }),
+        },
+      );
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
         setMessage(body.error ?? "生成发现条件失败。");
@@ -1205,10 +1834,18 @@ function ProfilesPanel({
     const nextPreferences =
       mode === naturalLanguagePreview.mode
         ? naturalLanguagePreview.preview.preferences
-        : mergePreferenceState(preferences, naturalLanguagePreview.generated, mode);
+        : mergePreferenceState(
+            preferences,
+            naturalLanguagePreview.generated,
+            mode,
+          );
     setPreferences(nextPreferences);
     setNaturalLanguageMode(mode);
-    setMessage(mode === "merge" ? "已合并生成条件，请保存发现配置。" : "已覆盖为生成条件，请保存发现配置。");
+    setMessage(
+      mode === "merge"
+        ? "已合并生成条件，请保存发现配置。"
+        : "已覆盖为生成条件，请保存发现配置。",
+    );
   }
 
   return (
@@ -1225,12 +1862,16 @@ function ProfilesPanel({
           {profiles.map((profile) => (
             <div className="row-item" key={profile.id}>
               <strong>{profile.name}</strong>
-              <span className="muted">{profile.enabled ? "已启用" : "已停用"}</span>
-              <TagList items={[
-                `Chat: ${providerName(providers, profile.config.ai.chatProviderId)}`,
-                `Embedding: ${providerName(providers, profile.config.ai.embeddingProviderId)}`,
-                `扫描源: ${normalizeDiscoverySources(profile.config.sources).filter((source) => source.enabled).length}`
-              ]} />
+              <span className="muted">
+                {profile.enabled ? "已启用" : "已停用"}
+              </span>
+              <TagList
+                items={[
+                  `Chat: ${providerName(providers, profile.config.ai.chatProviderId)}`,
+                  `Embedding: ${providerName(providers, profile.config.ai.embeddingProviderId)}`,
+                  `扫描源: ${normalizeDiscoverySources(profile.config.sources).filter((source) => source.enabled).length}`,
+                ]}
+              />
             </div>
           ))}
           {selectedProfile && (
@@ -1238,254 +1879,744 @@ function ProfilesPanel({
               <label className="field checkbox-field">
                 <span>启用状态</span>
                 <span className="checkbox-row">
-                  <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(event) => setEnabled(event.target.checked)}
+                  />
                   参与扫描
                 </span>
               </label>
               <label className="field">
                 <span>可用 Chat 配置</span>
-                <select className="select" value={chatProviderId} onChange={(event) => setChatProviderId(event.target.value)}>
-                  {!chatProviders.some((provider) => provider.id === chatProviderId) && (
-                    <option value={chatProviderId}>当前绑定：{providerName(providers, chatProviderId)}</option>
+                <select
+                  className="select"
+                  value={chatProviderId}
+                  onChange={(event) => setChatProviderId(event.target.value)}
+                >
+                  {!chatProviders.some(
+                    (provider) => provider.id === chatProviderId,
+                  ) && (
+                    <option value={chatProviderId}>
+                      当前绑定：{providerName(providers, chatProviderId)}
+                    </option>
                   )}
-                  {chatProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                  {chatProviders.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.name}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="field">
                 <span>可用 Embedding 配置</span>
-                <select className="select" value={embeddingProviderId} onChange={(event) => setEmbeddingProviderId(event.target.value)}>
-                  {!embeddingProviders.some((provider) => provider.id === embeddingProviderId) && (
-                    <option value={embeddingProviderId}>当前绑定：{providerName(providers, embeddingProviderId)}</option>
+                <select
+                  className="select"
+                  value={embeddingProviderId}
+                  onChange={(event) =>
+                    setEmbeddingProviderId(event.target.value)
+                  }
+                >
+                  {!embeddingProviders.some(
+                    (provider) => provider.id === embeddingProviderId,
+                  ) && (
+                    <option value={embeddingProviderId}>
+                      当前绑定：{providerName(providers, embeddingProviderId)}
+                    </option>
                   )}
-                  {embeddingProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                  {embeddingProviders.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.name}
+                    </option>
+                  ))}
                 </select>
               </label>
               <div className="form-actions">
-                <button className="button primary" type="button" onClick={saveProfile} disabled={isSavingProfile}>
-                  {isSavingProfile ? <RefreshCw size={15} /> : <Save size={15} />}
+                <button
+                  className="button primary"
+                  type="button"
+                  onClick={saveProfile}
+                  disabled={isSavingProfile}
+                >
+                  {isSavingProfile ? (
+                    <RefreshCw size={15} />
+                  ) : (
+                    <Save size={15} />
+                  )}
                   {isSavingProfile ? "保存中" : "保存发现配置"}
                 </button>
               </div>
             </div>
           )}
-          {selectedProfile && schedule && limits && preferences && resourcePolicy && (
-            <div className="stack">
-            <section className="sub-panel">
-              <div className="panel-header compact-header">
-                <div className="panel-title">
-                  <h3>AI 生成发现条件</h3>
-                  <p>用中文描述想找的 GitHub 项目，系统会转换成关键词、topic、语言和过滤条件。</p>
-                </div>
-              </div>
-              <div className="form-grid">
-                <Field label="自然语言需求">
-                  <textarea
-                    className="input textarea"
-                    value={naturalLanguagePrompt}
-                    onChange={(event) => setNaturalLanguagePrompt(event.target.value)}
-                    placeholder="例如：找最近半年活跃、适合做 AI agent 工作流编排的 TypeScript 项目，不要加密货币相关项目，stars 超过 500"
-                  />
-                </Field>
-                <Field label="应用方式">
-                  <select className="select" value={naturalLanguageMode} onChange={(event) => setNaturalLanguageMode(event.target.value as "merge" | "replace")}>
-                    <option value="merge">合并到当前配置</option>
-                    <option value="replace">覆盖当前配置</option>
-                  </select>
-                </Field>
-                <div className="form-actions">
-                  <button className="button primary" type="button" disabled={isGeneratingPreferences || !naturalLanguagePrompt.trim()} onClick={generatePreferencesFromText}>
-                    {isGeneratingPreferences ? <RefreshCw size={15} /> : <Brain size={15} />}
-                    生成条件
-                  </button>
-                </div>
-              </div>
-              {naturalLanguagePreview && (
-                <div className="preview-block">
-                  <PreferencePreview preferences={naturalLanguagePreview.preview.preferences} notes={naturalLanguagePreview.generated.notes ?? []} />
-                  <QueryPlanPreview plans={naturalLanguagePreview.preview.queryPlans} />
-                  <div className="action-row wrap">
-                    <button className="button" type="button" onClick={() => applyGeneratedPreferences("merge")}>合并应用</button>
-                    <button className="button" type="button" onClick={() => applyGeneratedPreferences("replace")}>覆盖应用</button>
+          {selectedProfile &&
+            schedule &&
+            limits &&
+            preferences &&
+            resourcePolicy && (
+              <div className="stack">
+                <section className="sub-panel">
+                  <div className="panel-header compact-header">
+                    <div className="panel-title">
+                      <h3>AI 生成发现条件</h3>
+                      <p>
+                        用中文描述想找的 GitHub
+                        项目，系统会转换成关键词、topic、语言和过滤条件。
+                      </p>
+                    </div>
                   </div>
-                </div>
-              )}
-            </section>
-            <section className="sub-panel">
-              <div className="panel-header compact-header">
-                <div className="panel-title">
-                  <h3>变现机会配置</h3>
-                  <p>把发现目标从技术兴趣切换为可验证、可交付、可变现的项目机会。</p>
+                  <div className="form-grid">
+                    <Field label="自然语言需求">
+                      <textarea
+                        className="input textarea"
+                        value={naturalLanguagePrompt}
+                        onChange={(event) =>
+                          setNaturalLanguagePrompt(event.target.value)
+                        }
+                        placeholder="例如：找最近半年活跃、适合做 AI agent 工作流编排的 TypeScript 项目，不要加密货币相关项目，stars 超过 500"
+                      />
+                    </Field>
+                    <Field label="应用方式">
+                      <select
+                        className="select"
+                        value={naturalLanguageMode}
+                        onChange={(event) =>
+                          setNaturalLanguageMode(
+                            event.target.value as "merge" | "replace",
+                          )
+                        }
+                      >
+                        <option value="merge">合并到当前配置</option>
+                        <option value="replace">覆盖当前配置</option>
+                      </select>
+                    </Field>
+                    <div className="form-actions">
+                      <button
+                        className="button primary"
+                        type="button"
+                        disabled={
+                          isGeneratingPreferences ||
+                          !naturalLanguagePrompt.trim()
+                        }
+                        onClick={generatePreferencesFromText}
+                      >
+                        {isGeneratingPreferences ? (
+                          <RefreshCw size={15} />
+                        ) : (
+                          <Brain size={15} />
+                        )}
+                        生成条件
+                      </button>
+                    </div>
+                  </div>
+                  {naturalLanguagePreview && (
+                    <div className="preview-block">
+                      <PreferencePreview
+                        preferences={naturalLanguagePreview.preview.preferences}
+                        notes={naturalLanguagePreview.generated.notes ?? []}
+                      />
+                      <QueryPlanPreview
+                        plans={naturalLanguagePreview.preview.queryPlans}
+                      />
+                      <div className="action-row wrap">
+                        <button
+                          className="button"
+                          type="button"
+                          onClick={() => applyGeneratedPreferences("merge")}
+                        >
+                          合并应用
+                        </button>
+                        <button
+                          className="button"
+                          type="button"
+                          onClick={() => applyGeneratedPreferences("replace")}
+                        >
+                          覆盖应用
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </section>
+                <section className="sub-panel">
+                  <div className="panel-header compact-header">
+                    <div className="panel-title">
+                      <h3>变现机会配置</h3>
+                      <p>
+                        把发现目标从技术兴趣切换为可验证、可交付、可变现的项目机会。
+                      </p>
+                    </div>
+                  </div>
+                  <div className="form-grid">
+                    <Field label="变现目标">
+                      <input
+                        className="input"
+                        value={opportunity.goals.join(", ")}
+                        onChange={(event) =>
+                          setOpportunity({
+                            ...opportunity,
+                            goals: splitCsv(event.target.value),
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="目标客户">
+                      <input
+                        className="input"
+                        value={opportunity.targetCustomers.join(", ")}
+                        onChange={(event) =>
+                          setOpportunity({
+                            ...opportunity,
+                            targetCustomers: splitCsv(event.target.value),
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="变现方式">
+                      <input
+                        className="input"
+                        value={opportunity.monetizationChannels.join(", ")}
+                        onChange={(event) =>
+                          setOpportunity({
+                            ...opportunity,
+                            monetizationChannels: splitCsv(event.target.value),
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="偏好优势">
+                      <input
+                        className="input"
+                        value={opportunity.preferredAdvantages.join(", ")}
+                        onChange={(event) =>
+                          setOpportunity({
+                            ...opportunity,
+                            preferredAdvantages: splitCsv(event.target.value),
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="排除信号">
+                      <input
+                        className="input"
+                        value={opportunity.excludeSignals.join(", ")}
+                        onChange={(event) =>
+                          setOpportunity({
+                            ...opportunity,
+                            excludeSignals: splitCsv(event.target.value),
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="最低机会分">
+                      <input
+                        className="input"
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={opportunity.minOpportunityScore}
+                        onChange={(event) =>
+                          setOpportunity({
+                            ...opportunity,
+                            minOpportunityScore: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </Field>
+                  </div>
+                </section>
+                <div className="form-grid">
+                  <Field label="调度类型">
+                    <select
+                      className="select"
+                      value={schedule.type}
+                      onChange={(event) =>
+                        setSchedule({
+                          ...schedule,
+                          type: event.target.value as "cron" | "interval",
+                        })
+                      }
+                    >
+                      <option value="cron">cron</option>
+                      <option value="interval">interval</option>
+                    </select>
+                  </Field>
+                  <Field label="Cron">
+                    <input
+                      className="input"
+                      value={schedule.cron ?? ""}
+                      onChange={(event) =>
+                        setSchedule({ ...schedule, cron: event.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field label="间隔小时">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={schedule.intervalHours ?? 24}
+                      onChange={(event) =>
+                        setSchedule({
+                          ...schedule,
+                          intervalHours: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="时区">
+                    <input
+                      className="input"
+                      value={schedule.timezone}
+                      onChange={(event) =>
+                        setSchedule({
+                          ...schedule,
+                          timezone: event.target.value,
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="开始时间">
+                    <input
+                      className="input"
+                      value={schedule.startAt ?? ""}
+                      onChange={(event) =>
+                        setSchedule({
+                          ...schedule,
+                          startAt: event.target.value,
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="最大运行分钟">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={schedule.maxRuntimeMinutes}
+                      onChange={(event) =>
+                        setSchedule({
+                          ...schedule,
+                          maxRuntimeMinutes: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="漏跑策略">
+                    <select
+                      className="select"
+                      value={schedule.missedRunPolicy}
+                      onChange={(event) =>
+                        setSchedule({
+                          ...schedule,
+                          missedRunPolicy: event.target
+                            .value as DiscoveryProfile["config"]["schedule"]["missedRunPolicy"],
+                        })
+                      }
+                    >
+                      <option value="skip">跳过漏跑周期</option>
+                      <option value="run_once">补跑一次</option>
+                      <option value="resume">按漏跑周期补跑</option>
+                    </select>
+                  </Field>
+                  <Field label="单查询数量">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={limits.sourceLimitPerQuery}
+                      onChange={(event) =>
+                        setLimits({
+                          ...limits,
+                          sourceLimitPerQuery: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="最大候选">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={limits.maxCandidates}
+                      onChange={(event) =>
+                        setLimits({
+                          ...limits,
+                          maxCandidates: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="规则 Top K">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={limits.ruleFilterTopK}
+                      onChange={(event) =>
+                        setLimits({
+                          ...limits,
+                          ruleFilterTopK: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="详情 Top K">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={limits.detailFetchTopK}
+                      onChange={(event) =>
+                        setLimits({
+                          ...limits,
+                          detailFetchTopK: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Embedding Top K">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={limits.embeddingTopK}
+                      onChange={(event) =>
+                        setLimits({
+                          ...limits,
+                          embeddingTopK: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="LLM Top K">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={limits.llmAnalyzeTopK}
+                      onChange={(event) =>
+                        setLimits({
+                          ...limits,
+                          llmAnalyzeTopK: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="LLM 语义阈值">
+                    <input
+                      className="input"
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={limits.semanticFitThreshold ?? 0.42}
+                      onChange={(event) =>
+                        setLimits({
+                          ...limits,
+                          semanticFitThreshold: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="最终推荐 Top K">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={limits.finalReportTopK}
+                      onChange={(event) =>
+                        setLimits({
+                          ...limits,
+                          finalReportTopK: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="关键词">
+                    <input
+                      className="input"
+                      value={preferences.keywords.join(", ")}
+                      onChange={(event) =>
+                        setPreferences({
+                          ...preferences,
+                          keywords: splitCsv(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Topics">
+                    <input
+                      className="input"
+                      value={preferences.topics.join(", ")}
+                      onChange={(event) =>
+                        setPreferences({
+                          ...preferences,
+                          topics: splitCsv(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="语言权重">
+                    <input
+                      className="input"
+                      value={formatLanguageWeights(preferences.languages)}
+                      onChange={(event) =>
+                        setPreferences({
+                          ...preferences,
+                          languages: parseLanguageWeights(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="排除关键词">
+                    <input
+                      className="input"
+                      value={preferences.excludeKeywords.join(", ")}
+                      onChange={(event) =>
+                        setPreferences({
+                          ...preferences,
+                          excludeKeywords: splitCsv(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="最低 Stars">
+                    <input
+                      className="input"
+                      type="number"
+                      min={0}
+                      value={preferences.minStars}
+                      onChange={(event) =>
+                        setPreferences({
+                          ...preferences,
+                          minStars: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="最近推送天数">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={preferences.pushedWithinDays}
+                      onChange={(event) =>
+                        setPreferences({
+                          ...preferences,
+                          pushedWithinDays: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <label className="field checkbox-field">
+                    <span>过滤规则</span>
+                    <span className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={preferences.excludeArchived}
+                        onChange={(event) =>
+                          setPreferences({
+                            ...preferences,
+                            excludeArchived: event.target.checked,
+                          })
+                        }
+                      />
+                      排除 archived
+                    </span>
+                    <span className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={preferences.excludeForks}
+                        onChange={(event) =>
+                          setPreferences({
+                            ...preferences,
+                            excludeForks: event.target.checked,
+                          })
+                        }
+                      />
+                      排除 fork
+                    </span>
+                  </label>
+                  <Field label="资源模式">
+                    <select
+                      className="select"
+                      value={resourcePolicy.mode}
+                      onChange={(event) =>
+                        setResourcePolicy({
+                          ...resourcePolicy,
+                          mode: event.target
+                            .value as DiscoveryProfile["config"]["resourcePolicy"]["mode"],
+                        })
+                      }
+                    >
+                      <option value="complete_low_memory">
+                        complete_low_memory
+                      </option>
+                      <option value="balanced">balanced</option>
+                      <option value="fast">fast</option>
+                    </select>
+                  </Field>
+                  <Field label="目标可用内存 MB">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={resourcePolicy.memory.targetAvailableMb}
+                      onChange={(event) =>
+                        setResourcePolicy({
+                          ...resourcePolicy,
+                          memory: {
+                            ...resourcePolicy.memory,
+                            targetAvailableMb: Number(event.target.value),
+                          },
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="最低可用内存 MB">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={resourcePolicy.memory.minAvailableMb}
+                      onChange={(event) =>
+                        setResourcePolicy({
+                          ...resourcePolicy,
+                          memory: {
+                            ...resourcePolicy.memory,
+                            minAvailableMb: Number(event.target.value),
+                          },
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="临界可用内存 MB">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={resourcePolicy.memory.criticalAvailableMb}
+                      onChange={(event) =>
+                        setResourcePolicy({
+                          ...resourcePolicy,
+                          memory: {
+                            ...resourcePolicy.memory,
+                            criticalAvailableMb: Number(event.target.value),
+                          },
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="批量大小">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={resourcePolicy.execution.batchSize}
+                      onChange={(event) =>
+                        setResourcePolicy({
+                          ...resourcePolicy,
+                          execution: {
+                            ...resourcePolicy.execution,
+                            batchSize: Number(event.target.value),
+                          },
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="并发数">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={resourcePolicy.execution.maxConcurrency}
+                      onChange={(event) =>
+                        setResourcePolicy({
+                          ...resourcePolicy,
+                          execution: {
+                            ...resourcePolicy.execution,
+                            maxConcurrency: Number(event.target.value),
+                          },
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Checkpoint 间隔">
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      value={resourcePolicy.execution.checkpointEveryItems}
+                      onChange={(event) =>
+                        setResourcePolicy({
+                          ...resourcePolicy,
+                          execution: {
+                            ...resourcePolicy.execution,
+                            checkpointEveryItems: Number(event.target.value),
+                          },
+                        })
+                      }
+                    />
+                  </Field>
+                  <label className="field checkbox-field">
+                    <span>内存压力</span>
+                    <span className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={resourcePolicy.execution.pauseOnPressure}
+                        onChange={(event) =>
+                          setResourcePolicy({
+                            ...resourcePolicy,
+                            execution: {
+                              ...resourcePolicy.execution,
+                              pauseOnPressure: event.target.checked,
+                            },
+                          })
+                        }
+                      />
+                      压力过高时暂停
+                    </span>
+                  </label>
                 </div>
               </div>
-              <div className="form-grid">
-                <Field label="变现目标">
-                  <input className="input" value={opportunity.goals.join(", ")} onChange={(event) => setOpportunity({ ...opportunity, goals: splitCsv(event.target.value) })} />
-                </Field>
-                <Field label="目标客户">
-                  <input className="input" value={opportunity.targetCustomers.join(", ")} onChange={(event) => setOpportunity({ ...opportunity, targetCustomers: splitCsv(event.target.value) })} />
-                </Field>
-                <Field label="变现方式">
-                  <input className="input" value={opportunity.monetizationChannels.join(", ")} onChange={(event) => setOpportunity({ ...opportunity, monetizationChannels: splitCsv(event.target.value) })} />
-                </Field>
-                <Field label="偏好优势">
-                  <input className="input" value={opportunity.preferredAdvantages.join(", ")} onChange={(event) => setOpportunity({ ...opportunity, preferredAdvantages: splitCsv(event.target.value) })} />
-                </Field>
-                <Field label="排除信号">
-                  <input className="input" value={opportunity.excludeSignals.join(", ")} onChange={(event) => setOpportunity({ ...opportunity, excludeSignals: splitCsv(event.target.value) })} />
-                </Field>
-                <Field label="最低机会分">
-                  <input className="input" type="number" min={0} max={1} step={0.05} value={opportunity.minOpportunityScore} onChange={(event) => setOpportunity({ ...opportunity, minOpportunityScore: Number(event.target.value) })} />
-                </Field>
-              </div>
-            </section>
-            <div className="form-grid">
-              <Field label="调度类型">
-                <select className="select" value={schedule.type} onChange={(event) => setSchedule({ ...schedule, type: event.target.value as "cron" | "interval" })}>
-                  <option value="cron">cron</option>
-                  <option value="interval">interval</option>
-                </select>
-              </Field>
-              <Field label="Cron">
-                <input className="input" value={schedule.cron ?? ""} onChange={(event) => setSchedule({ ...schedule, cron: event.target.value })} />
-              </Field>
-              <Field label="间隔小时">
-                <input className="input" type="number" min={1} value={schedule.intervalHours ?? 24} onChange={(event) => setSchedule({ ...schedule, intervalHours: Number(event.target.value) })} />
-              </Field>
-              <Field label="时区">
-                <input className="input" value={schedule.timezone} onChange={(event) => setSchedule({ ...schedule, timezone: event.target.value })} />
-              </Field>
-              <Field label="开始时间">
-                <input className="input" value={schedule.startAt ?? ""} onChange={(event) => setSchedule({ ...schedule, startAt: event.target.value })} />
-              </Field>
-              <Field label="最大运行分钟">
-                <input className="input" type="number" min={1} value={schedule.maxRuntimeMinutes} onChange={(event) => setSchedule({ ...schedule, maxRuntimeMinutes: Number(event.target.value) })} />
-              </Field>
-              <Field label="漏跑策略">
-                <select className="select" value={schedule.missedRunPolicy} onChange={(event) => setSchedule({ ...schedule, missedRunPolicy: event.target.value as DiscoveryProfile["config"]["schedule"]["missedRunPolicy"] })}>
-                  <option value="skip">跳过漏跑周期</option>
-                  <option value="run_once">补跑一次</option>
-                  <option value="resume">按漏跑周期补跑</option>
-                </select>
-              </Field>
-              <Field label="单查询数量">
-                <input className="input" type="number" min={1} max={100} value={limits.sourceLimitPerQuery} onChange={(event) => setLimits({ ...limits, sourceLimitPerQuery: Number(event.target.value) })} />
-              </Field>
-              <Field label="最大候选">
-                <input className="input" type="number" min={1} value={limits.maxCandidates} onChange={(event) => setLimits({ ...limits, maxCandidates: Number(event.target.value) })} />
-              </Field>
-              <Field label="规则 Top K">
-                <input className="input" type="number" min={1} value={limits.ruleFilterTopK} onChange={(event) => setLimits({ ...limits, ruleFilterTopK: Number(event.target.value) })} />
-              </Field>
-              <Field label="详情 Top K">
-                <input className="input" type="number" min={1} value={limits.detailFetchTopK} onChange={(event) => setLimits({ ...limits, detailFetchTopK: Number(event.target.value) })} />
-              </Field>
-              <Field label="Embedding Top K">
-                <input className="input" type="number" min={1} value={limits.embeddingTopK} onChange={(event) => setLimits({ ...limits, embeddingTopK: Number(event.target.value) })} />
-              </Field>
-              <Field label="LLM Top K">
-                <input className="input" type="number" min={1} value={limits.llmAnalyzeTopK} onChange={(event) => setLimits({ ...limits, llmAnalyzeTopK: Number(event.target.value) })} />
-              </Field>
-              <Field label="LLM 语义阈值">
-                <input
-                  className="input"
-                  type="number"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={limits.semanticFitThreshold ?? 0.42}
-                  onChange={(event) => setLimits({ ...limits, semanticFitThreshold: Number(event.target.value) })}
-                />
-              </Field>
-              <Field label="最终推荐 Top K">
-                <input className="input" type="number" min={1} value={limits.finalReportTopK} onChange={(event) => setLimits({ ...limits, finalReportTopK: Number(event.target.value) })} />
-              </Field>
-              <Field label="关键词">
-                <input className="input" value={preferences.keywords.join(", ")} onChange={(event) => setPreferences({ ...preferences, keywords: splitCsv(event.target.value) })} />
-              </Field>
-              <Field label="Topics">
-                <input className="input" value={preferences.topics.join(", ")} onChange={(event) => setPreferences({ ...preferences, topics: splitCsv(event.target.value) })} />
-              </Field>
-              <Field label="语言权重">
-                <input className="input" value={formatLanguageWeights(preferences.languages)} onChange={(event) => setPreferences({ ...preferences, languages: parseLanguageWeights(event.target.value) })} />
-              </Field>
-              <Field label="排除关键词">
-                <input className="input" value={preferences.excludeKeywords.join(", ")} onChange={(event) => setPreferences({ ...preferences, excludeKeywords: splitCsv(event.target.value) })} />
-              </Field>
-              <Field label="最低 Stars">
-                <input className="input" type="number" min={0} value={preferences.minStars} onChange={(event) => setPreferences({ ...preferences, minStars: Number(event.target.value) })} />
-              </Field>
-              <Field label="最近推送天数">
-                <input className="input" type="number" min={1} value={preferences.pushedWithinDays} onChange={(event) => setPreferences({ ...preferences, pushedWithinDays: Number(event.target.value) })} />
-              </Field>
-              <label className="field checkbox-field">
-                <span>过滤规则</span>
-                <span className="checkbox-row">
-                  <input type="checkbox" checked={preferences.excludeArchived} onChange={(event) => setPreferences({ ...preferences, excludeArchived: event.target.checked })} />
-                  排除 archived
-                </span>
-                <span className="checkbox-row">
-                  <input type="checkbox" checked={preferences.excludeForks} onChange={(event) => setPreferences({ ...preferences, excludeForks: event.target.checked })} />
-                  排除 fork
-                </span>
-              </label>
-              <Field label="资源模式">
-                <select className="select" value={resourcePolicy.mode} onChange={(event) => setResourcePolicy({ ...resourcePolicy, mode: event.target.value as DiscoveryProfile["config"]["resourcePolicy"]["mode"] })}>
-                  <option value="complete_low_memory">complete_low_memory</option>
-                  <option value="balanced">balanced</option>
-                  <option value="fast">fast</option>
-                </select>
-              </Field>
-              <Field label="目标可用内存 MB">
-                <input className="input" type="number" min={1} value={resourcePolicy.memory.targetAvailableMb} onChange={(event) => setResourcePolicy({ ...resourcePolicy, memory: { ...resourcePolicy.memory, targetAvailableMb: Number(event.target.value) } })} />
-              </Field>
-              <Field label="最低可用内存 MB">
-                <input className="input" type="number" min={1} value={resourcePolicy.memory.minAvailableMb} onChange={(event) => setResourcePolicy({ ...resourcePolicy, memory: { ...resourcePolicy.memory, minAvailableMb: Number(event.target.value) } })} />
-              </Field>
-              <Field label="临界可用内存 MB">
-                <input className="input" type="number" min={1} value={resourcePolicy.memory.criticalAvailableMb} onChange={(event) => setResourcePolicy({ ...resourcePolicy, memory: { ...resourcePolicy.memory, criticalAvailableMb: Number(event.target.value) } })} />
-              </Field>
-              <Field label="批量大小">
-                <input className="input" type="number" min={1} value={resourcePolicy.execution.batchSize} onChange={(event) => setResourcePolicy({ ...resourcePolicy, execution: { ...resourcePolicy.execution, batchSize: Number(event.target.value) } })} />
-              </Field>
-              <Field label="并发数">
-                <input className="input" type="number" min={1} value={resourcePolicy.execution.maxConcurrency} onChange={(event) => setResourcePolicy({ ...resourcePolicy, execution: { ...resourcePolicy.execution, maxConcurrency: Number(event.target.value) } })} />
-              </Field>
-              <Field label="Checkpoint 间隔">
-                <input className="input" type="number" min={1} value={resourcePolicy.execution.checkpointEveryItems} onChange={(event) => setResourcePolicy({ ...resourcePolicy, execution: { ...resourcePolicy.execution, checkpointEveryItems: Number(event.target.value) } })} />
-              </Field>
-              <label className="field checkbox-field">
-                <span>内存压力</span>
-                <span className="checkbox-row">
-                  <input type="checkbox" checked={resourcePolicy.execution.pauseOnPressure} onChange={(event) => setResourcePolicy({ ...resourcePolicy, execution: { ...resourcePolicy.execution, pauseOnPressure: event.target.checked } })} />
-                  压力过高时暂停
-                </span>
-              </label>
-            </div>
-            </div>
-          )}
+            )}
           {selectedProfile && (
             <div className="list-panel source-planned-list">
               <strong>待接入 adapter</strong>
-              <span className="muted">这些来源可以先保存启用状态和权重，但当前不会生成真实扫描查询。</span>
+              <span className="muted">
+                这些来源可以先保存启用状态和权重，但当前不会生成真实扫描查询。
+              </span>
               <TagList items={plannedAdapters.map((source) => source.label)} />
             </div>
           )}
           {selectedProfile && (
             <div className="source-grid">
               {discoverySourceCatalog.map((definition) => {
-                const source = sources.find((item) => item.id === definition.id);
+                const source = sources.find(
+                  (item) => item.id === definition.id,
+                );
                 return (
                   <div className="source-item" key={definition.id}>
                     <label className="checkbox-row">
                       <input
                         type="checkbox"
                         checked={source?.enabled ?? false}
-                        onChange={(event) => updateSource(definition.id, { enabled: event.target.checked })}
+                        onChange={(event) =>
+                          updateSource(definition.id, {
+                            enabled: event.target.checked,
+                          })
+                        }
                       />
                       <strong>{definition.label}</strong>
                     </label>
                     <p className="muted">{definition.description}</p>
-                    <TagList items={[sourceAuthorityText(definition.authority), sourceCapabilityText(definition.capability)]} />
+                    <TagList
+                      items={[
+                        sourceAuthorityText(definition.authority),
+                        sourceCapabilityText(definition.capability),
+                      ]}
+                    />
                     <label className="field">
                       <span>权重</span>
                       <input
@@ -1495,7 +2626,11 @@ function ProfilesPanel({
                         max="3"
                         step="0.01"
                         value={source?.weight ?? definition.defaultWeight}
-                        onChange={(event) => updateSource(definition.id, { weight: Number(event.target.value) })}
+                        onChange={(event) =>
+                          updateSource(definition.id, {
+                            weight: Number(event.target.value),
+                          })
+                        }
                       />
                     </label>
                   </div>
@@ -1514,7 +2649,7 @@ function JobsPanel({
   queueStats,
   onRefresh,
   onJobUpdated,
-  onJobArchived
+  onJobArchived,
 }: {
   jobs: ScanJob[];
   queueStats: DashboardSnapshot["queueStats"];
@@ -1524,11 +2659,32 @@ function JobsPanel({
 }) {
   const [message, setMessage] = useState("");
   const [busyJobId, setBusyJobId] = useState("");
+  const hasActiveJobs = jobs.some((job) =>
+    [
+      "pending",
+      "running",
+      "throttled",
+      "paused_by_memory",
+      "paused_by_runtime",
+      "retry_later",
+    ].includes(job.status),
+  );
 
-  async function updateJob(jobId: string, action: "pause" | "resume" | "complete") {
+  useEffect(() => {
+    if (!hasActiveJobs) return;
+    const timer = window.setInterval(() => void onRefresh(), 5000);
+    return () => window.clearInterval(timer);
+  }, [hasActiveJobs, onRefresh]);
+
+  async function updateJob(
+    jobId: string,
+    action: "pause" | "resume" | "complete",
+  ) {
     setBusyJobId(jobId);
     try {
-      const response = await fetch(`/api/scans/${jobId}/${action}`, { method: "POST" });
+      const response = await fetch(`/api/scans/${jobId}/${action}`, {
+        method: "POST",
+      });
       const body = await response.json().catch(() => ({}));
       if (response.ok) {
         onJobUpdated(body);
@@ -1537,7 +2693,7 @@ function JobsPanel({
             ? "扫描任务已暂停。"
             : action === "resume"
               ? "扫描任务已恢复。"
-              : "扫描任务已手动完成。"
+              : "扫描任务已手动完成。",
         );
         await onRefresh();
       } else {
@@ -1578,7 +2734,14 @@ function JobsPanel({
             刷新
           </button>
         </div>
-        <SimpleStatsTable rows={queueStats.map((stat) => [stat.stage, stat.status, String(stat.count)])} emptyText="暂无候选队列" />
+        <SimpleStatsTable
+          rows={queueStats.map((stat) => [
+            stat.stage,
+            stat.status,
+            String(stat.count),
+          ])}
+          emptyText="暂无候选队列"
+        />
       </section>
       <section className="panel">
         <div className="panel-header">
@@ -1608,33 +2771,111 @@ function JobsPanel({
             </thead>
             <tbody>
               {jobs.length === 0 ? (
-                <tr><td colSpan={12} className="muted">暂无扫描任务</td></tr>
+                <tr>
+                  <td colSpan={12} className="muted">
+                    暂无扫描任务
+                  </td>
+                </tr>
               ) : (
                 jobs.map((job) => (
-                  <tr key={job.id}>
-                    <td>{job.type}</td>
-                    <td title={job.statusReason ?? job.errorMessage ?? undefined}>
-                      <span className={`status ${job.status}`}>{job.status}</span>
-                      {(job.statusReason || job.errorMessage) && <div className="muted">{job.statusReason ?? job.errorMessage}</div>}
-                    </td>
-                    <td>{job.stage}</td>
-                    <td>{job.fetchedCount}</td>
-                    <td>{job.newRepoCount}</td>
-                    <td>{job.updatedRepoCount}</td>
-                    <td>{job.unchangedRepoCount}</td>
-                    <td>{job.candidateCount} / {job.maxCandidates}</td>
-                    <td>{job.failedCandidateCount}</td>
-                    <td>{job.processedCount}</td>
-                    <td>{job.analyzedCount}</td>
-                    <td>
-                      <div className="action-row">
-                        {canPauseJob(job.status) && <button className="button" disabled={busyJobId === job.id} onClick={() => updateJob(job.id, "pause")} type="button">暂停</button>}
-                        {canResumeJob(job.status) && <button className="button" disabled={busyJobId === job.id} onClick={() => updateJob(job.id, "resume")} type="button">恢复</button>}
-                        {canCompleteJob(job.status) && <button className="button" disabled={busyJobId === job.id} onClick={() => updateJob(job.id, "complete")} type="button">完成</button>}
-                        {canArchiveJob(job.status) && <button className="button" disabled={busyJobId === job.id} onClick={() => archiveJob(job.id)} type="button">归档</button>}
-                      </div>
-                    </td>
-                  </tr>
+                  <Fragment key={job.id}>
+                    <tr>
+                      <td>{job.type}</td>
+                      <td
+                        title={
+                          job.statusReason ?? job.errorMessage ?? undefined
+                        }
+                      >
+                        <span className={`status ${job.status}`}>
+                          {job.status}
+                        </span>
+                        {(job.statusReason || job.errorMessage) && (
+                          <div className="muted">
+                            {job.statusReason ?? job.errorMessage}
+                          </div>
+                        )}
+                      </td>
+                      <td>{job.stage}</td>
+                      <td>{job.fetchedCount}</td>
+                      <td>{job.newRepoCount}</td>
+                      <td>{job.updatedRepoCount}</td>
+                      <td>{job.unchangedRepoCount}</td>
+                      <td>
+                        {job.candidateCount} / {job.maxCandidates}
+                      </td>
+                      <td>{job.failedCandidateCount}</td>
+                      <td>{job.processedCount}</td>
+                      <td>{job.analyzedCount}</td>
+                      <td>
+                        <div className="action-row">
+                          {canPauseJob(job.status) && (
+                            <button
+                              className="button"
+                              disabled={busyJobId === job.id}
+                              onClick={() => updateJob(job.id, "pause")}
+                              type="button"
+                            >
+                              暂停
+                            </button>
+                          )}
+                          {canResumeJob(job.status) && (
+                            <button
+                              className="button"
+                              disabled={busyJobId === job.id}
+                              onClick={() => updateJob(job.id, "resume")}
+                              type="button"
+                            >
+                              恢复
+                            </button>
+                          )}
+                          {canCompleteJob(job.status) && (
+                            <button
+                              className="button"
+                              disabled={busyJobId === job.id}
+                              onClick={() => updateJob(job.id, "complete")}
+                              type="button"
+                            >
+                              完成
+                            </button>
+                          )}
+                          {canArchiveJob(job.status) && (
+                            <button
+                              className="button"
+                              disabled={busyJobId === job.id}
+                              onClick={() => archiveJob(job.id)}
+                              type="button"
+                            >
+                              归档
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                    {(job.errorResolution || job.status === "failed") &&
+                      (job.errorMessage || job.statusReason) && (
+                        <tr className="job-error-row">
+                          <td colSpan={12}>
+                            <div className="job-error" role="alert">
+                              <AlertTriangle size={17} aria-hidden="true" />
+                              <div>
+                                <strong>
+                                  {job.errorMessage ?? job.statusReason}
+                                </strong>
+                                {job.errorResolution && (
+                                  <p>
+                                    <span>处理建议：</span>
+                                    {job.errorResolution}
+                                  </p>
+                                )}
+                                {job.errorCode && (
+                                  <small>错误码：{job.errorCode}</small>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                  </Fragment>
                 ))
               )}
             </tbody>
@@ -1651,7 +2892,7 @@ function GitHubPanel({
   repos,
   onSettingsChanged,
   onRepoUpdated,
-  onSynced
+  onSynced,
 }: {
   settings: DashboardSnapshot["settings"];
   accounts: GithubAccount[];
@@ -1678,7 +2919,7 @@ function GitHubPanel({
       const response = await fetch("/api/github-context/token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: githubToken.trim() })
+        body: JSON.stringify({ token: githubToken.trim() }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -1699,7 +2940,7 @@ function GitHubPanel({
       const response = await fetch("/api/github-context/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ includeOwned, includeStarred })
+        body: JSON.stringify({ includeOwned, includeStarred }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -1720,12 +2961,14 @@ function GitHubPanel({
     const response = await fetch("/api/settings", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ githubAutoSyncEnabled: enabled })
+      body: JSON.stringify({ githubAutoSyncEnabled: enabled }),
     });
     const body = await response.json().catch(() => ({}));
     if (response.ok) {
       onSettingsChanged(body);
-      setMessage(enabled ? "GitHub 每日被动同步已开启。" : "GitHub 每日被动同步已关闭。");
+      setMessage(
+        enabled ? "GitHub 每日被动同步已开启。" : "GitHub 每日被动同步已关闭。",
+      );
     } else {
       setMessage(body.error ?? "GitHub 自动同步设置更新失败。");
     }
@@ -1735,7 +2978,7 @@ function GitHubPanel({
     const response = await fetch(`/api/github-context/repos/${repo.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ selectedForContext: !repo.selectedForContext })
+      body: JSON.stringify({ selectedForContext: !repo.selectedForContext }),
     });
     const body = await response.json().catch(() => ({}));
     if (response.ok) {
@@ -1753,7 +2996,12 @@ function GitHubPanel({
           <h2>我的 GitHub 上下文</h2>
           <p>同步 owned/starred 项目，并选择哪些项目参与个性化推荐。</p>
         </div>
-        <button className="button primary" type="button" disabled={isSyncing} onClick={syncGithub}>
+        <button
+          className="button primary"
+          type="button"
+          disabled={isSyncing}
+          onClick={syncGithub}
+        >
           {isSyncing ? <RefreshCw size={15} /> : <GitBranch size={15} />}
           同步 GitHub
         </button>
@@ -1764,19 +3012,40 @@ function GitHubPanel({
           <strong>账号状态</strong>
           <span className="muted">
             {accounts.length
-              ? accounts.map((account) => `${account.username}（${account.lastSyncedAt ? formatTime(account.lastSyncedAt) : "未同步"}）`).join("，")
+              ? accounts
+                  .map(
+                    (account) =>
+                      `${account.username}（${account.lastSyncedAt ? formatTime(account.lastSyncedAt) : "未同步"}）`,
+                  )
+                  .join("，")
               : "尚未同步账号，请先配置 GITHUB_TOKEN。"}
           </span>
           <div className="action-row wrap">
-            <label className="checkbox-row"><input type="checkbox" checked={includeOwned} onChange={(event) => setIncludeOwned(event.target.checked)} /> owned</label>
-            <label className="checkbox-row"><input type="checkbox" checked={includeStarred} onChange={(event) => setIncludeStarred(event.target.checked)} /> starred</label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={includeOwned}
+                onChange={(event) => setIncludeOwned(event.target.checked)}
+              />{" "}
+              owned
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={includeStarred}
+                onChange={(event) => setIncludeStarred(event.target.checked)}
+              />{" "}
+              starred
+            </label>
           </div>
         </div>
         <div className="row-item">
           <strong>被动同步</strong>
           <span className="muted">
             每 {settings.githubAutoSyncIntervalHours} 小时最多同步一次
-            {settings.githubLastAutoSyncedAt ? `，上次成功：${formatTime(settings.githubLastAutoSyncedAt)}` : "，尚未自动同步"}
+            {settings.githubLastAutoSyncedAt
+              ? `，上次成功：${formatTime(settings.githubLastAutoSyncedAt)}`
+              : "，尚未自动同步"}
           </span>
           <div className="action-row wrap">
             <label className="switch-row">
@@ -1791,7 +3060,9 @@ function GitHubPanel({
         </div>
         <div className="row-item">
           <strong>GitHub Token</strong>
-          <span className="muted">仅写入服务器 .env.local，不会入库或展示明文。</span>
+          <span className="muted">
+            仅写入服务器 .env.local，不会入库或展示明文。
+          </span>
           <div className="action-row wrap">
             <input
               className="input"
@@ -1800,28 +3071,56 @@ function GitHubPanel({
               onChange={(event) => setGithubToken(event.target.value)}
               placeholder="ghp_... 或 github_pat_..."
             />
-            <button className="button" type="button" disabled={isSavingToken} onClick={saveGithubToken}>
+            <button
+              className="button"
+              type="button"
+              disabled={isSavingToken}
+              onClick={saveGithubToken}
+            >
               保存 Token
             </button>
           </div>
         </div>
         {repos.length === 0 ? (
-          <div className="row-item"><span className="muted">暂无 GitHub 上下文项目。</span></div>
-        ) : repos.map((repo) => (
-          <div className="row-item" key={repo.id}>
-            <strong>{repo.fullName}</strong>
-            <span className="muted">{repo.description}</span>
-            <TagList items={[repo.primaryLanguage, repo.visibility, repo.selectedForContext ? "参与推荐" : "不参与推荐", ...repo.topics]} />
-            <div className="action-row">
-              <button className="button" type="button" onClick={() => toggleSelected(repo)}>
-                {repo.selectedForContext ? "移出推荐上下文" : "加入推荐上下文"}
-              </button>
-              <a className="button icon" href={`https://github.com/${repo.fullName}`} target="_blank" rel="noopener noreferrer" title="打开 GitHub">
-                <ExternalLink size={15} />
-              </a>
-            </div>
+          <div className="row-item">
+            <span className="muted">暂无 GitHub 上下文项目。</span>
           </div>
-        ))}
+        ) : (
+          repos.map((repo) => (
+            <div className="row-item" key={repo.id}>
+              <strong>{repo.fullName}</strong>
+              <span className="muted">{repo.description}</span>
+              <TagList
+                items={[
+                  repo.primaryLanguage,
+                  repo.visibility,
+                  repo.selectedForContext ? "参与推荐" : "不参与推荐",
+                  ...repo.topics,
+                ]}
+              />
+              <div className="action-row">
+                <button
+                  className="button"
+                  type="button"
+                  onClick={() => toggleSelected(repo)}
+                >
+                  {repo.selectedForContext
+                    ? "移出推荐上下文"
+                    : "加入推荐上下文"}
+                </button>
+                <a
+                  className="button icon"
+                  href={`https://github.com/${repo.fullName}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="打开 GitHub"
+                >
+                  <ExternalLink size={15} />
+                </a>
+              </div>
+            </div>
+          ))
+        )}
       </div>
     </section>
   );
@@ -1831,33 +3130,38 @@ function ProvidersPanel({
   providers,
   profiles,
   onChanged,
-  onDeleted
+  onDeleted,
 }: {
   providers: AiProvider[];
   profiles: DiscoveryProfile[];
   onChanged: (provider: AiProvider) => void;
   onDeleted: (providerId: string) => void;
 }) {
-  const [editingProvider, setEditingProvider] = useState<AiProvider | "new" | null>(null);
+  const [editingProvider, setEditingProvider] = useState<
+    AiProvider | "new" | null
+  >(null);
   const [message, setMessage] = useState("");
 
   async function saveProvider(input: AiProviderFormValue) {
     const isEditing = input.id !== undefined;
-    const response = await fetch(isEditing ? `/api/ai-providers/${input.id}` : "/api/ai-providers", {
-      method: isEditing ? "PATCH" : "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: input.name,
-        kind: input.kind,
-        type: "openai_compatible",
-        baseUrl: input.baseUrl,
-        apiKeyEnv: input.apiKeyEnv,
-        apiKeyValue: input.apiKeyValue || undefined,
-        model: input.model,
-        dimensions: input.kind === "embedding" ? input.dimensions : undefined,
-        enabled: input.enabled
-      })
-    });
+    const response = await fetch(
+      isEditing ? `/api/ai-providers/${input.id}` : "/api/ai-providers",
+      {
+        method: isEditing ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: input.name,
+          kind: input.kind,
+          type: "openai_compatible",
+          baseUrl: input.baseUrl,
+          apiKeyEnv: input.apiKeyEnv,
+          apiKeyValue: input.apiKeyValue || undefined,
+          model: input.model,
+          dimensions: input.kind === "embedding" ? input.dimensions : undefined,
+          enabled: input.enabled,
+        }),
+      },
+    );
     const body = await response.json().catch(() => ({}));
     if (response.ok) {
       onChanged(body);
@@ -1873,7 +3177,7 @@ function ProvidersPanel({
     const response = await fetch(`/api/ai-providers/${provider.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: !provider.enabled })
+      body: JSON.stringify({ enabled: !provider.enabled }),
     });
     const body = await response.json().catch(() => ({}));
     if (response.ok) {
@@ -1885,7 +3189,9 @@ function ProvidersPanel({
   }
 
   async function deleteProvider(provider: AiProvider) {
-    const response = await fetch(`/api/ai-providers/${provider.id}`, { method: "DELETE" });
+    const response = await fetch(`/api/ai-providers/${provider.id}`, {
+      method: "DELETE",
+    });
     const body = await response.json().catch(() => ({}));
     if (response.ok) {
       onDeleted(provider.id);
@@ -1896,9 +3202,15 @@ function ProvidersPanel({
   }
 
   async function testProvider(provider: AiProvider) {
-    const response = await fetch(`/api/ai-providers/${provider.id}/test`, { method: "POST" });
+    const response = await fetch(`/api/ai-providers/${provider.id}/test`, {
+      method: "POST",
+    });
     const body = await response.json().catch(() => ({}));
-    setMessage(response.ok && body.ready ? "连接测试通过。" : `连接测试未通过：${body.checks?.reason ?? "配置不可用"}`);
+    setMessage(
+      response.ok && body.ready
+        ? "连接测试通过。"
+        : `连接测试未通过：${body.checks?.reason ?? "配置不可用"}`,
+    );
   }
 
   return (
@@ -1907,9 +3219,16 @@ function ProvidersPanel({
         <div className="panel-header">
           <div className="panel-title">
             <h2>AI 配置</h2>
-            <p>Chat 和 Embedding 分开配置；Base URL、模型和 API Key 在一个地方维护。</p>
+            <p>
+              Chat 和 Embedding 分开配置；Base URL、模型和 API Key
+              在一个地方维护。
+            </p>
           </div>
-          <button className="button primary" type="button" onClick={() => setEditingProvider("new")}>
+          <button
+            className="button primary"
+            type="button"
+            onClick={() => setEditingProvider("new")}
+          >
             新增 AI 配置
           </button>
         </div>
@@ -1926,7 +3245,18 @@ function ProvidersPanel({
         </div>
         <div className="table-wrap">
           <table className="repo-table">
-            <thead><tr><th>名称</th><th>类型</th><th>模型</th><th>Base URL</th><th>Key 环境变量</th><th>状态</th><th>使用情况</th><th>操作</th></tr></thead>
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>类型</th>
+                <th>模型</th>
+                <th>Base URL</th>
+                <th>Key 环境变量</th>
+                <th>状态</th>
+                <th>使用情况</th>
+                <th>操作</th>
+              </tr>
+            </thead>
             <tbody>
               {providers.map((provider) => (
                 <tr key={provider.id}>
@@ -1937,7 +3267,38 @@ function ProvidersPanel({
                   <td>{provider.apiKeyEnv}</td>
                   <td>{provider.enabled ? "启用" : "停用"}</td>
                   <td>{providerUsageText(provider, profiles)}</td>
-                  <td><div className="action-row"><button className="button" onClick={() => setEditingProvider(provider)} type="button">修改</button><button className="button" onClick={() => patchProvider(provider)} type="button">{provider.enabled ? "停用" : "启用"}</button><button className="button" onClick={() => testProvider(provider)} type="button">测试</button><button className="button" onClick={() => deleteProvider(provider)} type="button">删除</button></div></td>
+                  <td>
+                    <div className="action-row">
+                      <button
+                        className="button"
+                        onClick={() => setEditingProvider(provider)}
+                        type="button"
+                      >
+                        修改
+                      </button>
+                      <button
+                        className="button"
+                        onClick={() => patchProvider(provider)}
+                        type="button"
+                      >
+                        {provider.enabled ? "停用" : "启用"}
+                      </button>
+                      <button
+                        className="button"
+                        onClick={() => testProvider(provider)}
+                        type="button"
+                      >
+                        测试
+                      </button>
+                      <button
+                        className="button"
+                        onClick={() => deleteProvider(provider)}
+                        type="button"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1970,16 +3331,22 @@ interface AiProviderFormValue {
 function AiProviderDialog({
   provider,
   onClose,
-  onSave
+  onSave,
 }: {
   provider?: AiProvider;
   onClose: () => void;
   onSave: (input: AiProviderFormValue) => Promise<void>;
 }) {
-  const [kind, setKind] = useState<"chat" | "embedding">(provider?.kind ?? "chat");
+  const [kind, setKind] = useState<"chat" | "embedding">(
+    provider?.kind ?? "chat",
+  );
   const [name, setName] = useState(provider?.name ?? "新建 Chat 配置");
-  const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "https://api.example.com/v1");
-  const [apiKeyEnv, setApiKeyEnv] = useState(provider?.apiKeyEnv ?? "CHAT_API_KEY");
+  const [baseUrl, setBaseUrl] = useState(
+    provider?.baseUrl ?? "https://api.example.com/v1",
+  );
+  const [apiKeyEnv, setApiKeyEnv] = useState(
+    provider?.apiKeyEnv ?? "CHAT_API_KEY",
+  );
   const [apiKeyValue, setApiKeyValue] = useState("");
   const [model, setModel] = useState(provider?.model ?? "chat-model");
   const [dimensions, setDimensions] = useState(provider?.dimensions ?? 1536);
@@ -2012,7 +3379,7 @@ function AiProviderDialog({
         apiKeyValue,
         model,
         dimensions,
-        enabled
+        enabled,
       });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "AI 配置保存失败。");
@@ -2029,38 +3396,98 @@ function AiProviderDialog({
             <h2>{isEditing ? "修改 AI 配置" : "新增 AI 配置"}</h2>
             <p>API Key 只写入服务器 `.env.local`，不在数据库中保存明文。</p>
           </div>
-          <button className="button icon" type="button" onClick={onClose} title="关闭" aria-label="关闭">
+          <button
+            className="button icon"
+            type="button"
+            onClick={onClose}
+            title="关闭"
+            aria-label="关闭"
+          >
             <X size={16} />
           </button>
         </div>
         <div className="form-grid provider-dialog-grid">
           {message && <div className="notice">{message}</div>}
           <Field label="类型">
-            <select className="select" value={kind} disabled={isEditing} onChange={(event) => switchKind(event.target.value as "chat" | "embedding")}>
+            <select
+              className="select"
+              value={kind}
+              disabled={isEditing}
+              onChange={(event) =>
+                switchKind(event.target.value as "chat" | "embedding")
+              }
+            >
               <option value="chat">chat</option>
               <option value="embedding">embedding</option>
             </select>
           </Field>
-          <Field label="名称"><input className="input" value={name} onChange={(event) => setName(event.target.value)} /></Field>
-          <Field label="Base URL"><input className="input" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></Field>
-          <Field label="API key 环境变量名"><input className="input" value={apiKeyEnv} onChange={(event) => setApiKeyEnv(event.target.value)} /></Field>
-          <Field label={isEditing ? "新 API Key（可不填）" : "API Key"}>
-            <input className="input" type="password" value={apiKeyValue} onChange={(event) => setApiKeyValue(event.target.value)} />
+          <Field label="名称">
+            <input
+              className="input"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
           </Field>
-          <Field label="模型"><input className="input" value={model} onChange={(event) => setModel(event.target.value)} /></Field>
+          <Field label="Base URL">
+            <input
+              className="input"
+              value={baseUrl}
+              onChange={(event) => setBaseUrl(event.target.value)}
+            />
+          </Field>
+          <Field label="API key 环境变量名">
+            <input
+              className="input"
+              value={apiKeyEnv}
+              onChange={(event) => setApiKeyEnv(event.target.value)}
+            />
+          </Field>
+          <Field label={isEditing ? "新 API Key（可不填）" : "API Key"}>
+            <input
+              className="input"
+              type="password"
+              value={apiKeyValue}
+              onChange={(event) => setApiKeyValue(event.target.value)}
+            />
+          </Field>
+          <Field label="模型">
+            <input
+              className="input"
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+            />
+          </Field>
           {kind === "embedding" && (
-            <Field label="向量维度"><input className="input" type="number" min={1} value={dimensions} onChange={(event) => setDimensions(Number(event.target.value))} /></Field>
+            <Field label="向量维度">
+              <input
+                className="input"
+                type="number"
+                min={1}
+                value={dimensions}
+                onChange={(event) => setDimensions(Number(event.target.value))}
+              />
+            </Field>
           )}
           <label className="field checkbox-field">
             <span>状态</span>
             <span className="checkbox-row">
-              <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(event) => setEnabled(event.target.checked)}
+              />
               启用
             </span>
           </label>
           <div className="form-actions">
-            <button className="button" type="button" onClick={onClose}>关闭</button>
-            <button className="button primary" type="submit" disabled={isSaving}>
+            <button className="button" type="button" onClick={onClose}>
+              关闭
+            </button>
+            <button
+              className="button primary"
+              type="submit"
+              disabled={isSaving}
+            >
               {isSaving ? "保存中" : isEditing ? "保存修改" : "创建配置"}
             </button>
           </div>
@@ -2073,7 +3500,7 @@ function AiProviderDialog({
 function KnowledgePanel({
   recommendations,
   syncs,
-  onSyncsChanged
+  onSyncsChanged,
 }: {
   recommendations: Recommendation[];
   syncs: KnowledgeSync[];
@@ -2083,9 +3510,15 @@ function KnowledgePanel({
   const [isSyncing, setIsSyncing] = useState(false);
   const [target, setTarget] = useState("local-derived-index");
   const [minScore, setMinScore] = useState(0.8);
-  const candidates = recommendations.filter((item) =>
-    ["liked", "tracked", "to_validate", "validating", "monetization_ready"].includes(item.status) ||
-    item.scores.final >= minScore
+  const candidates = recommendations.filter(
+    (item) =>
+      [
+        "liked",
+        "tracked",
+        "to_validate",
+        "validating",
+        "monetization_ready",
+      ].includes(item.status) || item.scores.final >= minScore,
   );
 
   async function runSync() {
@@ -2094,7 +3527,7 @@ function KnowledgePanel({
       const response = await fetch("/api/knowledge-syncs/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target, minScore })
+        body: JSON.stringify({ target, minScore }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -2104,7 +3537,9 @@ function KnowledgePanel({
 
       const syncResponse = await fetch("/api/knowledge-syncs");
       if (syncResponse.ok) onSyncsChanged(await syncResponse.json());
-      setMessage(`同步完成：新增 ${body.syncedCount}，跳过 ${body.skippedCount}，失败 ${body.failedCount ?? 0}。`);
+      setMessage(
+        `同步完成：新增 ${body.syncedCount}，跳过 ${body.skippedCount}，失败 ${body.failedCount ?? 0}。`,
+      );
     } finally {
       setIsSyncing(false);
     }
@@ -2114,14 +3549,34 @@ function KnowledgePanel({
     <div className="stack">
       <section className="panel">
         <div className="panel-header">
-          <div className="panel-title"><h2>知识库同步</h2><p>当前作为可选派生能力，fetchGithub 仍是发现结果和评分来源。</p></div>
+          <div className="panel-title">
+            <h2>知识库同步</h2>
+            <p>当前作为可选派生能力，fetchGithub 仍是发现结果和评分来源。</p>
+          </div>
           <div className="action-row wrap">
-            <select className="select" value={target} onChange={(event) => setTarget(event.target.value)}>
+            <select
+              className="select"
+              value={target}
+              onChange={(event) => setTarget(event.target.value)}
+            >
               <option value="local-derived-index">本地派生索引</option>
               <option value="ai-knowledge-base">ai-knowledge-base</option>
             </select>
-            <input className="input compact-input" type="number" min={0} max={1} step={0.05} value={minScore} onChange={(event) => setMinScore(Number(event.target.value))} />
-            <button className="button primary" type="button" disabled={isSyncing} onClick={runSync}>
+            <input
+              className="input compact-input"
+              type="number"
+              min={0}
+              max={1}
+              step={0.05}
+              value={minScore}
+              onChange={(event) => setMinScore(Number(event.target.value))}
+            />
+            <button
+              className="button primary"
+              type="button"
+              disabled={isSyncing}
+              onClick={runSync}
+            >
               {isSyncing ? <RefreshCw size={15} /> : <Database size={15} />}
               同步 L4
             </button>
@@ -2129,34 +3584,114 @@ function KnowledgePanel({
         </div>
         <div className="list-panel">
           {message && <div className="notice">{message}</div>}
-          <div className="row-item"><strong>同步范围</strong><span className="muted">L4 项目：已喜欢、已跟踪，或最终分数不低于 {Math.round(minScore * 100)}。</span></div>
-          <div className="row-item"><strong>当前目标</strong><span className="muted">{target === "ai-knowledge-base" ? "写入同级 ai-knowledge-base 派生文档目录" : "仅记录 fetchGithub 派生索引状态"}</span></div>
-          <div className="row-item"><strong>当前候选数量</strong><span className="muted">{candidates.length}</span></div>
-          <div className="row-item"><strong>已记录同步状态</strong><span className="muted">{syncs.length}</span></div>
+          <div className="row-item">
+            <strong>同步范围</strong>
+            <span className="muted">
+              L4 项目：已喜欢、已跟踪，或最终分数不低于{" "}
+              {Math.round(minScore * 100)}。
+            </span>
+          </div>
+          <div className="row-item">
+            <strong>当前目标</strong>
+            <span className="muted">
+              {target === "ai-knowledge-base"
+                ? "写入同级 ai-knowledge-base 派生文档目录"
+                : "仅记录 fetchGithub 派生索引状态"}
+            </span>
+          </div>
+          <div className="row-item">
+            <strong>当前候选数量</strong>
+            <span className="muted">{candidates.length}</span>
+          </div>
+          <div className="row-item">
+            <strong>已记录同步状态</strong>
+            <span className="muted">{syncs.length}</span>
+          </div>
         </div>
       </section>
       <section className="panel">
-        <div className="panel-header"><div className="panel-title"><h2>待同步项目</h2><p>生成 L4 Markdown、按 content hash 去重，并记录同步状态。</p></div></div>
+        <div className="panel-header">
+          <div className="panel-title">
+            <h2>待同步项目</h2>
+            <p>生成 L4 Markdown、按 content hash 去重，并记录同步状态。</p>
+          </div>
+        </div>
         <div className="table-wrap">
           <table className="repo-table">
-            <thead><tr><th>项目</th><th>分数</th><th>状态</th><th>GitHub</th></tr></thead>
+            <thead>
+              <tr>
+                <th>项目</th>
+                <th>分数</th>
+                <th>状态</th>
+                <th>GitHub</th>
+              </tr>
+            </thead>
             <tbody>
-              {candidates.length === 0 ? <tr><td colSpan={4} className="muted">暂无 L4 候选项目</td></tr> : candidates.map((item) => (
-                <tr key={item.id}><td>{item.repo.fullName}</td><td>{Math.round(item.scores.final * 100)}</td><td>{item.status}</td><td><a className="repo-link" href={item.repo.htmlUrl} target="_blank" rel="noopener noreferrer">打开 <ExternalLink size={14} /></a></td></tr>
-              ))}
+              {candidates.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="muted">
+                    暂无 L4 候选项目
+                  </td>
+                </tr>
+              ) : (
+                candidates.map((item) => (
+                  <tr key={item.id}>
+                    <td>{item.repo.fullName}</td>
+                    <td>{Math.round(item.scores.final * 100)}</td>
+                    <td>{item.status}</td>
+                    <td>
+                      <a
+                        className="repo-link"
+                        href={item.repo.htmlUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        打开 <ExternalLink size={14} />
+                      </a>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
       </section>
       <section className="panel">
-        <div className="panel-header"><div className="panel-title"><h2>同步记录</h2><p>后续接入 ai-knowledge-base 或 FastGPT 时沿用这些状态。</p></div></div>
+        <div className="panel-header">
+          <div className="panel-title">
+            <h2>同步记录</h2>
+            <p>后续接入 ai-knowledge-base 或 FastGPT 时沿用这些状态。</p>
+          </div>
+        </div>
         <div className="table-wrap">
           <table className="repo-table">
-            <thead><tr><th>项目</th><th>目标</th><th>状态</th><th>同步时间</th><th>错误</th></tr></thead>
+            <thead>
+              <tr>
+                <th>项目</th>
+                <th>目标</th>
+                <th>状态</th>
+                <th>同步时间</th>
+                <th>错误</th>
+              </tr>
+            </thead>
             <tbody>
-              {syncs.length === 0 ? <tr><td colSpan={5} className="muted">暂无同步记录</td></tr> : syncs.map((sync) => (
-                <tr key={sync.id}><td>{sync.repoFullName ?? sync.repoId}</td><td>{sync.target}</td><td>{sync.status}</td><td>{sync.syncedAt ? formatTime(sync.syncedAt) : "-"}</td><td className="muted">{sync.errorMessage ?? "-"}</td></tr>
-              ))}
+              {syncs.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="muted">
+                    暂无同步记录
+                  </td>
+                </tr>
+              ) : (
+                syncs.map((sync) => (
+                  <tr key={sync.id}>
+                    <td>{sync.repoFullName ?? sync.repoId}</td>
+                    <td>{sync.target}</td>
+                    <td>{sync.status}</td>
+                    <td>{sync.syncedAt ? formatTime(sync.syncedAt) : "-"}</td>
+                    <td className="muted">{sync.errorMessage ?? "-"}</td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
@@ -2168,15 +3703,17 @@ function KnowledgePanel({
 function OperationsPanel({
   operations,
   queueStats,
-  onRefresh
+  onRefresh,
 }: {
   operations: DashboardSnapshot["operations"];
   queueStats: DashboardSnapshot["queueStats"];
   onRefresh: () => Promise<void>;
 }) {
-  const [dismissedAlerts, setDismissedAlerts] = useState<string[]>(() => readDismissedOperationAlerts());
+  const [dismissedAlerts, setDismissedAlerts] = useState<string[]>(() =>
+    readDismissedOperationAlerts(),
+  );
   const alerts = buildOperationAlerts(operations, queueStats).filter(
-    (alert) => !dismissedAlerts.includes(alert.id)
+    (alert) => !dismissedAlerts.includes(alert.id),
   );
   function dismissAlert(id: string) {
     setDismissedAlerts((current) => {
@@ -2194,20 +3731,39 @@ function OperationsPanel({
             <h2>运行观测</h2>
             <p>查看低内存调节、候选队列、AI 作业和估算成本。</p>
           </div>
-          <button className="button" type="button" onClick={() => void onRefresh()}>
+          <button
+            className="button"
+            type="button"
+            onClick={() => void onRefresh()}
+          >
             <RefreshCw size={15} />
             刷新
           </button>
         </div>
         <div className="summary-grid inline-summary">
-          <SummaryTile icon={Activity} label="资源事件" value={operations.resourceEvents.length} />
-          <SummaryTile icon={Brain} label="AI 作业" value={operations.aiCostSummary.totalJobs} />
+          <SummaryTile
+            icon={Activity}
+            label="资源事件"
+            value={operations.resourceEvents.length}
+          />
+          <SummaryTile
+            icon={Brain}
+            label="AI 作业"
+            value={operations.aiCostSummary.totalJobs}
+          />
           <SummaryTile
             icon={Database}
             label="Token 用量"
-            value={formatTokenTotal(operations.aiCostSummary.totalTokens, operations.aiCostSummary.unknownJobCount)}
+            value={formatTokenTotal(
+              operations.aiCostSummary.totalTokens,
+              operations.aiCostSummary.unknownJobCount,
+            )}
           />
-          <SummaryTile icon={BarChart3} label="估算成本 USD" value={formatUsd(operations.aiCostSummary.estimatedCostUsd)} />
+          <SummaryTile
+            icon={BarChart3}
+            label="估算成本 USD"
+            value={formatUsd(operations.aiCostSummary.estimatedCostUsd)}
+          />
         </div>
         {alerts.length > 0 && (
           <div className="alert-list">
@@ -2229,68 +3785,149 @@ function OperationsPanel({
         )}
       </section>
 
-      <CollapsiblePanel title="资源调节事件" subtitle="ResourceGovernor 记录的批量大小和内存状态。">
+      <CollapsiblePanel
+        title="资源调节事件"
+        subtitle="ResourceGovernor 记录的批量大小和内存状态。"
+      >
         <div className="table-wrap module-scroll">
           <table className="repo-table">
-            <thead><tr><th>时间</th><th>任务</th><th>阶段</th><th>状态</th><th>可用 MB</th><th>RSS MB</th><th>批量</th><th>原因</th></tr></thead>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>任务</th>
+                <th>阶段</th>
+                <th>状态</th>
+                <th>可用 MB</th>
+                <th>RSS MB</th>
+                <th>批量</th>
+                <th>原因</th>
+              </tr>
+            </thead>
             <tbody>
-              {operations.resourceEvents.length === 0 ? <tr><td colSpan={8} className="muted">暂无资源事件</td></tr> : operations.resourceEvents.map((event) => (
-                <tr key={event.id}>
-                  <td>{formatTime(event.createdAt)}</td>
-                  <td>{event.jobId}</td>
-                  <td>{event.stage}</td>
-                  <td>{event.status}</td>
-                  <td>{event.availableMb}</td>
-                  <td>{event.rssMb}</td>
-                  <td>{event.batchSize}</td>
-                  <td className="muted">{event.reason}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </CollapsiblePanel>
-
-      <CollapsiblePanel title="AI 作业与成本" subtitle="成本按 provider 可选 pricing 配置估算；未配置价格时为 0。">
-        <div className="table-wrap module-scroll">
-          <table className="repo-table">
-            <thead><tr><th>时间</th><th>项目</th><th>Provider</th><th>模型</th><th>状态</th><th>Prompt</th><th>Completion</th><th>成本</th></tr></thead>
-            <tbody>
-              {operations.aiJobs.length === 0 ? <tr><td colSpan={8} className="muted">暂无 AI 作业</td></tr> : operations.aiJobs.map((job) => (
-                <tr key={job.id}>
-                  <td>{formatTime(job.createdAt)}</td>
-                  <td>{job.repoFullName ?? job.repoId}</td>
-                  <td>{job.providerName ?? job.providerId}</td>
-                  <td>{job.model}</td>
-                  <td title={job.errorMessage ?? undefined}>
-                    <span className={`status ${job.status}`}>{job.status}</span>
+              {operations.resourceEvents.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="muted">
+                    暂无资源事件
                   </td>
-                  <td>{formatTokenValue(job.promptTokens, job.tokenUsageKnown)}</td>
-                  <td>{formatTokenValue(job.completionTokens, job.tokenUsageKnown)}</td>
-                  <td>{job.tokenUsageKnown ? formatUsd(job.estimatedCostUsd) : "未知"}</td>
                 </tr>
-              ))}
+              ) : (
+                operations.resourceEvents.map((event) => (
+                  <tr key={event.id}>
+                    <td>{formatTime(event.createdAt)}</td>
+                    <td>{event.jobId}</td>
+                    <td>{event.stage}</td>
+                    <td>{event.status}</td>
+                    <td>{event.availableMb}</td>
+                    <td>{event.rssMb}</td>
+                    <td>{event.batchSize}</td>
+                    <td className="muted">{event.reason}</td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="失败原因" subtitle="最近失败的 AI 作业和候选队列原因，便于直接定位配置、限流或模型响应问题。">
+      <CollapsiblePanel
+        title="AI 作业与成本"
+        subtitle="成本按 provider 可选 pricing 配置估算；未配置价格时为 0。"
+      >
+        <div className="table-wrap module-scroll">
+          <table className="repo-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>项目</th>
+                <th>Provider</th>
+                <th>模型</th>
+                <th>状态</th>
+                <th>Prompt</th>
+                <th>Completion</th>
+                <th>成本</th>
+              </tr>
+            </thead>
+            <tbody>
+              {operations.aiJobs.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="muted">
+                    暂无 AI 作业
+                  </td>
+                </tr>
+              ) : (
+                operations.aiJobs.map((job) => (
+                  <tr key={job.id}>
+                    <td>{formatTime(job.createdAt)}</td>
+                    <td>{job.repoFullName ?? job.repoId}</td>
+                    <td>{job.providerName ?? job.providerId}</td>
+                    <td>{job.model}</td>
+                    <td title={job.errorMessage ?? undefined}>
+                      <span className={`status ${job.status}`}>
+                        {job.status}
+                      </span>
+                    </td>
+                    <td>
+                      {formatTokenValue(job.promptTokens, job.tokenUsageKnown)}
+                    </td>
+                    <td>
+                      {formatTokenValue(
+                        job.completionTokens,
+                        job.tokenUsageKnown,
+                      )}
+                    </td>
+                    <td>
+                      {job.tokenUsageKnown
+                        ? formatUsd(job.estimatedCostUsd)
+                        : "未知"}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </CollapsiblePanel>
+
+      <CollapsiblePanel
+        title="失败原因"
+        subtitle="最近失败的 AI 作业和候选队列原因，便于直接定位配置、限流或模型响应问题。"
+      >
         <FailureReasonsTable operations={operations} queueStats={queueStats} />
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="项目 Token 汇总" subtitle="按项目汇总最近 AI 分析 token，用于识别高消耗仓库。">
-        <TokenSummaryTable rows={operations.repoTokenSummary} emptyText="暂无项目 Token 统计" />
+      <CollapsiblePanel
+        title="项目 Token 汇总"
+        subtitle="按项目汇总最近 AI 分析 token，用于识别高消耗仓库。"
+      >
+        <TokenSummaryTable
+          rows={operations.repoTokenSummary}
+          emptyText="暂无项目 Token 统计"
+        />
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="扫描 Token 汇总" subtitle="按扫描任务汇总最近 AI 分析 token，用于查看单次扫描总消耗。">
-        <TokenSummaryTable rows={operations.scanTokenSummary} emptyText="暂无扫描 Token 统计" />
+      <CollapsiblePanel
+        title="扫描 Token 汇总"
+        subtitle="按扫描任务汇总最近 AI 分析 token，用于查看单次扫描总消耗。"
+      >
+        <TokenSummaryTable
+          rows={operations.scanTokenSummary}
+          emptyText="暂无扫描 Token 统计"
+        />
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="候选队列" subtitle="扫描任务在各阶段的待处理、运行和重试数量。">
+      <CollapsiblePanel
+        title="候选队列"
+        subtitle="扫描任务在各阶段的待处理、运行和重试数量。"
+      >
         <SimpleStatsTable
-          rows={queueStats.map((stat) => [stat.stage, stat.status, String(stat.count)])}
-          rowTitles={queueStats.map((stat) => stat.failureReasons?.join("\n") ?? "")}
+          rows={queueStats.map((stat) => [
+            stat.stage,
+            stat.status,
+            String(stat.count),
+          ])}
+          rowTitles={queueStats.map(
+            (stat) => stat.failureReasons?.join("\n") ?? "",
+          )}
           emptyText="暂无候选队列"
         />
       </CollapsiblePanel>
@@ -2302,7 +3939,7 @@ function CollapsiblePanel({
   title,
   subtitle,
   children,
-  defaultOpen = true
+  defaultOpen = true,
 }: {
   title: string;
   subtitle?: string;
@@ -2313,7 +3950,11 @@ function CollapsiblePanel({
 
   return (
     <section className="panel collapsible-panel">
-      <button className="panel-header collapsible-header" type="button" onClick={() => setOpen(!open)}>
+      <button
+        className="panel-header collapsible-header"
+        type="button"
+        onClick={() => setOpen(!open)}
+      >
         <div className="panel-title">
           <h2>{title}</h2>
           {subtitle && <p>{subtitle}</p>}
@@ -2330,7 +3971,7 @@ function IconButton({
   icon: Icon,
   onClick,
   active = false,
-  tone
+  tone,
 }: {
   title: string;
   icon: React.ComponentType<{ size?: number }>;
@@ -2338,30 +3979,68 @@ function IconButton({
   active?: boolean;
   tone?: "positive" | "danger";
 }) {
-  return <button className={`button icon ${active ? "active" : ""} ${active && tone ? tone : ""}`} title={title} aria-label={title} onClick={onClick} type="button"><Icon size={15} /></button>;
+  return (
+    <button
+      className={`button icon ${active ? "active" : ""} ${active && tone ? tone : ""}`}
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      type="button"
+    >
+      <Icon size={15} />
+    </button>
+  );
 }
 
 function TagList({ items }: { items: string[] }) {
-  return <div className="tags">{items.filter(Boolean).map((item, index) => <span className="tag" key={`${item}-${index}`}>{item}</span>)}</div>;
+  return (
+    <div className="tags">
+      {items.filter(Boolean).map((item, index) => (
+        <span className="tag" key={`${item}-${index}`}>
+          {item}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function PreferencePreview({
   preferences,
-  notes
+  notes,
 }: {
   preferences: DiscoveryProfile["config"]["preferences"];
   notes: string[];
 }) {
   return (
     <div className="preview-grid">
-      <PreviewItem label="关键词" value={preferences.keywords.join(", ") || "-"} />
-      <PreviewItem label="Topics" value={preferences.topics.join(", ") || "-"} />
-      <PreviewItem label="语言权重" value={formatLanguageWeights(preferences.languages) || "-"} />
-      <PreviewItem label="排除关键词" value={preferences.excludeKeywords.join(", ") || "-"} />
+      <PreviewItem
+        label="关键词"
+        value={preferences.keywords.join(", ") || "-"}
+      />
+      <PreviewItem
+        label="Topics"
+        value={preferences.topics.join(", ") || "-"}
+      />
+      <PreviewItem
+        label="语言权重"
+        value={formatLanguageWeights(preferences.languages) || "-"}
+      />
+      <PreviewItem
+        label="排除关键词"
+        value={preferences.excludeKeywords.join(", ") || "-"}
+      />
       <PreviewItem label="最低 Stars" value={String(preferences.minStars)} />
-      <PreviewItem label="最近推送天数" value={String(preferences.pushedWithinDays)} />
-      <PreviewItem label="过滤" value={`${preferences.excludeArchived ? "排除 archived" : "允许 archived"}；${preferences.excludeForks ? "排除 fork" : "允许 fork"}`} />
-      {notes.length > 0 && <PreviewItem label="说明" value={notes.join("；")} />}
+      <PreviewItem
+        label="最近推送天数"
+        value={String(preferences.pushedWithinDays)}
+      />
+      <PreviewItem
+        label="过滤"
+        value={`${preferences.excludeArchived ? "排除 archived" : "允许 archived"}；${preferences.excludeForks ? "排除 fork" : "允许 fork"}`}
+      />
+      {notes.length > 0 && (
+        <PreviewItem label="说明" value={notes.join("；")} />
+      )}
     </div>
   );
 }
@@ -2371,17 +4050,24 @@ function QueryPlanPreview({ plans }: { plans: GitHubSearchQueryPlan[] }) {
     <div className="query-preview">
       <div className="preview-heading">
         <strong>GitHub Search 查询计划</strong>
-        <span className="muted">同一条 query 中多个普通关键词偏 AND；系统会拆成多条 query 提高召回。</span>
+        <span className="muted">
+          同一条 query 中多个普通关键词偏 AND；系统会拆成多条 query 提高召回。
+        </span>
       </div>
       <div className="query-list">
         {plans.length === 0 ? (
           <span className="muted">暂无查询计划</span>
         ) : (
           plans.slice(0, 12).map((plan, index) => (
-            <div className="query-row" key={`${plan.sourceId}-${plan.query}-${index}`}>
+            <div
+              className="query-row"
+              key={`${plan.sourceId}-${plan.query}-${index}`}
+            >
               <span>{plan.sourceLabel}</span>
               <code>{plan.query}</code>
-              <small>{plan.sort} / 权重 {plan.weight}</small>
+              <small>
+                {plan.sort} / 权重 {plan.weight}
+              </small>
             </div>
           ))
         )}
@@ -2399,15 +4085,45 @@ function PreviewItem({ label, value }: { label: string; value: string }) {
   );
 }
 
-function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return <section className="detail-section"><h3>{title}</h3><p>{children}</p></section>;
+function DetailSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="detail-section">
+      <h3>{title}</h3>
+      <p>{children}</p>
+    </section>
+  );
 }
 
 function ListSection({ title, items }: { title: string; items: string[] }) {
-  return <section className="detail-section"><h3>{title}</h3>{items.length === 0 ? <p>暂无</p> : <ul>{items.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul>}</section>;
+  return (
+    <section className="detail-section">
+      <h3>{title}</h3>
+      {items.length === 0 ? (
+        <p>暂无</p>
+      ) : (
+        <ul>
+          {items.map((item, index) => (
+            <li key={`${item}-${index}`}>{item}</li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
 }
 
-function ChecklistSection({ title, items }: { title: string; items: string[] }) {
+function ChecklistSection({
+  title,
+  items,
+}: {
+  title: string;
+  items: string[];
+}) {
   return (
     <section className="detail-section">
       <h3>{title}</h3>
@@ -2438,8 +4154,8 @@ function buildMatchSignals(recommendation: Recommendation) {
       ? `最近推送：${new Date(recommendation.repo.pushedAt).toLocaleDateString("zh-CN")}`
       : "",
     `机会分：${Math.round((recommendation.scores.opportunity ?? recommendation.scores.final) * 100)}，变现分：${Math.round((recommendation.scores.monetization ?? recommendation.scores.llmMatch) * 100)}，增长信号：${Math.round((recommendation.scores.growth ?? recommendation.scores.rule) * 100)}`,
-    `规则分：${Math.round(recommendation.scores.rule * 100)}，上下文分：${Math.round(recommendation.scores.githubContextFit * 100)}，LLM 分：${Math.round(recommendation.scores.llmMatch * 100)}`
-    , ...buildQualitySignalItems(recommendation)
+    `规则分：${Math.round(recommendation.scores.rule * 100)}，上下文分：${Math.round(recommendation.scores.githubContextFit * 100)}，LLM 分：${Math.round(recommendation.scores.llmMatch * 100)}`,
+    ...buildQualitySignalItems(recommendation),
   ].filter(Boolean);
 }
 
@@ -2463,7 +4179,7 @@ function buildQualitySignalItems(recommendation: Recommendation) {
         : "",
       signals.ecosystems.dockerDownloadsCount
         ? `Docker 下载 ${signals.ecosystems.dockerDownloadsCount.toLocaleString()}`
-        : ""
+        : "",
     ].filter(Boolean);
     if (usages.length) {
       items.push(`ecosyste.ms：${usages.join("，")}`);
@@ -2473,12 +4189,17 @@ function buildQualitySignalItems(recommendation: Recommendation) {
   return items;
 }
 
-type RecommendationStatusFilter =
-  | "visible"
-  | "all"
-  | Recommendation["status"];
+type RecommendationStatusFilter = "visible" | "all" | Recommendation["status"];
 
-type OpportunityFilter = "all" | "has_opportunity" | "no_opportunity" | "observe" | "track" | "validate" | "build" | "ignore";
+type OpportunityFilter =
+  | "all"
+  | "has_opportunity"
+  | "no_opportunity"
+  | "observe"
+  | "track"
+  | "validate"
+  | "build"
+  | "ignore";
 type GroupFilter = "all" | "grouped" | "ungrouped";
 type PreferenceFilter = "all" | "liked" | "disliked" | "unrated";
 type RecommendationSortKey = "rank" | "score" | "stars" | "semantic";
@@ -2496,7 +4217,10 @@ interface SemanticSearchState {
   warning?: string;
 }
 
-const recommendationStatusFilterOptions: Array<{ value: RecommendationStatusFilter; label: string }> = [
+const recommendationStatusFilterOptions: Array<{
+  value: RecommendationStatusFilter;
+  label: string;
+}> = [
   { value: "visible", label: "可见项目" },
   { value: "all", label: "全部项目" },
   { value: "new", label: "新发现" },
@@ -2508,10 +4232,13 @@ const recommendationStatusFilterOptions: Array<{ value: RecommendationStatusFilt
   { value: "validating", label: "验证中" },
   { value: "monetization_ready", label: "准备变现" },
   { value: "hidden", label: "已隐藏" },
-  { value: "abandoned", label: "已放弃" }
+  { value: "abandoned", label: "已放弃" },
 ];
 
-const opportunityFilterOptions: Array<{ value: OpportunityFilter; label: string }> = [
+const opportunityFilterOptions: Array<{
+  value: OpportunityFilter;
+  label: string;
+}> = [
   { value: "all", label: "全部机会" },
   { value: "has_opportunity", label: "有机会" },
   { value: "no_opportunity", label: "无机会" },
@@ -2519,25 +4246,28 @@ const opportunityFilterOptions: Array<{ value: OpportunityFilter; label: string 
   { value: "track", label: "跟踪" },
   { value: "validate", label: "待验证" },
   { value: "build", label: "准备变现" },
-  { value: "ignore", label: "放弃" }
+  { value: "ignore", label: "放弃" },
 ];
 
 const groupFilterOptions: Array<{ value: GroupFilter; label: string }> = [
   { value: "all", label: "全部分组" },
   { value: "grouped", label: "已分组" },
-  { value: "ungrouped", label: "未分组" }
+  { value: "ungrouped", label: "未分组" },
 ];
 
-const preferenceFilterOptions: Array<{ value: PreferenceFilter; label: string }> = [
+const preferenceFilterOptions: Array<{
+  value: PreferenceFilter;
+  label: string;
+}> = [
   { value: "all", label: "全部喜好" },
   { value: "liked", label: "已喜欢" },
   { value: "disliked", label: "不喜欢" },
-  { value: "unrated", label: "未表态" }
+  { value: "unrated", label: "未表态" },
 ];
 
 function recommendationMatchesOpportunity(
   recommendation: Recommendation,
-  filter: OpportunityFilter
+  filter: OpportunityFilter,
 ) {
   const action = recommendation.opportunity?.suggestedAction;
   if (filter === "all") {
@@ -2555,7 +4285,7 @@ function recommendationMatchesOpportunity(
 function recommendationMatchesGroup(
   recommendation: Recommendation,
   filter: GroupFilter,
-  focusedClusterKey: string
+  focusedClusterKey: string,
 ) {
   if (focusedClusterKey) {
     return recommendation.cluster?.key === focusedClusterKey;
@@ -2571,7 +4301,7 @@ function recommendationMatchesGroup(
 
 function recommendationMatchesStatus(
   recommendation: Recommendation,
-  filter: RecommendationStatusFilter
+  filter: RecommendationStatusFilter,
 ) {
   if (filter === "all") {
     return true;
@@ -2584,13 +4314,15 @@ function recommendationMatchesStatus(
 
 function recommendationMatchesPreference(
   recommendation: Recommendation,
-  filter: PreferenceFilter
+  filter: PreferenceFilter,
 ) {
   if (filter === "all") {
     return true;
   }
   if (filter === "unrated") {
-    return recommendation.status !== "liked" && recommendation.status !== "disliked";
+    return (
+      recommendation.status !== "liked" && recommendation.status !== "disliked"
+    );
   }
   return recommendation.status === filter;
 }
@@ -2599,46 +4331,72 @@ function compareRecommendations(
   left: Recommendation,
   right: Recommendation,
   sortState: RecommendationSortState,
-  semanticScores: Record<string, number>
+  semanticScores: Record<string, number>,
 ) {
   const rankFallback = left.rank - right.rank;
   const direction = sortState.direction === "asc" ? 1 : -1;
   switch (sortState.key) {
     case "score":
-      return direction * (left.scores.final - right.scores.final) || rankFallback;
+      return (
+        direction * (left.scores.final - right.scores.final) || rankFallback
+      );
     case "stars":
       return direction * (left.repo.stars - right.repo.stars) || rankFallback;
     case "semantic":
-      return direction * ((semanticScores[left.id] ?? 0) - (semanticScores[right.id] ?? 0)) || rankFallback;
+      return (
+        direction *
+          ((semanticScores[left.id] ?? 0) - (semanticScores[right.id] ?? 0)) ||
+        rankFallback
+      );
     case "rank":
       return direction * (left.rank - right.rank) || rankFallback;
   }
 }
 
-function opportunityFeedbackAction(recommendation: Recommendation): { action: FeedbackAction; label: string } | null {
-  if (recommendation.status === "hidden" || recommendation.status === "abandoned") {
+function opportunityFeedbackAction(
+  recommendation: Recommendation,
+): { action: FeedbackAction; label: string } | null {
+  if (
+    recommendation.status === "hidden" ||
+    recommendation.status === "abandoned"
+  ) {
     return null;
   }
   switch (recommendation.opportunity?.suggestedAction) {
     case "validate":
-      return recommendation.status === "to_validate" ? null : { action: "to_validate", label: "待验证" };
+      return recommendation.status === "to_validate"
+        ? null
+        : { action: "to_validate", label: "待验证" };
     case "build":
-      return recommendation.status === "monetization_ready" ? null : { action: "monetization_ready", label: "准备变现" };
+      return recommendation.status === "monetization_ready"
+        ? null
+        : { action: "monetization_ready", label: "准备变现" };
     case "track":
-      return recommendation.status === "tracked" ? null : { action: "track", label: "跟踪" };
+      return recommendation.status === "tracked"
+        ? null
+        : { action: "track", label: "跟踪" };
     case "ignore":
       return { action: "abandon", label: "放弃" };
     case "observe":
     case undefined:
-      return recommendation.status === "liked" ? null : { action: "like", label: "喜欢观察" };
+      return recommendation.status === "liked"
+        ? null
+        : { action: "like", label: "喜欢观察" };
   }
 }
 
-function renderSortIcon(sortState: RecommendationSortState, key: RecommendationSortKey) {
+function renderSortIcon(
+  sortState: RecommendationSortState,
+  key: RecommendationSortKey,
+) {
   if (sortState.key !== key) {
     return <ArrowUpDown size={14} />;
   }
-  return sortState.direction === "asc" ? <ArrowUp size={14} /> : <ArrowDown size={14} />;
+  return sortState.direction === "asc" ? (
+    <ArrowUp size={14} />
+  ) : (
+    <ArrowDown size={14} />
+  );
 }
 
 const DISMISSED_OPERATION_ALERTS_KEY = "fetchGithub:dismissedOperationAlerts";
@@ -2649,7 +4407,9 @@ function readDismissedOperationAlerts() {
   }
 
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(DISMISSED_OPERATION_ALERTS_KEY) ?? "[]");
+    const parsed = JSON.parse(
+      window.localStorage.getItem(DISMISSED_OPERATION_ALERTS_KEY) ?? "[]",
+    );
     return Array.isArray(parsed) ? parsed.map(String) : [];
   } catch {
     return [];
@@ -2661,44 +4421,58 @@ function writeDismissedOperationAlerts(ids: string[]) {
     return;
   }
 
-  window.localStorage.setItem(DISMISSED_OPERATION_ALERTS_KEY, JSON.stringify(ids));
+  window.localStorage.setItem(
+    DISMISSED_OPERATION_ALERTS_KEY,
+    JSON.stringify(ids),
+  );
 }
 
 function buildOperationAlerts(
   operations: DashboardSnapshot["operations"],
-  queueStats: DashboardSnapshot["queueStats"]
+  queueStats: DashboardSnapshot["queueStats"],
 ) {
-  const alerts: Array<{ id: string; level: "warning" | "danger"; text: string }> = [];
-  const failedAiJobs = operations.aiJobs.filter((job) => job.status === "failed");
+  const alerts: Array<{
+    id: string;
+    level: "warning" | "danger";
+    text: string;
+  }> = [];
+  const failedAiJobs = operations.aiJobs.filter(
+    (job) => job.status === "failed",
+  );
   const retryQueue = queueStats
     .filter((stat) => stat.status === "failed" || stat.status === "pending")
     .filter((stat) => stat.stage === "llm" || stat.stage === "embed");
   const pressureEvents = operations.resourceEvents.filter(
-    (event) => event.status === "paused_by_memory" || event.status === "throttled"
+    (event) =>
+      event.status === "paused_by_memory" || event.status === "throttled",
   );
   const rateLimitJobs = operations.aiJobs.filter((job) =>
-    `${job.providerName ?? ""} ${job.model} ${job.status}`.toLowerCase().includes("rate")
+    `${job.providerName ?? ""} ${job.model} ${job.status}`
+      .toLowerCase()
+      .includes("rate"),
   );
 
   if (pressureEvents.length > 0) {
     alerts.push({
       id: "resource-pressure",
-      level: pressureEvents.some((event) => event.status === "paused_by_memory") ? "danger" : "warning",
-      text: `资源调节触发 ${pressureEvents.length} 次，最近一次：${pressureEvents[0].reason}`
+      level: pressureEvents.some((event) => event.status === "paused_by_memory")
+        ? "danger"
+        : "warning",
+      text: `资源调节触发 ${pressureEvents.length} 次，最近一次：${pressureEvents[0].reason}`,
     });
   }
   if (failedAiJobs.length > 0) {
     alerts.push({
       id: "ai-job-failed",
       level: "danger",
-      text: `最近有 ${failedAiJobs.length} 个 AI 作业失败，请检查 provider、API key 或模型响应。`
+      text: `最近有 ${failedAiJobs.length} 个 AI 作业失败，请检查 provider、API key 或模型响应。`,
     });
   }
   if (rateLimitJobs.length > 0) {
     alerts.push({
       id: "rate-limit",
       level: "warning",
-      text: `检测到疑似 rate limit，请降低批量或调整 provider 限速配置。`
+      text: `检测到疑似 rate limit，请降低批量或调整 provider 限速配置。`,
     });
   }
   for (const stat of retryQueue.slice(0, 3)) {
@@ -2706,7 +4480,7 @@ function buildOperationAlerts(
       alerts.push({
         id: `queue-${stat.stage}-${stat.status}`,
         level: stat.status === "failed" ? "danger" : "warning",
-        text: `${stat.stage} 阶段 ${stat.status} 队列还有 ${stat.count} 个候选。`
+        text: `${stat.stage} 阶段 ${stat.status} 队列还有 ${stat.count} 个候选。`,
       });
     }
   }
@@ -2743,7 +4517,7 @@ function recommendationStatusText(status: Recommendation["status"]) {
 
 function statusFromFeedbackAction(
   action: FeedbackAction,
-  fallback: Recommendation["status"]
+  fallback: Recommendation["status"],
 ): Recommendation["status"] {
   switch (action) {
     case "save":
@@ -2769,8 +4543,19 @@ function statusFromFeedbackAction(
   }
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <label className="field"><span>{label}</span>{children}</label>;
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
 }
 
 function splitCsv(value: string) {
@@ -2790,17 +4575,21 @@ function parseLanguageWeights(value: string) {
   return Object.fromEntries(
     splitCsv(value)
       .map((item) => {
-        const [language, rawWeight] = item.split(":").map((part) => part.trim());
+        const [language, rawWeight] = item
+          .split(":")
+          .map((part) => part.trim());
         return [language, Number(rawWeight ?? 1)];
       })
-      .filter(([language, weight]) => language && Number.isFinite(weight as number))
+      .filter(
+        ([language, weight]) => language && Number.isFinite(weight as number),
+      ),
   ) as Record<string, number>;
 }
 
 function SimpleStatsTable({
   rows,
   rowTitles = [],
-  emptyText
+  emptyText,
 }: {
   rows: string[][];
   rowTitles?: string[];
@@ -2809,14 +4598,26 @@ function SimpleStatsTable({
   return (
     <div className="table-wrap">
       <table className="repo-table">
-        <thead><tr><th>阶段</th><th>状态</th><th>数量</th></tr></thead>
+        <thead>
+          <tr>
+            <th>阶段</th>
+            <th>状态</th>
+            <th>数量</th>
+          </tr>
+        </thead>
         <tbody>
           {rows.length === 0 ? (
-            <tr><td colSpan={3} className="muted">{emptyText}</td></tr>
+            <tr>
+              <td colSpan={3} className="muted">
+                {emptyText}
+              </td>
+            </tr>
           ) : (
             rows.map((row, rowIndex) => (
               <tr key={row.join("-")} title={rowTitles[rowIndex] || undefined}>
-                {row.map((cell, index) => <td key={index}>{cell}</td>)}
+                {row.map((cell, index) => (
+                  <td key={index}>{cell}</td>
+                ))}
               </tr>
             ))
           )}
@@ -2828,7 +4629,7 @@ function SimpleStatsTable({
 
 function TokenSummaryTable({
   rows,
-  emptyText
+  emptyText,
 }: {
   rows: DashboardSnapshot["operations"]["repoTokenSummary"];
   emptyText: string;
@@ -2849,7 +4650,11 @@ function TokenSummaryTable({
         </thead>
         <tbody>
           {rows.length === 0 ? (
-            <tr><td colSpan={7} className="muted">{emptyText}</td></tr>
+            <tr>
+              <td colSpan={7} className="muted">
+                {emptyText}
+              </td>
+            </tr>
           ) : (
             rows.map((row) => (
               <tr key={row.id}>
@@ -2858,7 +4663,11 @@ function TokenSummaryTable({
                 <td>{row.promptTokens.toLocaleString()}</td>
                 <td>{row.completionTokens.toLocaleString()}</td>
                 <td>{row.totalTokens.toLocaleString()}</td>
-                <td>{row.unknownJobCount > 0 ? `${row.unknownJobCount} 个作业` : "-"}</td>
+                <td>
+                  {row.unknownJobCount > 0
+                    ? `${row.unknownJobCount} 个作业`
+                    : "-"}
+                </td>
                 <td>{formatUsd(row.estimatedCostUsd)}</td>
               </tr>
             ))
@@ -2871,7 +4680,7 @@ function TokenSummaryTable({
 
 function FailureReasonsTable({
   operations,
-  queueStats
+  queueStats,
 }: {
   operations: DashboardSnapshot["operations"];
   queueStats: DashboardSnapshot["queueStats"];
@@ -2884,7 +4693,7 @@ function FailureReasonsTable({
         type: "AI 作业",
         target: job.repoFullName ?? job.repoId,
         status: job.status,
-        reason: job.errorMessage ?? ""
+        reason: job.errorMessage ?? "",
       })),
     ...queueStats
       .filter((stat) => (stat.failureReasons?.length ?? 0) > 0)
@@ -2894,18 +4703,29 @@ function FailureReasonsTable({
           type: "候选队列",
           target: `${stat.stage}/${stat.status}`,
           status: `${stat.count} 个`,
-          reason
-        }))
-      )
+          reason,
+        })),
+      ),
   ].slice(0, 50);
 
   return (
     <div className="table-wrap module-scroll">
       <table className="repo-table">
-        <thead><tr><th>类型</th><th>对象</th><th>状态</th><th>原因</th></tr></thead>
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>对象</th>
+            <th>状态</th>
+            <th>原因</th>
+          </tr>
+        </thead>
         <tbody>
           {rows.length === 0 ? (
-            <tr><td colSpan={4} className="muted">暂无失败原因</td></tr>
+            <tr>
+              <td colSpan={4} className="muted">
+                暂无失败原因
+              </td>
+            </tr>
           ) : (
             rows.map((row) => (
               <tr key={row.id}>
@@ -2927,11 +4747,21 @@ function canPauseJob(status: string) {
 }
 
 function canResumeJob(status: string) {
-  return ["paused_by_user", "paused_by_memory", "paused_by_runtime", "retry_later"].includes(status);
+  return [
+    "paused_by_user",
+    "paused_by_memory",
+    "paused_by_runtime",
+    "retry_later",
+  ].includes(status);
 }
 
 function canCompleteJob(status: string) {
-  return ["paused_by_user", "paused_by_memory", "paused_by_runtime", "retry_later"].includes(status);
+  return [
+    "paused_by_user",
+    "paused_by_memory",
+    "paused_by_runtime",
+    "retry_later",
+  ].includes(status);
 }
 
 function canArchiveJob(status: string) {
@@ -2944,7 +4774,7 @@ function providerName(providers: AiProvider[], id: string) {
 
 function formatTime(value: string) {
   return new Date(value).toLocaleString("zh-CN", {
-    hour12: false
+    hour12: false,
   });
 }
 
@@ -2962,8 +4792,14 @@ function formatTokenTotal(value: number, unknownJobCount: number) {
 }
 
 function providerUsageText(provider: AiProvider, profiles: DiscoveryProfile[]) {
-  const usedBy = profiles.filter((profile) => profile.config.ai.chatProviderId === provider.id || profile.config.ai.embeddingProviderId === provider.id);
-  return usedBy.length ? usedBy.map((profile) => profile.name).join(", ") : "未被使用";
+  const usedBy = profiles.filter(
+    (profile) =>
+      profile.config.ai.chatProviderId === provider.id ||
+      profile.config.ai.embeddingProviderId === provider.id,
+  );
+  return usedBy.length
+    ? usedBy.map((profile) => profile.name).join(", ")
+    : "未被使用";
 }
 
 function sourceAuthorityText(authority: string) {
@@ -2999,7 +4835,7 @@ function sectionTitle(section: Section) {
 function mergePreferenceState(
   current: DiscoveryProfile["config"]["preferences"],
   generated: GeneratedPreferences,
-  mode: "merge" | "replace"
+  mode: "merge" | "replace",
 ): DiscoveryProfile["config"]["preferences"] {
   if (mode === "replace") {
     return {
@@ -3010,19 +4846,28 @@ function mergePreferenceState(
       minStars: generated.minStars,
       pushedWithinDays: generated.pushedWithinDays,
       excludeArchived: generated.excludeArchived,
-      excludeForks: generated.excludeForks
+      excludeForks: generated.excludeForks,
     };
   }
 
   return {
-    keywords: uniqueStrings([...current.keywords, ...generated.keywords]).slice(0, 10),
-    topics: uniqueStrings([...current.topics, ...generated.topics]).slice(0, 10),
+    keywords: uniqueStrings([...current.keywords, ...generated.keywords]).slice(
+      0,
+      10,
+    ),
+    topics: uniqueStrings([...current.topics, ...generated.topics]).slice(
+      0,
+      10,
+    ),
     languages: limitLanguages({ ...current.languages, ...generated.languages }),
-    excludeKeywords: uniqueStrings([...current.excludeKeywords, ...generated.excludeKeywords]).slice(0, 10),
+    excludeKeywords: uniqueStrings([
+      ...current.excludeKeywords,
+      ...generated.excludeKeywords,
+    ]).slice(0, 10),
     minStars: generated.minStars || current.minStars,
     pushedWithinDays: generated.pushedWithinDays || current.pushedWithinDays,
     excludeArchived: generated.excludeArchived,
-    excludeForks: generated.excludeForks
+    excludeForks: generated.excludeForks,
   };
 }
 
@@ -3037,18 +4882,18 @@ function limitLanguages(values: Record<string, number>) {
 function sectionSubtitle(section: Section) {
   switch (section) {
     case "recommendations":
-      return "查看有用项目，并直接跳转到 GitHub。";
+      return "从候选队列中找到值得判断、跟踪或验证的项目。";
     case "profiles":
-      return "调整发现偏好、扫描周期、资源策略和 AI 绑定。";
+      return "定义要找什么、排除什么，以及如何运行发现策略。";
     case "jobs":
-      return "查看扫描进度、限速、checkpoint 和恢复状态。";
+      return "追踪发现进度、checkpoint、限速与恢复状态。";
     case "github":
-      return "选择用于影响个性化推荐的 GitHub 项目。";
+      return "选择用于个性化推荐的账号、仓库和上下文。";
     case "providers":
-      return "分别管理 Chat 模型和 Embedding 模型。";
+      return "管理分析模型与 Embedding 服务的连接和用量。";
     case "knowledge":
-      return "可选将高价值发现结果同步到知识库。";
+      return "把高价值发现整理为可检索的知识资产。";
     case "operations":
-      return "查看资源调节、队列积压、AI 作业和成本估算。";
+      return "检查资源压力、队列积压、AI 作业与成本。";
   }
 }

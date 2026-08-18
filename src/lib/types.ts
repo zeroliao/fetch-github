@@ -11,13 +11,21 @@ export type JobStatus =
   | "failed";
 
 export type JobStage =
-  | "collect"
-  | "profile"
-  | "document"
-  | "embed"
-  | "llm"
-  | "rank"
-  | "sync";
+  "collect" | "profile" | "document" | "embed" | "llm" | "rank" | "sync";
+
+export type ScanFailureCode =
+  | "github_auth"
+  | "github_rate_limit"
+  | "github_forbidden"
+  | "github_timeout"
+  | "github_network"
+  | "ai_auth"
+  | "ai_invalid_request"
+  | "ai_rate_limit"
+  | "ai_timeout"
+  | "ai_network"
+  | "database_unavailable"
+  | "unknown";
 
 export type FeedbackAction =
   | "save"
@@ -91,11 +99,11 @@ export interface DiscoveryProfileConfig {
     sourceLimitPerQuery: number;
     maxCandidates: number;
     ruleFilterTopK: number;
-      detailFetchTopK: number;
-      embeddingTopK: number;
-      llmAnalyzeTopK: number;
-      semanticFitThreshold?: number;
-      finalReportTopK: number;
+    detailFetchTopK: number;
+    embeddingTopK: number;
+    llmAnalyzeTopK: number;
+    semanticFitThreshold?: number;
+    finalReportTopK: number;
   };
   preferences: {
     keywords: string[];
@@ -265,6 +273,8 @@ export interface ScanJob {
   startedAt?: string;
   finishedAt?: string;
   errorMessage?: string;
+  errorCode?: ScanFailureCode;
+  errorResolution?: string;
   archivedAt?: string;
   createdAt: string;
 }

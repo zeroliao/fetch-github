@@ -12,3 +12,4 @@ tsconfig.tsbuildinfo
 .env
 .env.*
 !.env.example
+key.json

@@ -130,6 +130,8 @@ CREATE TABLE IF NOT EXISTS discovery_jobs (
   started_at TIMESTAMPTZ,
   finished_at TIMESTAMPTZ,
   error_message TEXT,
+  error_code TEXT,
+  error_resolution TEXT,
   archived_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
