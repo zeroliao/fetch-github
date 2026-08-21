@@ -50,8 +50,15 @@ function Invoke-SshAttempt {
         $sshArguments += $Command
     }
 
-    $output = @(& $SshExecutable @sshArguments 2>&1)
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Native SSH writes connection errors to stderr; capture them for classification.
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $SshExecutable @sshArguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 
     return [pscustomobject]@{
         ExitCode = $exitCode
