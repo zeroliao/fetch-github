@@ -108,16 +108,22 @@ pnpm worker:dev
 
 服务器部署必须使用已推送 commit。
 
+通过 Cloudflare Access 连接 `sub2api-cf` 时，统一使用以下脚本。登录态过期会打开浏览器重新授权，成功后自动重试一次；JWT 不写入部署日志。
+
+```powershell
+.\scripts\invoke-cloudflare-ssh.ps1 -RemoteCommand "<remote-command>"
+```
+
 推荐顺序：
 
 ```powershell
 git status --short
 git push origin <branch>
-ssh sub2api "cd /home/ubuntu/projects/fetch-github && git fetch origin && git checkout <branch-or-main> && git pull --ff-only"
-ssh sub2api "cd /home/ubuntu/projects/fetch-github && corepack pnpm install --frozen-lockfile"
-ssh sub2api "cd /home/ubuntu/projects/fetch-github && corepack pnpm db:init"
-ssh sub2api "cd /home/ubuntu/projects/fetch-github && corepack pnpm build"
-ssh sub2api "sudo systemctl restart fetchgithub-web.service fetchgithub-worker.service"
+.\scripts\invoke-cloudflare-ssh.ps1 -RemoteCommand "cd /home/ubuntu/projects/fetch-github && git fetch origin && git checkout <branch-or-main> && git pull --ff-only"
+.\scripts\invoke-cloudflare-ssh.ps1 -RemoteCommand "cd /home/ubuntu/projects/fetch-github && corepack pnpm install --frozen-lockfile"
+.\scripts\invoke-cloudflare-ssh.ps1 -RemoteCommand "cd /home/ubuntu/projects/fetch-github && corepack pnpm db:init"
+.\scripts\invoke-cloudflare-ssh.ps1 -RemoteCommand "cd /home/ubuntu/projects/fetch-github && corepack pnpm build"
+.\scripts\invoke-cloudflare-ssh.ps1 -RemoteCommand "sudo systemctl restart fetchgithub-web.service fetchgithub-worker.service"
 ```
 
 部署前如果服务正在执行长任务，优先：
@@ -132,10 +138,10 @@ ssh sub2api "sudo systemctl restart fetchgithub-web.service fetchgithub-worker.s
 至少验证：
 
 ```powershell
-ssh sub2api "systemctl is-active fetchgithub-web.service"
-ssh sub2api "systemctl is-active fetchgithub-worker.service"
-ssh sub2api "journalctl -u fetchgithub-web.service -n 40 --no-pager"
-ssh sub2api "journalctl -u fetchgithub-worker.service -n 40 --no-pager"
+.\scripts\invoke-cloudflare-ssh.ps1 -RemoteCommand "systemctl is-active fetchgithub-web.service"
+.\scripts\invoke-cloudflare-ssh.ps1 -RemoteCommand "systemctl is-active fetchgithub-worker.service"
+.\scripts\invoke-cloudflare-ssh.ps1 -RemoteCommand "journalctl -u fetchgithub-web.service -n 40 --no-pager"
+.\scripts\invoke-cloudflare-ssh.ps1 -RemoteCommand "journalctl -u fetchgithub-worker.service -n 40 --no-pager"
 ```
 
 外部 URL：
@@ -206,16 +212,16 @@ ssh sub2api "cd /home/ubuntu/projects/fetch-github && git checkout v<last-succes
 
 ## 节点完成信号
 
-| 节点 | 完成信号 |
-| --- | --- |
-| 创建版本 | `docs/releases/<version>.md` 已创建，状态为 `开发中` |
-| 开发完成 | 工作区干净，commit 已完成 |
-| 本地验证 | 版本记录写明 typecheck/test/build/diff-check 结果 |
-| 提测 | `release/<version>` 或部署 commit 已推送，状态为 `已提测` |
-| 部署 | 服务器 commit、`db:init`、`build`、服务重启结果已记录 |
-| 线上验证 | 登录页、API 鉴权、服务日志和核心路径验证通过 |
-| 成功归档 | 状态为 `成功`，`main` 和 `v<version>` 已推送 |
-| 失败/取消 | 状态为 `失败` 或 `取消`，原因已记录 |
+| 节点      | 完成信号                                                  |
+| --------- | --------------------------------------------------------- |
+| 创建版本  | `docs/releases/<version>.md` 已创建，状态为 `开发中`      |
+| 开发完成  | 工作区干净，commit 已完成                                 |
+| 本地验证  | 版本记录写明 typecheck/test/build/diff-check 结果         |
+| 提测      | `release/<version>` 或部署 commit 已推送，状态为 `已提测` |
+| 部署      | 服务器 commit、`db:init`、`build`、服务重启结果已记录     |
+| 线上验证  | 登录页、API 鉴权、服务日志和核心路径验证通过              |
+| 成功归档  | 状态为 `成功`，`main` 和 `v<version>` 已推送              |
+| 失败/取消 | 状态为 `失败` 或 `取消`，原因已记录                       |
 
 ## 当前项目建议节奏
 
@@ -232,4 +238,3 @@ ssh sub2api "cd /home/ubuntu/projects/fetch-github && git checkout v<last-succes
 ```text
 docs/releases/<version>.md
 ```
-

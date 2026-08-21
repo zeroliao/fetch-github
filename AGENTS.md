@@ -11,19 +11,20 @@
 
 ## Commands
 
-| Task                  | Command                         |
-| --------------------- | ------------------------------- |
-| List files            | `rg --files`                    |
-| Dev server            | `pnpm dev`                      |
-| Build                 | `pnpm build`                    |
-| Typecheck             | `pnpm typecheck`                |
-| Worker dev            | `pnpm worker:dev`               |
-| Worker start          | `pnpm worker:start`             |
-| Start database        | `docker compose up -d postgres` |
-| Apply database schema | `pnpm db:init`                  |
-| Local setup           | `pnpm setup:local`              |
-| Tests                 | `pnpm test`                     |
-| Lint                  | Not defined yet                 |
+| Task                  | Command                                                            |
+| --------------------- | ------------------------------------------------------------------ |
+| List files            | `rg --files`                                                       |
+| Dev server            | `pnpm dev`                                                         |
+| Build                 | `pnpm build`                                                       |
+| Typecheck             | `pnpm typecheck`                                                   |
+| Worker dev            | `pnpm worker:dev`                                                  |
+| Worker start          | `pnpm worker:start`                                                |
+| Start database        | `docker compose up -d postgres`                                    |
+| Apply database schema | `pnpm db:init`                                                     |
+| Local setup           | `pnpm setup:local`                                                 |
+| Tests                 | `pnpm test`                                                        |
+| Cloudflare Access SSH | `.\\scripts\\invoke-cloudflare-ssh.ps1 -RemoteCommand "<command>"` |
+| Lint                  | Not defined yet                                                    |
 
 When package, build, or test configuration is added, update this table with commands verified from repository files.
 

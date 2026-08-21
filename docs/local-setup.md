@@ -67,6 +67,16 @@ pnpm build
 pnpm worker:dev
 ```
 
+## Cloudflare Access SSH
+
+生产服务器使用 SSH alias `sub2api-cf`。从 Windows PowerShell 连接时，可以使用项目脚本：
+
+```powershell
+.\scripts\invoke-cloudflare-ssh.ps1 -RemoteCommand "systemctl is-active fetchgithub-web.service"
+```
+
+脚本先执行一次 SSH。如果错误表明 Cloudflare Access 登录可能过期，会打开浏览器要求重新授权，并在授权成功后自动重试一次。脚本不会输出 JWT，也不会修改全局 SSH 配置；第二次仍失败时以非零 exit code 退出。
+
 ## 页面操作
 
 - `GITHUB_TOKEN` 用来避免 GitHub API 匿名限流。
