@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/server/auth";
 import { testProvider } from "@/server/aiClient";
+import { classifyAiProviderFailure } from "@/server/aiProviderPolicy";
 import { getAiProvider } from "@/server/store";
 
 export async function POST(
   _request: Request,
-  context: { params: Promise<{ id: string }> }
+  context: { params: Promise<{ id: string }> },
 ) {
   const auth = await requireAuth();
   if (auth.response) return auth.response;
@@ -17,11 +18,15 @@ export async function POST(
     return NextResponse.json({ error: "AI 配置不存在。" }, { status: 404 });
   }
 
-  const test = await testProvider(provider).catch((error) => ({
-    ready: false,
-    checked: true,
-    reason: error instanceof Error ? error.message : String(error)
-  }));
+  const test = await testProvider(provider).catch((error) => {
+    const failure = classifyAiProviderFailure(error);
+    return {
+      ready: false,
+      checked: true,
+      reason: failure.reason,
+      recoverySuggestion: failure.recoverySuggestion,
+    };
+  });
 
   return NextResponse.json({
     providerId: provider.id,
@@ -33,7 +38,9 @@ export async function POST(
       apiKeyEnv: provider.apiKeyEnv,
       apiKeyPresent: Boolean(process.env[provider.apiKeyEnv]),
       checked: test.checked,
-      reason: "reason" in test ? test.reason : undefined
-    }
+      reason: "reason" in test ? test.reason : undefined,
+      recoverySuggestion:
+        "recoverySuggestion" in test ? test.recoverySuggestion : undefined,
+    },
   });
 }

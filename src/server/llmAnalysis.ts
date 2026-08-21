@@ -1,7 +1,7 @@
+import { z } from "zod";
 import { compactMarkdownForAnalysis } from "@/lib/text";
-import type { DiscoveryProfile, OpportunityAnalysis, RepoSummary } from "@/lib/types";
-import { callChatJsonWithUsage } from "./aiClient";
-import { getAiProvider } from "./store";
+import type { AiProvider, DiscoveryProfile, RepoSummary } from "@/lib/types";
+import { AiProviderOutputSchemaError, callChatJsonWithUsage } from "./aiClient";
 
 export const REPO_ANALYSIS_PROMPT_VERSION = "opportunity-radar-v3";
 export const REPO_DELTA_ANALYSIS_PROMPT_VERSION = "opportunity-radar-delta-v1";
@@ -29,43 +29,78 @@ export function buildRepoAnalysisPromptRepo(repo: RepoSummary) {
     updatedAt: repo.updatedAt,
     archived: repo.archived,
     fork: repo.fork,
-    private: repo.private ?? false
+    private: repo.private ?? false,
   };
 }
 
-export interface RepoAnalysisResult {
-  summary: string;
-  categories: string[];
-  target_users: string[];
-  core_features: string[];
-  maturity: string;
-  is_match: boolean;
-  match_score: number;
-  confidence: number;
-  matched_preferences: string[];
-  risks: string[];
-  recommendation_reason: string;
-  opportunity?: OpportunityAnalysis;
-}
+const scoreSchema = z.number().finite().min(0).max(1);
+const textSchema = z.string().trim().min(1);
+const textListSchema = z.array(textSchema).max(30);
+
+export const repoAnalysisResultSchema = z
+  .object({
+    summary: textSchema.max(4_000),
+    categories: textListSchema,
+    target_users: textListSchema,
+    core_features: textListSchema,
+    maturity: textSchema.max(200),
+    is_match: z.boolean(),
+    match_score: scoreSchema,
+    confidence: scoreSchema,
+    matched_preferences: textListSchema,
+    risks: textListSchema,
+    recommendation_reason: textSchema.max(4_000),
+    opportunity: z
+      .object({
+        type: textSchema.max(300),
+        score: scoreSchema,
+        monetizationScore: scoreSchema,
+        growthSignal: scoreSchema,
+        executionFit: scoreSchema,
+        differentiationSpace: scoreSchema,
+        technicalQuality: scoreSchema,
+        targetCustomers: textListSchema,
+        monetizationPaths: textListSchema,
+        validationSteps: textListSchema,
+        suggestedAction: z.enum([
+          "observe",
+          "track",
+          "validate",
+          "build",
+          "ignore",
+        ]),
+        evidence: textListSchema,
+      })
+      .strict(),
+  })
+  .strict();
+
+type ParsedRepoAnalysisResult = z.infer<typeof repoAnalysisResultSchema>;
+export type RepoAnalysisResult = Omit<
+  ParsedRepoAnalysisResult,
+  "opportunity"
+> & {
+  opportunity?: ParsedRepoAnalysisResult["opportunity"];
+};
 
 export async function analyzeRepoWithLlm(
-  input: RepoAnalysisInput
+  input: RepoAnalysisInput,
+  provider: AiProvider,
 ): Promise<RepoAnalysisResult> {
-  return (await analyzeRepoWithLlmWithUsage(input)).analysis;
+  return (await analyzeRepoWithLlmWithUsage(input, provider)).analysis;
 }
 
 export async function analyzeRepoWithLlmWithUsage(
-  input: RepoAnalysisInput
-): Promise<{ analysis: RepoAnalysisResult; tokenUsage: Record<string, unknown> }> {
-  const provider = await getAiProvider(input.profile.config.ai.chatProviderId);
-  if (!provider) {
-    throw new Error("Chat 模型配置不存在。");
-  }
-
+  input: RepoAnalysisInput,
+  provider: AiProvider,
+): Promise<{
+  analysis: RepoAnalysisResult;
+  tokenUsage: Record<string, unknown>;
+}> {
   const isDelta = Boolean(input.previousAnalysis);
   const readmeForPrompt = compactMarkdownForAnalysis(
     input.readme,
-    isDelta ? README_DELTA_ANALYSIS_MAX_CHARS : README_ANALYSIS_MAX_CHARS
+    isDelta ? README_DELTA_ANALYSIS_MAX_CHARS : README_ANALYSIS_MAX_CHARS,
   );
 
   const result = await callChatJsonWithUsage({
@@ -74,7 +109,7 @@ export async function analyzeRepoWithLlmWithUsage(
       {
         role: "system",
         content:
-          "你是商业机会雷达。判断 GitHub 项目是否有变现机会。只返回合法 JSON。用户可见文本用简体中文，技术名词可保留英文。"
+          "你是商业机会雷达。判断 GitHub 项目是否有变现机会。只返回合法 JSON。用户可见文本用简体中文，技术名词可保留英文。",
       },
       {
         role: "user",
@@ -85,21 +120,21 @@ export async function analyzeRepoWithLlmWithUsage(
               readme: readmeForPrompt,
               compressed: readmeForPrompt.length < input.readme.length,
               previousAnalysis: input.previousAnalysis,
-              changeHint: input.changeHint
+              changeHint: input.changeHint,
             })
           : buildRepoAnalysisPrompt({
               repo: input.repo,
               profile: input.profile,
               readme: readmeForPrompt,
-              compressed: readmeForPrompt.length < input.readme.length
-            })
-      }
-    ]
+              compressed: readmeForPrompt.length < input.readme.length,
+            }),
+      },
+    ],
   });
 
   return {
-    analysis: normalizeAnalysis(result.data),
-    tokenUsage: result.usage
+    analysis: parseRepoAnalysisResult(result.data),
+    tokenUsage: result.usage,
   };
 }
 
@@ -122,7 +157,7 @@ export function buildRepoDeltaAnalysisPrompt(input: {
     changedContext: input.readme,
     readmeCompressed: input.compressed,
     output:
-      "返回完整 JSON，字段同 full prompt: summary,categories,target_users,core_features,maturity,is_match,match_score,confidence,matched_preferences,risks,recommendation_reason,opportunity{type,score,monetizationScore,growthSignal,executionFit,differentiationSpace,technicalQuality,targetCustomers,monetizationPaths,validationSteps,suggestedAction,evidence}. 用户可见文本用简体中文。"
+      "返回完整 JSON，字段同 full prompt: summary,categories,target_users,core_features,maturity,is_match,match_score,confidence,matched_preferences,risks,recommendation_reason,opportunity{type,score,monetizationScore,growthSignal,executionFit,differentiationSpace,technicalQuality,targetCustomers,monetizationPaths,validationSteps,suggestedAction,evidence}. 用户可见文本用简体中文。",
   });
 }
 
@@ -145,9 +180,9 @@ function compactPreviousAnalysis(previous?: RepoAnalysisResult) {
           monetizationScore: previous.opportunity.monetizationScore,
           suggestedAction: previous.opportunity.suggestedAction,
           monetizationPaths: previous.opportunity.monetizationPaths.slice(0, 5),
-          validationSteps: previous.opportunity.validationSteps.slice(0, 5)
+          validationSteps: previous.opportunity.validationSteps.slice(0, 5),
         }
-      : undefined
+      : undefined,
   };
 }
 
@@ -166,70 +201,17 @@ export function buildRepoAnalysisPrompt(input: {
     readme: input.readme,
     readmeCompressed: input.compressed,
     output:
-      "JSON keys: summary,categories,target_users,core_features,maturity,is_match,match_score,confidence,matched_preferences,risks,recommendation_reason,opportunity{type,score,monetizationScore,growthSignal,executionFit,differentiationSpace,technicalQuality,targetCustomers,monetizationPaths,validationSteps,suggestedAction,evidence}. summary 只写一句中文功能简介，优先说明项目是做什么的、给谁用、能解决什么问题。Scores 0..1. suggestedAction=observe|track|validate|build|ignore."
+      "JSON keys: summary,categories,target_users,core_features,maturity,is_match,match_score,confidence,matched_preferences,risks,recommendation_reason,opportunity{type,score,monetizationScore,growthSignal,executionFit,differentiationSpace,technicalQuality,targetCustomers,monetizationPaths,validationSteps,suggestedAction,evidence}. summary 只写一句中文功能简介，优先说明项目是做什么的、给谁用、能解决什么问题。Scores 0..1. suggestedAction=observe|track|validate|build|ignore.",
   });
 }
 
-function normalizeAnalysis(value: unknown): RepoAnalysisResult {
-  const object = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+export function parseRepoAnalysisResult(value: unknown): RepoAnalysisResult {
+  const parsed = repoAnalysisResultSchema.safeParse(value);
+  if (parsed.success) return parsed.data;
 
-  return {
-    summary: String(object.summary ?? ""),
-    categories: stringArray(object.categories),
-    target_users: stringArray(object.target_users),
-    core_features: stringArray(object.core_features),
-    maturity: String(object.maturity ?? "unknown"),
-    is_match: Boolean(object.is_match),
-    match_score: number01(object.match_score),
-    confidence: number01(object.confidence),
-    matched_preferences: stringArray(object.matched_preferences),
-    risks: stringArray(object.risks),
-    recommendation_reason: String(object.recommendation_reason ?? ""),
-    opportunity: normalizeOpportunityAnalysis(object.opportunity)
-  };
-}
-
-function normalizeOpportunityAnalysis(value: unknown): OpportunityAnalysis | undefined {
-  const object = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
-  if (!object) {
-    return undefined;
-  }
-
-  return {
-    type: String(object.type ?? "SaaS/工具机会"),
-    score: number01(object.score),
-    monetizationScore: number01(object.monetizationScore),
-    growthSignal: number01(object.growthSignal),
-    executionFit: number01(object.executionFit),
-    differentiationSpace: number01(object.differentiationSpace),
-    technicalQuality: number01(object.technicalQuality),
-    targetCustomers: stringArray(object.targetCustomers),
-    monetizationPaths: stringArray(object.monetizationPaths),
-    validationSteps: stringArray(object.validationSteps),
-    suggestedAction: normalizeAction(object.suggestedAction),
-    evidence: stringArray(object.evidence)
-  };
-}
-
-function normalizeAction(value: unknown): OpportunityAnalysis["suggestedAction"] {
-  return value === "build" ||
-    value === "validate" ||
-    value === "track" ||
-    value === "observe" ||
-    value === "ignore"
-    ? value
-    : "observe";
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.map(String) : [];
-}
-
-function number01(value: unknown): number {
-  const number = Number(value);
-  if (Number.isNaN(number)) {
-    return 0;
-  }
-
-  return Math.max(0, Math.min(1, number));
+  const issueSummary = parsed.error.issues
+    .slice(0, 8)
+    .map((issue) => `${issue.path.join(".") || "root"}:${issue.code}`)
+    .join(", ");
+  throw new AiProviderOutputSchemaError(issueSummary);
 }

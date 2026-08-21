@@ -2,12 +2,12 @@ import { calculateFinalScore, clampScore, SCORE_VERSION } from "@/lib/scoring";
 import {
   buildChineseRepoSummary,
   ensureChineseSummary,
-  normalizeChineseLabels
+  normalizeChineseLabels,
 } from "@/lib/recommendationText";
 import {
   buildHeuristicOpportunityAnalysis,
   normalizeOpportunityProfile,
-  scoreOpportunitySignals
+  scoreOpportunitySignals,
 } from "@/lib/opportunity";
 import { inferRecommendationCluster } from "@/lib/repoCluster";
 import type {
@@ -15,13 +15,13 @@ import type {
   PreferenceSignal,
   Recommendation,
   RepoSummary,
-  UserGitHubRepo
+  UserGitHubRepo,
 } from "@/lib/types";
 import type { RepoAnalysisResult } from "./llmAnalysis";
 
 export function repoPassesHardFilters(
   repo: RepoSummary,
-  profile: DiscoveryProfile
+  profile: DiscoveryProfile,
 ): boolean {
   const { preferences } = profile.config;
 
@@ -38,8 +38,13 @@ export function repoPassesHardFilters(
   }
 
   const topics = repo.topics ?? [];
-  const text = `${repo.fullName} ${repo.description} ${topics.join(" ")}`.toLowerCase();
-  if (preferences.excludeKeywords.some((keyword) => text.includes(keyword.toLowerCase()))) {
+  const text =
+    `${repo.fullName} ${repo.description} ${topics.join(" ")}`.toLowerCase();
+  if (
+    preferences.excludeKeywords.some((keyword) =>
+      text.includes(keyword.toLowerCase()),
+    )
+  ) {
     return false;
   }
 
@@ -55,17 +60,18 @@ export function repoPassesHardFilters(
 export function scoreRepo(
   repo: RepoSummary,
   profile: DiscoveryProfile,
-  preferenceSignals: PreferenceSignal[] = []
+  preferenceSignals: PreferenceSignal[] = [],
 ) {
   const { preferences } = profile.config;
   const topics = repo.topics ?? [];
-  const text = `${repo.fullName} ${repo.description} ${topics.join(" ")}`.toLowerCase();
+  const text =
+    `${repo.fullName} ${repo.description} ${topics.join(" ")}`.toLowerCase();
 
   const keywordHits = preferences.keywords.filter((keyword) =>
-    text.includes(keyword.toLowerCase())
+    text.includes(keyword.toLowerCase()),
   ).length;
   const topicHits = preferences.topics.filter((topic) =>
-    topics.map((value) => value.toLowerCase()).includes(topic.toLowerCase())
+    topics.map((value) => value.toLowerCase()).includes(topic.toLowerCase()),
   ).length;
   const languageWeight = preferences.languages[repo.primaryLanguage] ?? 0;
   const starScore = Math.min(1, Math.log10(repo.stars + 1) / 5);
@@ -73,16 +79,27 @@ export function scoreRepo(
   const qualityScore = repo.description ? 0.7 : 0.35;
 
   const relevanceScore = clampScore(
-    keywordHits * 0.18 + topicHits * 0.16 + languageWeight * 0.18
+    keywordHits * 0.18 + topicHits * 0.16 + languageWeight * 0.18,
   );
   const ruleScore = clampScore(
-    relevanceScore * 0.5 + starScore * 0.25 + freshnessScore * 0.15 + qualityScore * 0.1
+    relevanceScore * 0.5 +
+      starScore * 0.25 +
+      freshnessScore * 0.15 +
+      qualityScore * 0.1,
   );
-  const githubContextFit = clampScore(relevanceScore * 0.75 + languageWeight * 0.08);
+  const githubContextFit = clampScore(
+    relevanceScore * 0.75 + languageWeight * 0.08,
+  );
   const llmMatchScore = clampScore(ruleScore * 0.85 + relevanceScore * 0.15);
   const feedbackScore = calculateFeedbackScore(repo, preferenceSignals);
-  const opportunityProfile = normalizeOpportunityProfile(profile.config.opportunity);
-  const opportunitySignals = scoreOpportunitySignals(repo, opportunityProfile, ruleScore);
+  const opportunityProfile = normalizeOpportunityProfile(
+    profile.config.opportunity,
+  );
+  const opportunitySignals = scoreOpportunitySignals(
+    repo,
+    opportunityProfile,
+    ruleScore,
+  );
   const finalScore = calculateFinalScore({
     ruleScore,
     githubContextFit,
@@ -93,7 +110,7 @@ export function scoreRepo(
     growthSignal: opportunitySignals.growthSignal,
     executionFit: opportunitySignals.executionFit,
     differentiationSpace: opportunitySignals.differentiationSpace,
-    technicalQuality: opportunitySignals.technicalQuality
+    technicalQuality: opportunitySignals.technicalQuality,
   });
 
   return {
@@ -103,7 +120,7 @@ export function scoreRepo(
     feedbackScore,
     opportunitySignals,
     finalScore,
-    reasons: buildReasons(repo, profile, keywordHits, topicHits)
+    reasons: buildReasons(repo, profile, keywordHits, topicHits),
   };
 }
 
@@ -113,21 +130,26 @@ export function buildRecommendation(
   rank: number,
   analysis?: RepoAnalysisResult,
   preferenceSignals: PreferenceSignal[] = [],
-  userRepos: UserGitHubRepo[] = []
+  userRepos: UserGitHubRepo[] = [],
 ): Recommendation {
   const score = scoreRepo(repo, profile, preferenceSignals);
   const relatedUserRepos = findRelatedUserRepos(repo, userRepos);
   const githubContextFit = clampScore(
-    Math.max(score.githubContextFit, relatedUserRepos[0]?.score ?? 0)
+    Math.max(score.githubContextFit, relatedUserRepos[0]?.score ?? 0),
   );
   const llmMatchScore = analysis?.match_score ?? score.llmMatchScore;
-  const opportunityProfile = normalizeOpportunityProfile(profile.config.opportunity);
+  const opportunityProfile = normalizeOpportunityProfile(
+    profile.config.opportunity,
+  );
   const heuristicOpportunity = buildHeuristicOpportunityAnalysis(
     repo,
     opportunityProfile,
-    score.opportunitySignals
+    score.opportunitySignals,
   );
-  const opportunity = mergeOpportunityAnalysis(analysis?.opportunity, heuristicOpportunity);
+  const opportunity = mergeOpportunityAnalysis(
+    analysis?.opportunity,
+    heuristicOpportunity,
+  );
   const finalScore = calculateFinalScore({
     ruleScore: score.ruleScore,
     githubContextFit,
@@ -138,18 +160,18 @@ export function buildRecommendation(
     growthSignal: opportunity.growthSignal,
     executionFit: opportunity.executionFit,
     differentiationSpace: opportunity.differentiationSpace,
-    technicalQuality: opportunity.technicalQuality
+    technicalQuality: opportunity.technicalQuality,
   });
   const matchedPreferences = normalizeChineseLabels(
     analysis?.matched_preferences.length
       ? analysis.matched_preferences
-      : inferMatchedPreferences(repo, profile)
+      : inferMatchedPreferences(repo, profile),
   );
   const summary = analysis?.summary || buildChineseSummary(repo, profile);
   const reasons = normalizeChineseLabels(
     analysis?.recommendation_reason
       ? [analysis.recommendation_reason, ...score.reasons]
-      : score.reasons
+      : score.reasons,
   );
 
   return {
@@ -169,7 +191,7 @@ export function buildRecommendation(
       differentiation: opportunity.differentiationSpace,
       technicalQuality: opportunity.technicalQuality,
       final: finalScore,
-      scoreVersion: SCORE_VERSION
+      scoreVersion: SCORE_VERSION,
     },
     summary,
     summaryZh: ensureChineseSummary(summary, repo, matchedPreferences),
@@ -184,8 +206,18 @@ export function buildRecommendation(
     tags: [],
     relatedUserRepos,
     cluster: inferRecommendationCluster(repo, opportunity.type),
+    preferenceStatus: "pending",
+    opportunityStatus:
+      analysis &&
+      analysis.is_match &&
+      opportunity.score >= opportunityProfile.minOpportunityScore
+        ? "qualified"
+        : analysis
+          ? "not_qualified"
+          : "unassessed",
+    opportunityStage: "observing",
     status: "new",
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
   };
 }
 
@@ -215,12 +247,12 @@ function buildReasons(
   repo: RepoSummary,
   profile: DiscoveryProfile,
   keywordHits: number,
-  topicHits: number
+  topicHits: number,
 ): string[] {
   const reasons = [
     `命中 ${keywordHits} 个关键词和 ${topicHits} 个主题。`,
     `${repo.primaryLanguage} 技术栈信号明显，当前有 ${repo.stars.toLocaleString()} 个 stars。`,
-    `最近推送时间为 ${new Date(repo.pushedAt).toLocaleDateString("zh-CN")}。`
+    `最近推送时间为 ${new Date(repo.pushedAt).toLocaleDateString("zh-CN")}。`,
   ];
 
   if (profile.config.preferences.languages[repo.primaryLanguage]) {
@@ -236,7 +268,7 @@ function buildChineseSummary(repo: RepoSummary, profile: DiscoveryProfile) {
 
 function mergeOpportunityAnalysis(
   analysisOpportunity: RepoAnalysisResult["opportunity"],
-  fallback: ReturnType<typeof buildHeuristicOpportunityAnalysis>
+  fallback: ReturnType<typeof buildHeuristicOpportunityAnalysis>,
 ) {
   if (!analysisOpportunity) {
     return fallback;
@@ -254,24 +286,36 @@ function mergeOpportunityAnalysis(
     validationSteps: analysisOpportunity.validationSteps.length
       ? analysisOpportunity.validationSteps
       : fallback.validationSteps,
-    evidence: analysisOpportunity.evidence.length ? analysisOpportunity.evidence : fallback.evidence
+    evidence: analysisOpportunity.evidence.length
+      ? analysisOpportunity.evidence
+      : fallback.evidence,
   };
 }
 
-function inferMatchedPreferences(repo: RepoSummary, profile: DiscoveryProfile): string[] {
+function inferMatchedPreferences(
+  repo: RepoSummary,
+  profile: DiscoveryProfile,
+): string[] {
   const text = `${repo.fullName} ${repo.description}`.toLowerCase();
   const keywords = profile.config.preferences.keywords.filter((keyword) =>
-    text.includes(keyword.toLowerCase())
+    text.includes(keyword.toLowerCase()),
   );
   const repoTopics = repo.topics ?? [];
   const topics = profile.config.preferences.topics.filter((topic) =>
-    repoTopics.map((value) => value.toLowerCase()).includes(topic.toLowerCase())
+    repoTopics
+      .map((value) => value.toLowerCase())
+      .includes(topic.toLowerCase()),
   );
 
-  return [...new Set([...keywords, ...topics, repo.primaryLanguage])].filter(Boolean);
+  return [...new Set([...keywords, ...topics, repo.primaryLanguage])].filter(
+    Boolean,
+  );
 }
 
-function calculateFeedbackScore(repo: RepoSummary, signals: PreferenceSignal[]) {
+function calculateFeedbackScore(
+  repo: RepoSummary,
+  signals: PreferenceSignal[],
+) {
   if (signals.length === 0) {
     return 0;
   }
@@ -279,13 +323,22 @@ function calculateFeedbackScore(repo: RepoSummary, signals: PreferenceSignal[]) 
   const topics = new Set(repo.topics.map((topic) => topic.toLowerCase()));
   const text = `${repo.fullName} ${repo.description}`.toLowerCase();
   const total = signals.reduce((sum, signal) => {
-    if (signal.signalType === "language" && signal.value === repo.primaryLanguage) {
+    if (
+      signal.signalType === "language" &&
+      signal.value === repo.primaryLanguage
+    ) {
       return sum + signal.weight;
     }
-    if (signal.signalType === "topic" && topics.has(signal.value.toLowerCase())) {
+    if (
+      signal.signalType === "topic" &&
+      topics.has(signal.value.toLowerCase())
+    ) {
       return sum + signal.weight;
     }
-    if (signal.signalType === "keyword" && text.includes(signal.value.toLowerCase())) {
+    if (
+      signal.signalType === "keyword" &&
+      text.includes(signal.value.toLowerCase())
+    ) {
       return sum + signal.weight;
     }
     return sum;
@@ -296,7 +349,7 @@ function calculateFeedbackScore(repo: RepoSummary, signals: PreferenceSignal[]) 
 
 function findRelatedUserRepos(
   repo: RepoSummary,
-  userRepos: UserGitHubRepo[]
+  userRepos: UserGitHubRepo[],
 ): Recommendation["relatedUserRepos"] {
   const repoTopics = new Set(repo.topics.map((topic) => topic.toLowerCase()));
   const repoText = `${repo.fullName} ${repo.description}`.toLowerCase();
@@ -305,7 +358,7 @@ function findRelatedUserRepos(
     .filter((userRepo) => userRepo.selectedForContext)
     .map((userRepo) => {
       const sharedTopics = userRepo.topics.filter((topic) =>
-        repoTopics.has(topic.toLowerCase())
+        repoTopics.has(topic.toLowerCase()),
       );
       const languageMatch =
         userRepo.primaryLanguage !== "Unknown" &&
@@ -314,21 +367,27 @@ function findRelatedUserRepos(
         .toLowerCase()
         .split(/[^a-z0-9+#.-]+/i)
         .filter((token) => token.length >= 3);
-      const keywordHits = nameTokens.filter((token) => repoText.includes(token)).length;
+      const keywordHits = nameTokens.filter((token) =>
+        repoText.includes(token),
+      ).length;
       const score = clampScore(
-        sharedTopics.length * 0.22 + (languageMatch ? 0.28 : 0) + keywordHits * 0.08
+        sharedTopics.length * 0.22 +
+          (languageMatch ? 0.28 : 0) +
+          keywordHits * 0.08,
       );
       const reasons = [
-        sharedTopics.length ? `共享 topic：${sharedTopics.slice(0, 3).join(", ")}` : "",
+        sharedTopics.length
+          ? `共享 topic：${sharedTopics.slice(0, 3).join(", ")}`
+          : "",
         languageMatch ? `同为 ${repo.primaryLanguage}` : "",
-        keywordHits ? "名称或描述存在相似关键词" : ""
+        keywordHits ? "名称或描述存在相似关键词" : "",
       ].filter(Boolean);
 
       return {
         userRepoId: userRepo.id,
         fullName: userRepo.fullName,
         reason: reasons.join("；") || "与当前发现偏好存在弱相关。",
-        score
+        score,
       };
     })
     .filter((item) => item.score > 0)

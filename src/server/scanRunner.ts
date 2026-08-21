@@ -1,13 +1,18 @@
 import crypto from "node:crypto";
-import {
-  cosineSimilarity,
-  shouldDeferLlmBySemanticFit,
-} from "@/lib/semanticGate";
 import { compactMarkdownForAnalysis } from "@/lib/text";
-import type { DiscoveryProfile, RepoSummary, ScanJob } from "@/lib/types";
+import type {
+  AiProvider,
+  DiscoveryProfile,
+  ProviderKind,
+  RepoSummary,
+  ScanJob,
+} from "@/lib/types";
 import { buildGitHubSearchQueryPlans } from "@/server/githubSearch";
 import {
   fetchRepositoryReadme,
+  GITHUB_SEARCH_MAX_PAGE_SIZE,
+  GITHUB_SEARCH_MAX_RESULTS,
+  isGitHubSearchPageComplete,
   searchRepositories,
 } from "@/server/githubClient";
 import {
@@ -15,7 +20,7 @@ import {
   repoPassesHardFilters,
   scoreRepo,
 } from "@/server/ranking";
-import { callEmbedding } from "./aiClient";
+import { AiProviderOutputSchemaError, callEmbedding } from "./aiClient";
 import {
   analyzeRepoWithLlmWithUsage,
   buildRepoDeltaAnalysisPrompt,
@@ -29,6 +34,10 @@ import {
   recordResourceDecision,
 } from "./resourceGovernor";
 import {
+  classifyAiProviderFailure,
+  orderEligibleProviders,
+} from "./aiProviderPolicy";
+import {
   buildSourceAdapterPlans,
   type SourceAdapterPlan,
 } from "./sourceAdapters";
@@ -39,6 +48,7 @@ import {
 } from "./qualitySignals";
 import {
   claimQueuedRepoBatch,
+  claimRepoProcessing,
   completeCandidate,
   createLlmJob,
   enqueueCandidates,
@@ -46,22 +56,26 @@ import {
   finishLlmJob,
   getCachedEmbedding,
   getAppSettings,
-  getAiProvider,
   getJobQueueCount,
   getLatestLlmResult,
   getLatestRepoDocument,
   getRepoEmbedding,
-  getRepoEmbeddingVector,
   listGithubRepos,
   getScanCheckpoint,
   getScanJob,
   listPreferenceSignals,
+  listAiProviders,
   listProfiles,
   listRunnableScanJobs,
+  listScanProviderStates,
+  finishJobRepoProcessing,
+  finishRepoProcessing,
+  recordScanProviderFailure,
+  recordScanProviderSuccess,
   requeueRunningCandidates,
+  resetScanProviderFailures,
   rerankRecommendationsWithSemanticFit,
   retryCandidate,
-  trimRecommendations,
   upgradeRepoDataLevel,
   updateScanJob,
   upsertLlmResult,
@@ -74,19 +88,18 @@ import {
 } from "./store";
 
 const MAX_AI_CANDIDATE_ATTEMPTS = 3;
+const MAX_TRANSIENT_PROVIDER_ATTEMPTS = 2;
+const AI_PARSE_FAILURE_THRESHOLD = 3;
+const SOURCE_LIMIT_PER_QUERY = GITHUB_SEARCH_MAX_PAGE_SIZE;
+const GITHUB_SEARCH_MAX_PAGES =
+  GITHUB_SEARCH_MAX_RESULTS / GITHUB_SEARCH_MAX_PAGE_SIZE;
+const COMPLETE_CHECKPOINT_PREFIX = "complete:";
 
 interface RunScanJobOptions {
   jobId: string;
-  maxPages?: number;
-  maxProfileBatches?: number;
 }
 
-export async function runNextScanJob(
-  options: {
-    maxPages?: number;
-    maxProfileBatches?: number;
-  } = {},
-) {
+export async function runNextScanJob() {
   const settings = await getAppSettings();
   if (!settings.scanEnabled) {
     return undefined;
@@ -99,8 +112,6 @@ export async function runNextScanJob(
 
   return runScanJob({
     jobId: job.id,
-    maxPages: options.maxPages,
-    maxProfileBatches: options.maxProfileBatches,
   });
 }
 
@@ -113,6 +124,7 @@ export async function runScanJob(
 export async function resumeScanJob(
   options: RunScanJobOptions,
 ): Promise<ScanJob | undefined> {
+  await resetScanProviderFailures(options.jobId);
   return runScanJobInternal(options, true);
 }
 
@@ -131,6 +143,7 @@ async function runScanJobInternal(
   }
   if (
     ["completed", "failed"].includes(job.status) ||
+    (!allowPaused && job.status === "exception") ||
     (!allowPaused && job.status === "paused_by_user")
   ) {
     return job;
@@ -160,11 +173,13 @@ async function runScanJobInternal(
     "retry_later",
     "paused_by_memory",
     "paused_by_runtime",
+    "exception",
   ].includes(job.status);
   let current = shouldResumeFromQueue
     ? ((await updateScanJob(job.id, {
         status: "running",
-        startedAt: new Date().toISOString(),
+        startedAt: job.startedAt ?? new Date().toISOString(),
+        finishedAt: undefined,
         statusReason: undefined,
         errorMessage: undefined,
         errorCode: undefined,
@@ -185,9 +200,7 @@ async function runScanJobInternal(
 
   try {
     if (current.stage === "collect") {
-      current =
-        (await runCollectStage(current, profile, options.maxPages ?? 1)) ??
-        current;
+      current = (await runCollectStage(current, profile)) ?? current;
     }
 
     if (current.status !== "running" && current.status !== "throttled") {
@@ -195,12 +208,7 @@ async function runScanJobInternal(
     }
 
     if (current.stage === "profile") {
-      current =
-        (await runProfileStage(
-          current,
-          profile,
-          options.maxProfileBatches ?? 1,
-        )) ?? current;
+      current = (await runProfileStage(current, profile)) ?? current;
     }
 
     if (current.status !== "running" && current.status !== "throttled") {
@@ -208,12 +216,7 @@ async function runScanJobInternal(
     }
 
     if (current.stage === "document") {
-      current =
-        (await runDocumentStage(
-          current,
-          profile,
-          options.maxProfileBatches ?? 1,
-        )) ?? current;
+      current = (await runDocumentStage(current, profile)) ?? current;
     }
 
     if (current.status !== "running" && current.status !== "throttled") {
@@ -221,12 +224,7 @@ async function runScanJobInternal(
     }
 
     if (current.stage === "embed") {
-      current =
-        (await runEmbedStage(
-          current,
-          profile,
-          options.maxProfileBatches ?? 1,
-        )) ?? current;
+      current = (await runEmbedStage(current, profile)) ?? current;
     }
 
     if (current.status !== "running" && current.status !== "throttled") {
@@ -234,9 +232,7 @@ async function runScanJobInternal(
     }
 
     if (current.stage === "llm") {
-      current =
-        (await runLlmStage(current, profile, options.maxProfileBatches ?? 1)) ??
-        current;
+      current = (await runLlmStage(current, profile)) ?? current;
     }
 
     if (current.status !== "running" && current.status !== "throttled") {
@@ -250,6 +246,12 @@ async function runScanJobInternal(
     return current;
   } catch (error) {
     const failure = classifyScanFailure(error);
+    await finishJobRepoProcessing({
+      jobId: job.id,
+      status: "failed",
+      errorCode: failure.code,
+      errorMessage: failure.message,
+    });
     return (
       (await updateScanJob(job.id, {
         status: "failed",
@@ -274,16 +276,7 @@ async function runScanJobInternal(
 async function runCollectStage(
   job: ScanJob,
   profile: DiscoveryProfile,
-  maxPages: number,
 ): Promise<ScanJob | undefined> {
-  const runtimePause = shouldPauseByRuntime(job, profile);
-  if (runtimePause) {
-    return updateScanJob(job.id, {
-      status: "paused_by_runtime",
-      statusReason: runtimePause,
-    });
-  }
-
   const resource = evaluateResourcePolicy(profile, "collect");
   await recordResourceDecision(job.id, "collect", resource);
   if (resource.status === "paused_by_memory") {
@@ -305,39 +298,29 @@ async function runCollectStage(
   const queryPlans = buildGitHubSearchQueryPlans(profile);
   const sourceAdapterPlans = buildSourceAdapterPlans(profile);
   const preferenceSignals = await listPreferenceSignals(profile.id);
-  const perPage = Math.max(
-    1,
-    Math.min(profile.config.limits.sourceLimitPerQuery, 100),
-  );
-  const pageLimit = Math.max(1, maxPages);
-  let pagesProcessed = 0;
+  const workUnitLimit = Math.max(1, resource.batchSize);
+  let workUnitsProcessed = 0;
 
   for (const plan of sourceAdapterPlans) {
-    if (
-      pagesProcessed >= pageLimit ||
-      currentJob.candidateCount >= currentJob.maxCandidates
-    ) {
+    if (workUnitsProcessed >= workUnitLimit) {
       break;
     }
 
-    currentJob =
-      (await runSourceAdapterCollect({
-        job,
-        currentJob,
-        profile,
-        plan,
-        preferenceSignals,
-        resourceStatus: resource.status,
-        resourceReason: resource.reason,
-      })) ?? currentJob;
-    pagesProcessed += 1;
+    const result = await runSourceAdapterCollect({
+      job,
+      currentJob,
+      profile,
+      plan,
+      preferenceSignals,
+      resourceStatus: resource.status,
+      resourceReason: resource.reason,
+    });
+    currentJob = result.job ?? currentJob;
+    if (result.didWork) workUnitsProcessed += 1;
   }
 
   for (const plan of queryPlans) {
-    if (
-      pagesProcessed >= pageLimit ||
-      currentJob.candidateCount >= currentJob.maxCandidates
-    ) {
+    if (workUnitsProcessed >= workUnitLimit) {
       break;
     }
 
@@ -350,34 +333,29 @@ async function runCollectStage(
       queryHash,
       "collect",
     );
+    if (isCompletedCheckpoint(checkpoint)) {
+      continue;
+    }
     const nextPage = (checkpoint?.page ?? 0) + 1;
-    const maxPagesForQuery = Math.max(
-      1,
-      Math.ceil(profile.config.limits.sourceLimitPerQuery / perPage),
-    );
-    if (nextPage > maxPagesForQuery) {
+    if (nextPage > GITHUB_SEARCH_MAX_PAGES) {
       continue;
     }
 
     const result = await searchRepositories({
       query: plan.query,
-      perPage,
+      perPage: SOURCE_LIMIT_PER_QUERY,
       page: nextPage,
       sort: plan.sort,
       order: plan.order,
     });
 
-    const remaining = Math.max(
-      0,
-      currentJob.maxCandidates - currentJob.candidateCount,
-    );
     const repos = result.repos;
 
     const repoStats = await upsertRepos(repos, "L0");
-    const candidates = selectDeepAnalysisCandidates(
+    const candidates = await selectDeepAnalysisCandidates(
       repoStats,
       profile,
-      remaining,
+      job.id,
     );
     await upgradeRepoDataLevel(candidates, "L1");
     await enqueueCandidates(
@@ -398,12 +376,18 @@ async function runCollectStage(
       repoStats,
       candidates.length,
     );
+    const queryComplete = isGitHubSearchPageComplete({
+      page: nextPage,
+      perPage: SOURCE_LIMIT_PER_QUERY,
+      returnedCount: repos.length,
+      totalCount: result.totalCount,
+    });
     await upsertScanCheckpoint({
       jobId: job.id,
       source: plan.sourceId,
       queryHash,
       page: nextPage,
-      cursor: `${plan.sourceLabel}: ${plan.query}`,
+      cursor: `${queryComplete ? COMPLETE_CHECKPOINT_PREFIX : ""}${plan.sourceLabel}: ${plan.query}`,
       processedCount: fetchedCount,
       stage: "collect",
     });
@@ -418,25 +402,10 @@ async function runCollectStage(
         statusReason:
           resource.status === "throttled" ? resource.reason : undefined,
       })) ?? currentJob;
-    pagesProcessed += 1;
-
-    if (repos.length < perPage || result.totalCount <= nextPage * perPage) {
-      await upsertScanCheckpoint({
-        jobId: job.id,
-        source: plan.sourceId,
-        queryHash,
-        page: maxPagesForQuery,
-        cursor: `${plan.sourceLabel}: ${plan.query}`,
-        processedCount: fetchedCount,
-        stage: "collect",
-      });
-    }
+    workUnitsProcessed += 1;
   }
 
-  if (
-    currentJob.candidateCount >= currentJob.maxCandidates ||
-    (await isCollectComplete(job.id, profile))
-  ) {
+  if (await isCollectComplete(job.id, profile)) {
     return updateScanJob(job.id, {
       status: "running",
       stage: "profile",
@@ -464,27 +433,16 @@ async function runSourceAdapterCollect(input: {
     "collect",
   );
   if ((checkpoint?.page ?? 0) >= 1) {
-    return input.currentJob;
+    return { job: input.currentJob, didWork: false };
   }
 
-  const limit = Math.min(
-    input.profile.config.limits.sourceLimitPerQuery,
-    Math.max(
-      0,
-      input.currentJob.maxCandidates - input.currentJob.candidateCount,
-    ),
-  );
-  if (limit <= 0) {
-    return input.currentJob;
-  }
-
-  const repos = await input.plan.fetchRepos(limit);
+  const repos = await input.plan.fetchRepos(SOURCE_LIMIT_PER_QUERY);
 
   const repoStats = await upsertRepos(repos, "L0");
-  const candidates = selectDeepAnalysisCandidates(
+  const candidates = await selectDeepAnalysisCandidates(
     repoStats,
     input.profile,
-    limit,
+    input.job.id,
   );
   await upgradeRepoDataLevel(candidates, "L1");
   await enqueueCandidates(
@@ -515,27 +473,48 @@ async function runSourceAdapterCollect(input: {
     stage: "collect",
   });
 
-  return updateScanJob(input.job.id, {
-    status: input.resourceStatus === "throttled" ? "throttled" : "running",
-    stage: "collect",
-    fetchedCount,
-    processedCount,
-    ...nextRepoStats,
-    statusReason:
-      input.resourceStatus === "throttled" ? input.resourceReason : undefined,
-  });
+  return {
+    job: await updateScanJob(input.job.id, {
+      status: input.resourceStatus === "throttled" ? "throttled" : "running",
+      stage: "collect",
+      fetchedCount,
+      processedCount,
+      ...nextRepoStats,
+      statusReason:
+        input.resourceStatus === "throttled" ? input.resourceReason : undefined,
+    }),
+    didWork: true,
+  };
 }
 
-function selectDeepAnalysisCandidates(
+async function selectDeepAnalysisCandidates(
   repoStats: Awaited<ReturnType<typeof upsertRepos>>,
   profile: DiscoveryProfile,
-  limit: number,
+  jobId: string,
 ) {
-  return repoStats.repos
-    .filter((item) => item.shouldAnalyze)
-    .map((item) => item.repo)
-    .filter((repo) => repoPassesHardFilters(repo, profile))
-    .slice(0, Math.max(0, limit));
+  const candidates: RepoSummary[] = [];
+
+  for (const item of repoStats.repos) {
+    const claim = await claimRepoProcessing({ repo: item.repo, jobId });
+    if (!claim.claimed) {
+      continue;
+    }
+
+    if (!repoPassesHardFilters(item.repo, profile)) {
+      await finishRepoProcessing({
+        canonicalUrl: item.repo.htmlUrl,
+        repoId: item.repo.id,
+        jobId,
+        status: "skipped",
+        skipReasonCode: "hard_filter",
+      });
+      continue;
+    }
+
+    candidates.push(item.repo);
+  }
+
+  return candidates;
 }
 
 function addRepoStats(
@@ -557,17 +536,7 @@ function addRepoStats(
 async function runProfileStage(
   job: ScanJob,
   profile: DiscoveryProfile,
-  maxBatches: number,
 ): Promise<ScanJob | undefined> {
-  const runtimePause = shouldPauseByRuntime(job, profile);
-  if (runtimePause) {
-    await requeueRunningCandidates(job.id, "profile");
-    return updateScanJob(job.id, {
-      status: "paused_by_runtime",
-      statusReason: runtimePause,
-    });
-  }
-
   const resource = evaluateResourcePolicy(profile, "profile");
   await recordResourceDecision(job.id, "profile", resource);
   if (resource.status === "paused_by_memory") {
@@ -586,30 +555,19 @@ async function runProfileStage(
         resource.status === "throttled" ? resource.reason : undefined,
     })) ?? job;
 
-  const batchLimit = Math.max(1, resource.batchSize || 1);
-  const batches = Math.max(1, maxBatches);
-
-  for (let batchIndex = 0; batchIndex < batches; batchIndex += 1) {
-    const queued = await claimQueuedRepoBatch(job.id, "profile", batchLimit);
-    if (queued.length === 0) {
-      break;
-    }
-
+  const queued = await claimQueuedRepoBatch(
+    job.id,
+    "profile",
+    Math.max(1, resource.batchSize),
+  );
+  if (queued.length) {
     await enqueueCandidates(
       job.id,
-      queued
-        .slice(
-          0,
-          Math.max(
-            0,
-            profile.config.limits.detailFetchTopK - currentJob.analyzedCount,
-          ),
-        )
-        .map((item) => ({
-          repo: item.repo,
-          priorityScore: item.priorityScore,
-          stage: "document",
-        })),
+      queued.map((item) => ({
+        repo: item.repo,
+        priorityScore: item.priorityScore,
+        stage: "document",
+      })),
     );
 
     for (const item of queued) {
@@ -643,7 +601,6 @@ async function runProfileStage(
 async function runDocumentStage(
   job: ScanJob,
   profile: DiscoveryProfile,
-  maxBatches: number,
 ): Promise<ScanJob | undefined> {
   const ready = await prepareStage(job, profile, "document");
   if (!ready.ok) {
@@ -651,37 +608,29 @@ async function runDocumentStage(
   }
 
   let currentJob = ready.job;
-  for (
-    let batchIndex = 0;
-    batchIndex < Math.max(1, maxBatches);
-    batchIndex += 1
-  ) {
-    const queued = await claimQueuedRepoBatch(
-      job.id,
-      "document",
-      ready.batchSize,
-    );
-    if (queued.length === 0) break;
-
-    let embeddedEnqueued = 0;
+  const queued = await claimQueuedRepoBatch(
+    job.id,
+    "document",
+    ready.batchSize,
+  );
+  if (queued.length) {
+    let succeeded = 0;
+    let failed = 0;
     for (const item of queued) {
-      const readme = await fetchRepositoryReadme(item.repo);
-      const contentHash = hashText(
-        readme.content || item.repo.description || item.repo.fullName,
-      );
-      await upsertRepoDocument({
-        repoId: item.repo.id,
-        type: "readme",
-        sourceUrl: readme.sourceUrl,
-        contentHash,
-        rawContent: readme.content,
-        summary: readme.content.slice(0, 500),
-      });
-      await upgradeRepoDataLevel([item.repo], "L2");
-      if (
-        currentJob.analyzedCount + embeddedEnqueued <
-        profile.config.limits.embeddingTopK
-      ) {
+      try {
+        const readme = await fetchRepositoryReadme(item.repo);
+        const contentHash = hashText(
+          readme.content || item.repo.description || item.repo.fullName,
+        );
+        await upsertRepoDocument({
+          repoId: item.repo.id,
+          type: "readme",
+          sourceUrl: readme.sourceUrl,
+          contentHash,
+          rawContent: readme.content,
+          summary: readme.content.slice(0, 500),
+        });
+        await upgradeRepoDataLevel([item.repo], "L2");
         await enqueueCandidates(job.id, [
           {
             repo: item.repo,
@@ -689,17 +638,34 @@ async function runDocumentStage(
             stage: "embed",
           },
         ]);
-        embeddedEnqueued += 1;
+        await completeCandidate(item.queueId);
+        succeeded += 1;
+      } catch (error) {
+        const reason = normalizeAiStageError(error);
+        if (item.attempts < MAX_AI_CANDIDATE_ATTEMPTS) {
+          await retryCandidate(item.queueId, retryDelaySeconds(item.attempts));
+        } else {
+          await failCandidate(item.queueId, reason);
+          await finishRepoWithError(
+            item.repo,
+            job.id,
+            "failed",
+            "document_failed",
+            reason,
+          );
+          failed += 1;
+        }
       }
-      await completeCandidate(item.queueId);
     }
 
     currentJob =
       (await updateScanJob(job.id, {
-        analyzedCount: currentJob.analyzedCount + queued.length,
+        analyzedCount: currentJob.analyzedCount + succeeded,
         stage: "document",
         status: ready.status,
-        statusReason: ready.reason,
+        statusReason: failed
+          ? `详情阶段跳过 ${failed} 个连续失败候选。`
+          : ready.reason,
       })) ?? currentJob;
   }
 
@@ -709,128 +675,147 @@ async function runDocumentStage(
 async function runEmbedStage(
   job: ScanJob,
   profile: DiscoveryProfile,
-  maxBatches: number,
 ): Promise<ScanJob | undefined> {
-  const provider = await getAiProvider(profile.config.ai.embeddingProviderId);
-  if (!provider) {
-    return updateScanJob(job.id, {
-      status: "retry_later",
-      statusReason: "Embedding 配置不存在，请先修复发现配置绑定。",
-    });
-  }
-
   const ready = await prepareStage(job, profile, "embed");
   if (!ready.ok) {
     return ready.job;
   }
 
+  const provider = await resolveJobProvider(job.id, "embedding");
+  if (!provider) {
+    return handleUnavailableProviderPool(job, "embedding", "embed");
+  }
+
   let currentJob = ready.job;
-  for (
-    let batchIndex = 0;
-    batchIndex < Math.max(1, maxBatches);
-    batchIndex += 1
-  ) {
-    const queued = await claimQueuedRepoBatch(job.id, "embed", ready.batchSize);
-    if (queued.length === 0) break;
+  const queued = await claimQueuedRepoBatch(job.id, "embed", ready.batchSize);
+  if (queued.length === 0) {
+    return moveWhenStageDrained(currentJob, "embed", "llm");
+  }
 
-    let succeeded = 0;
-    let failed = 0;
-    const embeddingInputs = [];
-    for (const item of queued) {
-      try {
-        const document = await getLatestRepoDocument(item.repo.id, "readme");
-        const text = buildEmbeddingInput(item.repo, document?.rawContent ?? "");
-        const contentHash = document?.contentHash ?? hashText(text);
-        const cached = await getRepoEmbedding({
-          repoId: item.repo.id,
-          providerId: provider.id,
-          model: provider.model,
-          contentHash,
-        });
-        if (cached) {
-          await enqueueCandidates(job.id, [
-            {
-              repo: item.repo,
-              priorityScore: item.priorityScore,
-              stage: "llm",
-            },
-          ]);
-          await completeCandidate(item.queueId);
-          succeeded += 1;
-          continue;
-        }
+  let succeeded = 0;
+  let failed = 0;
+  const embeddingInputs = [];
+  for (const item of queued) {
+    const document = await getLatestRepoDocument(item.repo.id, "readme");
+    const text = buildEmbeddingInput(item.repo, document?.rawContent ?? "");
+    const contentHash = document?.contentHash ?? hashText(text);
+    const cached = await getRepoEmbedding({
+      repoId: item.repo.id,
+      providerId: provider.id,
+      model: provider.model,
+      contentHash,
+    });
+    if (cached) {
+      await enqueueCandidates(job.id, [
+        {
+          repo: item.repo,
+          priorityScore: item.priorityScore,
+          stage: "llm",
+        },
+      ]);
+      await completeCandidate(item.queueId);
+      succeeded += 1;
+      continue;
+    }
 
-        embeddingInputs.push({
-          item,
-          text,
-          contentHash,
-        });
-      } catch (error) {
-        const reason = normalizeAiStageError(error);
-        if (shouldRetryAiCandidate(reason, item.attempts)) {
-          await retryCandidate(item.queueId, retryDelaySeconds(item.attempts));
+    embeddingInputs.push({ item, text, contentHash });
+  }
+
+  if (embeddingInputs.length) {
+    let vectors: number[][];
+    try {
+      vectors = await callEmbedding(
+        provider,
+        embeddingInputs.map((input) => input.text),
+      );
+      if (vectors.length !== embeddingInputs.length) {
+        throw new AiProviderOutputSchemaError(
+          `expected ${embeddingInputs.length} vectors, received ${vectors.length}`,
+        );
+      }
+      await recordScanProviderSuccess({
+        jobId: job.id,
+        providerId: provider.id,
+        kind: "embedding",
+      });
+    } catch (error) {
+      const failure = await handleProviderFailure(
+        job.id,
+        provider,
+        error,
+        Math.max(...embeddingInputs.map((input) => input.item.attempts)),
+      );
+      for (const input of embeddingInputs) {
+        if (failure.classified) {
+          await retryCandidate(
+            input.item.queueId,
+            failure.exhausted ? 1 : failure.retryAfterSeconds,
+          );
+        } else if (input.item.attempts < MAX_AI_CANDIDATE_ATTEMPTS) {
+          await retryCandidate(
+            input.item.queueId,
+            retryDelaySeconds(input.item.attempts),
+          );
         } else {
-          await failCandidate(item.queueId, reason);
+          await failCandidate(input.item.queueId, failure.reason);
+          await finishRepoWithError(
+            input.item.repo,
+            job.id,
+            "failed",
+            failure.code,
+            failure.reason,
+          );
           failed += 1;
         }
       }
-    }
 
-    if (embeddingInputs.length) {
-      try {
-        const vectors = await callEmbedding(
-          provider,
-          embeddingInputs.map((input) => input.text),
-        );
-        for (const [index, input] of embeddingInputs.entries()) {
-          const vector = vectors[index];
-          if (!vector?.length) {
-            throw new Error("Embedding provider returned an empty vector.");
-          }
-          await upsertRepoEmbedding({
-            repoId: input.item.repo.id,
-            providerId: provider.id,
-            model: provider.model,
-            dimensions: provider.dimensions ?? vector.length,
-            contentHash: input.contentHash,
-            vector,
-          });
-          await enqueueCandidates(job.id, [
-            {
-              repo: input.item.repo,
-              priorityScore: input.item.priorityScore,
-              stage: "llm",
-            },
-          ]);
-          await completeCandidate(input.item.queueId);
-          succeeded += 1;
-        }
-      } catch (error) {
-        const reason = normalizeAiStageError(error);
-        for (const input of embeddingInputs) {
-          if (shouldRetryAiCandidate(reason, input.item.attempts)) {
-            await retryCandidate(
-              input.item.queueId,
-              retryDelaySeconds(input.item.attempts),
-            );
-          } else {
-            await failCandidate(input.item.queueId, reason);
-            failed += 1;
-          }
-        }
+      currentJob =
+        (await updateScanJob(job.id, {
+          analyzedCount: currentJob.analyzedCount + succeeded,
+          stage: "embed",
+          status: ready.status,
+          statusReason: failure.reason,
+        })) ?? currentJob;
+      if (
+        failure.exhausted &&
+        !(await resolveJobProvider(job.id, "embedding"))
+      ) {
+        return handleUnavailableProviderPool(currentJob, "embedding", "embed");
       }
+      return currentJob;
     }
 
-    currentJob =
-      (await updateScanJob(job.id, {
-        analyzedCount: currentJob.analyzedCount + succeeded,
-        stage: "embed",
-        status: ready.status,
-        statusReason: failed
-          ? `Embedding 阶段跳过 ${failed} 个连续失败候选。`
-          : ready.reason,
-      })) ?? currentJob;
+    for (const [index, input] of embeddingInputs.entries()) {
+      const vector = vectors[index];
+      await upsertRepoEmbedding({
+        repoId: input.item.repo.id,
+        providerId: provider.id,
+        model: provider.model,
+        dimensions: provider.dimensions ?? vector.length,
+        contentHash: input.contentHash,
+        vector,
+      });
+      await enqueueCandidates(job.id, [
+        {
+          repo: input.item.repo,
+          priorityScore: input.item.priorityScore,
+          stage: "llm",
+        },
+      ]);
+      await completeCandidate(input.item.queueId);
+      succeeded += 1;
+    }
   }
+
+  currentJob =
+    (await updateScanJob(job.id, {
+      analyzedCount: currentJob.analyzedCount + succeeded,
+      stage: "embed",
+      status: ready.status,
+      statusReason: failed
+        ? `Embedding 阶段跳过 ${failed} 个连续失败候选。`
+        : ready.reason,
+    })) ?? currentJob;
 
   return moveWhenStageDrained(currentJob, "embed", "llm");
 }
@@ -838,253 +823,294 @@ async function runEmbedStage(
 async function runLlmStage(
   job: ScanJob,
   profile: DiscoveryProfile,
-  maxBatches: number,
 ): Promise<ScanJob | undefined> {
-  const provider = await getAiProvider(profile.config.ai.chatProviderId);
-  if (!provider) {
-    return updateScanJob(job.id, {
-      status: "retry_later",
-      statusReason: "Chat 配置不存在，请先修复发现配置绑定。",
-    });
-  }
-
   const ready = await prepareStage(job, profile, "llm");
   if (!ready.ok) {
     return ready.job;
   }
 
+  const provider = await resolveJobProvider(job.id, "chat");
+  if (!provider) {
+    return handleUnavailableProviderPool(job, "chat", "llm");
+  }
+
   const preferenceSignals = await listPreferenceSignals(profile.id);
   const userRepos = await listGithubRepos();
-  const embeddingProvider = await getAiProvider(
-    profile.config.ai.embeddingProviderId,
-  );
-  const profileVector = embeddingProvider
-    ? await getProfileEmbeddingVector(embeddingProvider, profile).catch(
-        () => [],
-      )
-    : [];
   let currentJob = ready.job;
-  for (
-    let batchIndex = 0;
-    batchIndex < Math.max(1, maxBatches);
-    batchIndex += 1
-  ) {
-    const queued = await claimQueuedRepoBatch(job.id, "llm", ready.batchSize);
-    if (queued.length === 0) break;
+  const queued = await claimQueuedRepoBatch(job.id, "llm", ready.batchSize);
+  if (queued.length === 0) {
+    return moveWhenStageDrained(currentJob, "llm", "rank");
+  }
 
-    const recommendations = [];
-    let llmSucceeded = 0;
-    let failed = 0;
-    let deferredByGate = 0;
-    const llmCallsRemainingAtBatchStart = Math.max(
-      0,
-      profile.config.limits.llmAnalyzeTopK - currentJob.analyzedCount,
-    );
-    let llmCallsRemaining = llmCallsRemainingAtBatchStart;
-    let overLlmLimit = 0;
+  let analyzed = 0;
+  let skipped = 0;
+  let failed = 0;
+  let providerUnavailable = false;
 
-    for (const item of queued) {
-      let llmJobId: string | undefined;
-      try {
-        let usedLlmCall = false;
-        const document = await getLatestRepoDocument(item.repo.id, "readme");
-        const readme = document?.rawContent ?? item.repo.description;
-        const fullInputHash = buildLlmInputHash(item.repo, profile, readme);
-        const fullCached = await getLatestLlmResult(
+  for (const [itemIndex, item] of queued.entries()) {
+    let llmJobId: string | undefined;
+    try {
+      const document = await getLatestRepoDocument(item.repo.id, "readme");
+      const readme = document?.rawContent ?? item.repo.description;
+      const fullInputHash = buildLlmInputHash(item.repo, profile, readme);
+      const fullCached = await getLatestLlmResult(
+        item.repo.id,
+        "repo_analysis",
+        {
+          providerId: provider.id,
+          model: provider.model,
+          promptVersion: REPO_ANALYSIS_PROMPT_VERSION,
+          inputHash: fullInputHash,
+        },
+      );
+      let analysis: RepoAnalysisResult;
+
+      if (fullCached) {
+        analysis = fullCached as unknown as RepoAnalysisResult;
+      } else {
+        const previousAnalysis = (await getLatestLlmResult(
           item.repo.id,
           "repo_analysis",
-          {
-            providerId: provider.id,
-            model: provider.model,
-            promptVersion: REPO_ANALYSIS_PROMPT_VERSION,
-            inputHash: fullInputHash,
-          },
-        );
-        let analysis: RepoAnalysisResult;
-        if (fullCached) {
-          analysis = fullCached as unknown as RepoAnalysisResult;
-        } else {
-          const previousAnalysis = (await getLatestLlmResult(
-            item.repo.id,
-            "repo_analysis",
-            {
+          { providerId: provider.id, model: provider.model },
+        )) as RepoAnalysisResult | undefined;
+        const promptVersion = previousAnalysis
+          ? REPO_DELTA_ANALYSIS_PROMPT_VERSION
+          : REPO_ANALYSIS_PROMPT_VERSION;
+        const inputHash = previousAnalysis
+          ? buildDeltaLlmInputHash(item.repo, profile, readme, previousAnalysis)
+          : fullInputHash;
+        const deltaCached = previousAnalysis
+          ? await getLatestLlmResult(item.repo.id, "repo_analysis", {
               providerId: provider.id,
               model: provider.model,
-            },
-          )) as RepoAnalysisResult | undefined;
-          const promptVersion = previousAnalysis
-            ? REPO_DELTA_ANALYSIS_PROMPT_VERSION
-            : REPO_ANALYSIS_PROMPT_VERSION;
-          const inputHash = previousAnalysis
-            ? buildDeltaLlmInputHash(
-                item.repo,
+              promptVersion,
+              inputHash,
+            })
+          : undefined;
+
+        if (deltaCached) {
+          analysis = deltaCached as unknown as RepoAnalysisResult;
+        } else {
+          llmJobId = await createLlmJob({
+            repoId: item.repo.id,
+            jobId: job.id,
+            jobType: "repo_analysis",
+            status: "running",
+            inputHash,
+            providerId: provider.id,
+            model: provider.model,
+            promptVersion,
+          });
+
+          let llmResult: Awaited<
+            ReturnType<typeof analyzeRepoWithLlmWithUsage>
+          >;
+          try {
+            llmResult = await analyzeRepoWithLlmWithUsage(
+              {
+                repo: item.repo,
                 profile,
                 readme,
                 previousAnalysis,
-              )
-            : fullInputHash;
-          const deltaCached = previousAnalysis
-            ? await getLatestLlmResult(item.repo.id, "repo_analysis", {
-                providerId: provider.id,
-                model: provider.model,
-                promptVersion,
-                inputHash,
-              })
-            : undefined;
-          if (deltaCached) {
-            analysis = deltaCached as unknown as RepoAnalysisResult;
-          } else {
-            const gate = await evaluateLlmGate({
-              repo: item.repo,
-              profile,
-              embeddingProviderId: profile.config.ai.embeddingProviderId,
-              embeddingModel: embeddingProvider?.model,
-              profileVector,
-              contentHash: document?.contentHash,
-              priorityScore: item.priorityScore,
-              preferenceSignals,
-              userRepos,
-            });
-            if (gate.defer) {
-              await upgradeRepoDataLevel([item.repo], "L2");
-              recommendations.push({
-                ...gate.recommendation,
-                rank: currentJob.analyzedCount + recommendations.length + 1,
-                reasons: [
-                  `语义相关度 ${Math.round((gate.semanticFit ?? 0) * 100)} 低于本轮 LLM 阈值 ${Math.round(gate.threshold * 100)}，已保留为普通候选，后续偏好变化或热度变化可重新进入 LLM。`,
-                  ...gate.recommendation.reasons,
-                ],
-              });
-              await completeCandidate(item.queueId);
-              deferredByGate += 1;
-              continue;
-            }
-            if (llmCallsRemaining <= 0) {
-              await retryCandidate(item.queueId, 24 * 60 * 60);
-              overLlmLimit += 1;
-              continue;
-            }
-            llmJobId = await createLlmJob({
-              repoId: item.repo.id,
+                changeHint: previousAnalysis
+                  ? "仓库元数据、活跃度或 README 发生变化，本轮只需要重点复核变化对变现机会的影响。"
+                  : undefined,
+              },
+              provider,
+            );
+            await recordScanProviderSuccess({
               jobId: job.id,
-              jobType: "repo_analysis",
-              status: "running",
-              inputHash,
               providerId: provider.id,
-              model: provider.model,
-              promptVersion,
+              kind: "chat",
             });
-            const llmResult = await analyzeRepoWithLlmWithUsage({
-              repo: item.repo,
-              profile,
-              readme,
-              previousAnalysis,
-              changeHint: previousAnalysis
-                ? "仓库元数据、活跃度或 README 发生变化，本轮只需要重点复核变化对变现机会的影响。"
-                : undefined,
-            });
-            analysis = llmResult.analysis;
-            usedLlmCall = true;
-            await upsertLlmResult({
-              repoId: item.repo.id,
-              providerId: provider.id,
-              model: provider.model,
-              jobType: "repo_analysis",
-              promptVersion,
-              inputHash,
-              structured: analysis as unknown as Record<string, unknown>,
-              rawResponse: JSON.stringify(analysis),
-            });
-            await finishLlmJob(llmJobId, "completed", llmResult.tokenUsage);
+          } catch (error) {
+            const failure = await handleProviderFailure(
+              job.id,
+              provider,
+              error,
+              item.attempts,
+            );
+            await finishLlmJob(llmJobId, "failed", {}, failure.reason);
+            await retryCandidate(
+              item.queueId,
+              failure.classified
+                ? failure.exhausted
+                  ? 1
+                  : failure.retryAfterSeconds
+                : retryDelaySeconds(item.attempts),
+            );
+
+            if (failure.exhausted || failure.cooldown) {
+              for (const remaining of queued.slice(itemIndex + 1)) {
+                await retryCandidate(remaining.queueId, 1);
+              }
+              providerUnavailable = true;
+            } else if (
+              !failure.classified &&
+              item.attempts >= MAX_AI_CANDIDATE_ATTEMPTS
+            ) {
+              await failCandidate(item.queueId, failure.reason);
+              await finishRepoWithError(
+                item.repo,
+                job.id,
+                "failed",
+                failure.code,
+                failure.reason,
+              );
+              failed += 1;
+            }
+            if (providerUnavailable) break;
+            continue;
           }
-        }
-        await upgradeRepoDataLevel([item.repo], "L3");
-        recommendations.push(
-          await buildRecommendationWithQualitySignals(
-            item.repo,
-            profile,
-            currentJob.analyzedCount + recommendations.length + 1,
-            analysis,
-            preferenceSignals,
-            userRepos,
-          ),
-        );
-        await completeCandidate(item.queueId);
-        if (usedLlmCall) {
-          llmSucceeded += 1;
-          llmCallsRemaining -= 1;
-        }
-      } catch (error) {
-        const reason = normalizeAiStageError(error);
-        if (llmJobId) {
-          await finishLlmJob(llmJobId, "failed", {}, reason);
-        }
-        if (shouldRetryAiCandidate(reason, item.attempts)) {
-          await retryCandidate(item.queueId, retryDelaySeconds(item.attempts));
-        } else {
-          await failCandidate(item.queueId, reason);
-          failed += 1;
+
+          analysis = llmResult.analysis;
+          await upsertLlmResult({
+            repoId: item.repo.id,
+            providerId: provider.id,
+            model: provider.model,
+            jobType: "repo_analysis",
+            promptVersion,
+            inputHash,
+            structured: analysis as unknown as Record<string, unknown>,
+            rawResponse: JSON.stringify(analysis),
+          });
+          await finishLlmJob(llmJobId, "completed", llmResult.tokenUsage);
         }
       }
-    }
 
-    if (recommendations.length) {
-      await upsertRecommendations(recommendations);
-    }
+      await upgradeRepoDataLevel([item.repo], "L3");
+      analyzed += 1;
 
-    currentJob =
-      (await updateScanJob(job.id, {
-        analyzedCount: currentJob.analyzedCount + llmSucceeded,
-        stage: "llm",
-        status: ready.status,
-        statusReason: failed
+      const opportunityScore = analysis.opportunity?.score;
+      const minOpportunityScore =
+        profile.config.opportunity?.minOpportunityScore ?? 0;
+      if (
+        analysis.is_match &&
+        typeof opportunityScore === "number" &&
+        opportunityScore >= minOpportunityScore
+      ) {
+        const recommendation = await buildRecommendationWithQualitySignals(
+          item.repo,
+          profile,
+          currentJob.analyzedCount + analyzed,
+          analysis,
+          preferenceSignals,
+          userRepos,
+        );
+        await upsertRecommendations([recommendation]);
+        await finishRepoProcessing({
+          canonicalUrl: item.repo.htmlUrl,
+          repoId: item.repo.id,
+          jobId: job.id,
+          status: "processed",
+        });
+      } else {
+        await finishRepoProcessing({
+          canonicalUrl: item.repo.htmlUrl,
+          repoId: item.repo.id,
+          jobId: job.id,
+          status: "skipped",
+          skipReasonCode: analysis.is_match
+            ? "opportunity_score_below_threshold"
+            : "llm_not_match",
+        });
+        skipped += 1;
+      }
+      await completeCandidate(item.queueId);
+    } catch (error) {
+      const reason = normalizeAiStageError(error);
+      if (llmJobId) {
+        await finishLlmJob(llmJobId, "failed", {}, reason);
+      }
+      if (item.attempts < MAX_AI_CANDIDATE_ATTEMPTS) {
+        await retryCandidate(item.queueId, retryDelaySeconds(item.attempts));
+      } else {
+        await failCandidate(item.queueId, reason);
+        await finishRepoWithError(
+          item.repo,
+          job.id,
+          "failed",
+          "llm_processing_failed",
+          reason,
+        );
+        failed += 1;
+      }
+    }
+  }
+
+  currentJob =
+    (await updateScanJob(job.id, {
+      analyzedCount: currentJob.analyzedCount + analyzed,
+      stage: "llm",
+      status: ready.status,
+      statusReason: providerUnavailable
+        ? `模型 ${provider.name} 在当前任务中已不可用，下一批将自动轮换。`
+        : failed
           ? `LLM 阶段跳过 ${failed} 个连续失败候选。`
-          : deferredByGate
-            ? `本批 ${deferredByGate} 个低语义相关候选已延后 LLM，仅保留普通推荐，未消耗 LLM token。`
-            : overLlmLimit
-              ? `LLM 名额已用尽，${overLlmLimit} 个候选已保留到后续继续分析。`
-              : ready.reason,
-      })) ?? currentJob;
+          : skipped
+            ? `本批 ${skipped} 个项目未满足推荐条件。`
+            : ready.reason,
+    })) ?? currentJob;
 
-    if (
-      overLlmLimit > 0 &&
-      llmCallsRemainingAtBatchStart === 0 &&
-      deferredByGate === 0
-    ) {
-      return updateScanJob(job.id, {
-        status: "retry_later",
-        stage: "llm",
-        statusReason: `LLM 分析数量已达到本轮上限 ${profile.config.limits.llmAnalyzeTopK}，候选已保留，后续可继续分析。`,
-      });
+  if (providerUnavailable) {
+    if (!(await resolveJobProvider(job.id, "chat"))) {
+      return handleUnavailableProviderPool(currentJob, "chat", "llm");
     }
+    return currentJob;
   }
 
   return moveWhenStageDrained(currentJob, "llm", "rank");
 }
 
 async function runRankStage(job: ScanJob, profile: DiscoveryProfile) {
-  const provider = await getAiProvider(profile.config.ai.embeddingProviderId);
-  if (provider) {
+  const resource = evaluateResourcePolicy(profile, "rank");
+  await recordResourceDecision(job.id, "rank", resource);
+  if (resource.status === "paused_by_memory") {
+    return updateScanJob(job.id, {
+      status: "paused_by_memory",
+      statusReason: resource.reason,
+    });
+  }
+
+  let provider = await resolveJobProvider(job.id, "embedding");
+  let rankStatusReason: string | undefined;
+  if (!provider) {
+    return handleUnavailableProviderPool(job, "embedding", "rank");
+  }
+  while (provider) {
+    let queryVector: number[];
     try {
-      const queryVector = await getProfileEmbeddingVector(provider, profile);
-      if (queryVector?.length) {
-        await rerankRecommendationsWithSemanticFit({
-          profileId: profile.id,
-          providerId: provider.id,
-          queryVector,
-        });
-      }
+      queryVector = await getProfileEmbeddingVector(provider, profile);
+      await recordScanProviderSuccess({
+        jobId: job.id,
+        providerId: provider.id,
+        kind: "embedding",
+      });
     } catch (error) {
-      await updateScanJob(job.id, {
-        statusReason: `语义重排跳过：${normalizeAiStageError(error)}`,
+      const failure = await handleProviderFailure(job.id, provider, error, 1);
+      rankStatusReason = `语义重排跳过：${failure.reason}`;
+      const nextProvider = await resolveJobProvider(job.id, "embedding");
+      if (!failure.exhausted && !failure.retryable) break;
+      provider = nextProvider;
+      if (!provider) {
+        return handleUnavailableProviderPool(job, "embedding", "rank");
+      }
+      continue;
+    }
+
+    if (queryVector.length) {
+      await rerankRecommendationsWithSemanticFit({
+        profileId: profile.id,
+        providerId: provider.id,
+        queryVector,
       });
     }
+    break;
   }
-  await trimRecommendations(profile.id, profile.config.limits.finalReportTopK);
   return updateScanJob(job.id, {
     status: "completed",
     stage: "rank",
-    statusReason: undefined,
+    statusReason: rankStatusReason,
     finishedAt: new Date().toISOString(),
   });
 }
@@ -1113,76 +1139,8 @@ async function buildRecommendationWithQualitySignals(
   );
 }
 
-async function evaluateLlmGate(input: {
-  repo: RepoSummary;
-  profile: DiscoveryProfile;
-  embeddingProviderId: string;
-  embeddingModel?: string;
-  profileVector: number[];
-  contentHash?: string;
-  priorityScore: number;
-  preferenceSignals: Awaited<ReturnType<typeof listPreferenceSignals>>;
-  userRepos: Awaited<ReturnType<typeof listGithubRepos>>;
-}) {
-  const threshold = input.profile.config.limits.semanticFitThreshold ?? 0.42;
-  const semanticFit = await getRepoSemanticFit({
-    repoId: input.repo.id,
-    providerId: input.embeddingProviderId,
-    model: input.embeddingModel,
-    contentHash: input.contentHash,
-    profileVector: input.profileVector,
-  });
-  const recommendation = await buildRecommendationWithQualitySignals(
-    input.repo,
-    input.profile,
-    1,
-    undefined,
-    input.preferenceSignals,
-    input.userRepos,
-  );
-
-  return {
-    threshold,
-    semanticFit,
-    recommendation,
-    defer: shouldDeferLlmBySemanticFit({
-      semanticFit,
-      threshold,
-      priorityScore: input.priorityScore,
-      opportunityScore: recommendation.scores.opportunity,
-      minOpportunityScore:
-        input.profile.config.opportunity?.minOpportunityScore,
-    }),
-  };
-}
-
-async function getRepoSemanticFit(input: {
-  repoId: string;
-  providerId: string;
-  model?: string;
-  contentHash?: string;
-  profileVector: number[];
-}) {
-  if (!input.profileVector.length) {
-    return undefined;
-  }
-
-  const embedding = await getRepoEmbeddingVector({
-    repoId: input.repoId,
-    providerId: input.providerId,
-    model: input.model,
-    contentHash: input.contentHash,
-  });
-
-  if (!embedding?.vector?.length) {
-    return undefined;
-  }
-
-  return cosineSimilarity(embedding.vector, input.profileVector);
-}
-
 async function getProfileEmbeddingVector(
-  provider: NonNullable<Awaited<ReturnType<typeof getAiProvider>>>,
+  provider: AiProvider,
   profile: DiscoveryProfile,
 ) {
   const input = buildProfileEmbeddingInput(profile);
@@ -1286,18 +1244,6 @@ async function prepareStage(
     }
   | { ok: false; job: ScanJob | undefined }
 > {
-  const runtimePause = shouldPauseByRuntime(job, profile);
-  if (runtimePause) {
-    await requeueRunningCandidates(job.id, stage);
-    return {
-      ok: false,
-      job: await updateScanJob(job.id, {
-        status: "paused_by_runtime",
-        statusReason: runtimePause,
-      }),
-    };
-  }
-
   const resource = evaluateResourcePolicy(profile, stage);
   await recordResourceDecision(job.id, stage, resource);
   if (resource.status === "paused_by_memory") {
@@ -1358,14 +1304,153 @@ async function moveWhenStageDrained(
   return job;
 }
 
-function retryDelaySeconds(attempts: number) {
-  return Math.min(1800, 15 * 2 ** Math.max(0, attempts - 1));
+async function resolveJobProvider(jobId: string, kind: ProviderKind) {
+  const states = await listScanProviderStates(jobId, kind);
+  const excludedIds = states
+    .filter((state) => state.exhausted)
+    .map((state) => state.providerId);
+  return orderEligibleProviders(await listAiProviders(), kind, excludedIds)[0];
 }
 
-function shouldRetryAiCandidate(reason: string, attempts: number) {
-  return (
-    attempts < MAX_AI_CANDIDATE_ATTEMPTS || isTransientAiProviderError(reason)
+async function handleProviderFailure(
+  jobId: string,
+  provider: AiProvider,
+  error: unknown,
+  attempt: number,
+) {
+  const classification = classifyAiProviderFailure(error);
+  const transientFailure =
+    classification.code === "network" ||
+    classification.code === "timeout" ||
+    classification.code === "server";
+  const immediatelyExhausted =
+    classification.code === "auth" ||
+    classification.code === "permission" ||
+    classification.code === "invalid_config" ||
+    (transientFailure && attempt >= MAX_TRANSIENT_PROVIDER_ATTEMPTS);
+  const retryAfterSeconds = Math.max(1, classification.cooldownSeconds ?? 15);
+  const cooldownUntil = classification.cooldownSeconds
+    ? new Date(Date.now() + retryAfterSeconds * 1000).toISOString()
+    : undefined;
+  const state = await recordScanProviderFailure({
+    jobId,
+    providerId: provider.id,
+    kind: provider.kind,
+    code: classification.code,
+    message: classification.reason,
+    parseFailure: classification.parseFailure,
+    parseFailureThreshold: AI_PARSE_FAILURE_THRESHOLD,
+    immediatelyExhausted,
+    availabilityStatus: classification.targetAvailabilityStatus,
+    cooldownUntil,
+    recoverySuggestion: classification.recoverySuggestion,
+  });
+
+  return {
+    classified: classification.code !== "unknown",
+    code: classification.code,
+    reason: classification.reason,
+    retryAfterSeconds,
+    exhausted: state.exhausted,
+    retryable: classification.retryable,
+    cooldown: classification.targetAvailabilityStatus === "cooldown",
+  };
+}
+
+async function handleUnavailableProviderPool(
+  job: ScanJob,
+  kind: ProviderKind,
+  stage: "embed" | "llm" | "rank",
+) {
+  const [providers, states] = await Promise.all([
+    listAiProviders(),
+    listScanProviderStates(job.id, kind),
+  ]);
+  const exhaustedIds = new Set(
+    states.filter((state) => state.exhausted).map((state) => state.providerId),
   );
+  const temporarilyUnavailable = providers.filter(
+    (provider) =>
+      provider.kind === kind &&
+      provider.enabled &&
+      !provider.archivedAt &&
+      !exhaustedIds.has(provider.id) &&
+      (provider.availabilityStatus === "cooldown" ||
+        provider.availabilityStatus === "recovering"),
+  );
+
+  if (temporarilyUnavailable.length > 0) {
+    if (stage !== "rank") {
+      await requeueRunningCandidates(job.id, stage);
+    }
+    const nextRetryAt = temporarilyUnavailable
+      .map((provider) => provider.cooldownUntil)
+      .filter((value): value is string => Boolean(value))
+      .sort()[0];
+    const label = kind === "chat" ? "Chat/LLM" : "Embedding";
+    return updateScanJob(job.id, {
+      status: "retry_later",
+      stage,
+      statusReason: nextRetryAt
+        ? `${label} 模型暂时不可用，将在 ${new Date(nextRetryAt).toLocaleString("zh-CN")} 后自动重试。`
+        : `${label} 模型正在恢复检测，稍后自动重试。`,
+      errorMessage: undefined,
+      errorCode: undefined,
+      errorResolution: undefined,
+      finishedAt: undefined,
+    });
+  }
+
+  return markAiModelsExhausted(job, kind, stage);
+}
+
+async function markAiModelsExhausted(
+  job: ScanJob,
+  kind: ProviderKind,
+  stage: "embed" | "llm" | "rank",
+) {
+  const label = kind === "chat" ? "Chat/LLM" : "Embedding";
+  const message = `${label} 模型池已无可用模型，扫描已进入异常状态。`;
+  if (stage !== "rank") {
+    await requeueRunningCandidates(job.id, stage);
+  }
+  await finishJobRepoProcessing({
+    jobId: job.id,
+    status: "exception",
+    errorCode: "ai_models_exhausted",
+    errorMessage: message,
+  });
+  return updateScanJob(job.id, {
+    status: "exception",
+    stage,
+    statusReason: message,
+    errorMessage: message,
+    errorCode: "ai_models_exhausted",
+    errorResolution:
+      "请检查模型输出或增加同类型模型；如模型已被阻断，先在 AI 配置中检测恢复，然后手动恢复该扫描任务。",
+    finishedAt: new Date().toISOString(),
+  });
+}
+
+async function finishRepoWithError(
+  repo: RepoSummary,
+  jobId: string,
+  status: "failed" | "exception",
+  errorCode: string,
+  errorMessage: string,
+) {
+  return finishRepoProcessing({
+    canonicalUrl: repo.htmlUrl,
+    repoId: repo.id,
+    jobId,
+    status,
+    errorCode,
+    errorMessage,
+  });
+}
+
+function retryDelaySeconds(attempts: number) {
+  return Math.min(1800, 15 * 2 ** Math.max(0, attempts - 1));
 }
 
 export function isTransientAiProviderError(reason: string) {
@@ -1380,14 +1465,6 @@ export function isTransientAiProviderError(reason: string) {
 async function isCollectComplete(jobId: string, profile: DiscoveryProfile) {
   const queryPlans = buildGitHubSearchQueryPlans(profile);
   const sourceAdapterPlans = buildSourceAdapterPlans(profile);
-  const perQuery = Math.max(
-    1,
-    Math.min(profile.config.limits.sourceLimitPerQuery, 100),
-  );
-  const maxPagesForQuery = Math.max(
-    1,
-    Math.ceil(profile.config.limits.sourceLimitPerQuery / perQuery),
-  );
 
   for (const plan of sourceAdapterPlans) {
     const checkpoint = await getScanCheckpoint(
@@ -1408,7 +1485,7 @@ async function isCollectComplete(jobId: string, profile: DiscoveryProfile) {
       hashQuery(`${plan.sourceId}:${plan.query}:${plan.sort}:${plan.order}`),
       "collect",
     );
-    if (!checkpoint || checkpoint.page < maxPagesForQuery) {
+    if (!checkpoint || !isCompletedCheckpoint(checkpoint)) {
       return false;
     }
   }
@@ -1416,22 +1493,14 @@ async function isCollectComplete(jobId: string, profile: DiscoveryProfile) {
   return true;
 }
 
-function shouldPauseByRuntime(job: ScanJob, profile: DiscoveryProfile) {
-  if (!job.startedAt) {
-    return null;
-  }
-
-  const maxRuntimeMs = profile.config.schedule.maxRuntimeMinutes * 60 * 1000;
-  const startedAt = new Date(job.startedAt).getTime();
-  if (!Number.isFinite(startedAt)) {
-    return null;
-  }
-
-  if (Date.now() - startedAt > maxRuntimeMs) {
-    return `扫描已达到最大运行时间 ${profile.config.schedule.maxRuntimeMinutes} 分钟，等待恢复。`;
-  }
-
-  return null;
+function isCompletedCheckpoint(
+  checkpoint: Awaited<ReturnType<typeof getScanCheckpoint>>,
+) {
+  return Boolean(
+    checkpoint &&
+    (checkpoint.cursor?.startsWith(COMPLETE_CHECKPOINT_PREFIX) ||
+      checkpoint.page >= GITHUB_SEARCH_MAX_PAGES),
+  );
 }
 
 function hashQuery(query: string) {

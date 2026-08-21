@@ -1,21 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaultDiscoverySources, normalizeDiscoverySources } from "../src/lib/discoverySources";
+import {
+  defaultDiscoverySources,
+  normalizeDiscoverySources,
+} from "../src/lib/discoverySources";
 import { shouldAnalyzeDiscoveredRepo } from "../src/lib/repoRefresh";
 import { ensureChineseSummary } from "../src/lib/recommendationText";
 import {
   normalizeSemanticFitThreshold,
-  shouldDeferLlmBySemanticFit
+  shouldDeferLlmBySemanticFit,
 } from "../src/lib/semanticGate";
-import { annotateRecommendationClusters, inferRecommendationCluster } from "../src/lib/repoCluster";
+import {
+  annotateRecommendationClusters,
+  inferRecommendationCluster,
+} from "../src/lib/repoCluster";
 import { compactMarkdownForAnalysis } from "../src/lib/text";
 import type { DiscoveryProfile } from "../src/lib/types";
 import { buildGitHubSearchQueryPlans } from "../src/server/githubSearch";
 import { buildRecommendationMarkdown } from "../src/server/knowledgeSync";
-import { buildRepoAnalysisPrompt, buildRepoDeltaAnalysisPrompt } from "../src/server/llmAnalysis";
+import {
+  buildRepoAnalysisPrompt,
+  buildRepoDeltaAnalysisPrompt,
+} from "../src/server/llmAnalysis";
 import {
   buildDiscoveryPreview,
-  heuristicDiscoveryPreferences
+  heuristicDiscoveryPreferences,
 } from "../src/server/naturalLanguageDiscovery";
 import { buildRecommendation } from "../src/server/ranking";
 import { lexicalRecommendationSearchScore } from "../src/server/recommendationSearch";
@@ -26,7 +35,7 @@ import { isTransientAiProviderError } from "../src/server/scanRunner";
 import {
   buildSourceAdapterPlans,
   mapOssInsightTrendingRows,
-  parseGitHubTrendingRepoLinks
+  parseGitHubTrendingRepoLinks,
 } from "../src/server/sourceAdapters";
 
 const baseProfile: DiscoveryProfile = {
@@ -41,7 +50,7 @@ const baseProfile: DiscoveryProfile = {
       cron: "0 9 * * *",
       timezone: "Asia/Shanghai",
       maxRuntimeMinutes: 120,
-      missedRunPolicy: "skip"
+      missedRunPolicy: "skip",
     },
     limits: {
       sourceLimitPerQuery: 100,
@@ -51,19 +60,19 @@ const baseProfile: DiscoveryProfile = {
       embeddingTopK: 1000,
       llmAnalyzeTopK: 100,
       semanticFitThreshold: 0.42,
-      finalReportTopK: 30
+      finalReportTopK: 30,
     },
     preferences: {
       keywords: ["agent", "workflow"],
       topics: ["ai", "developer-tools"],
       languages: {
-        TypeScript: 1.2
+        TypeScript: 1.2,
       },
       excludeKeywords: ["crypto"],
       minStars: 100,
       pushedWithinDays: 180,
       excludeArchived: true,
-      excludeForks: true
+      excludeForks: true,
     },
     sources: defaultDiscoverySources(),
     resourcePolicy: {
@@ -71,20 +80,20 @@ const baseProfile: DiscoveryProfile = {
       memory: {
         targetAvailableMb: 1024,
         minAvailableMb: 512,
-        criticalAvailableMb: 256
+        criticalAvailableMb: 256,
       },
       execution: {
         batchSize: 10,
         maxConcurrency: 1,
         checkpointEveryItems: 10,
-        pauseOnPressure: true
-      }
+        pauseOnPressure: true,
+      },
     },
     ai: {
       chatProviderId: "default_chat",
-      embeddingProviderId: "default_embedding"
-    }
-  }
+      embeddingProviderId: "default_embedding",
+    },
+  },
 };
 
 const baseRepo = {
@@ -103,7 +112,7 @@ const baseRepo = {
   pushedAt: "2026-06-01T00:00:00.000Z",
   updatedAt: "2026-06-01T00:00:00.000Z",
   archived: false,
-  fork: false
+  fork: false,
 };
 
 test("GitHub Search 查询会拆分多个 keyword，而不是塞进同一条 query", () => {
@@ -117,7 +126,7 @@ test("incremental scan skips unchanged repositories that were already deeply ana
   const decision = shouldAnalyzeDiscoveredRepo({
     existing: baseRepo,
     existingDataLevel: "L3",
-    next: { ...baseRepo }
+    next: { ...baseRepo },
   });
 
   assert.equal(decision.shouldAnalyze, false);
@@ -127,33 +136,33 @@ test("incremental scan skips unchanged repositories that were already deeply ana
 test("incremental scan re-analyzes new, shallow, or significantly changed repositories", () => {
   assert.equal(
     shouldAnalyzeDiscoveredRepo({
-      next: baseRepo
+      next: baseRepo,
     }).reason,
-    "new_repo"
+    "new_repo",
   );
   assert.equal(
     shouldAnalyzeDiscoveredRepo({
       existing: baseRepo,
       existingDataLevel: "L0",
-      next: { ...baseRepo }
+      next: { ...baseRepo },
     }).reason,
-    "not_deep_analyzed"
+    "not_deep_analyzed",
   );
   assert.equal(
     shouldAnalyzeDiscoveredRepo({
       existing: baseRepo,
       existingDataLevel: "L3",
-      next: { ...baseRepo, stars: 1250 }
+      next: { ...baseRepo, stars: 1250 },
     }).reason,
-    "growth_signal_changed"
+    "growth_signal_changed",
   );
   assert.equal(
     shouldAnalyzeDiscoveredRepo({
       existing: baseRepo,
       existingDataLevel: "L3",
-      next: { ...baseRepo, description: "AI workflow monetization tool" }
+      next: { ...baseRepo, description: "AI workflow monetization tool" },
     }).reason,
-    "metadata_changed"
+    "metadata_changed",
   );
 });
 
@@ -164,28 +173,33 @@ test("查询计划会去重", () => {
       ...baseProfile.config,
       preferences: {
         ...baseProfile.config.preferences,
-        keywords: ["agent", "agent"]
-      }
-    }
+        keywords: ["agent", "agent"],
+      },
+    },
   };
   const plans = buildGitHubSearchQueryPlans(profile);
-  const keys = plans.map((plan) => `${plan.sourceId}:${plan.query}:${plan.sort}:${plan.order}`);
+  const keys = plans.map(
+    (plan) => `${plan.sourceId}:${plan.query}:${plan.sort}:${plan.order}`,
+  );
   assert.equal(keys.length, new Set(keys).size);
 });
 
 test("待接入榜单来源可以保存启用状态，但不会生成未实现查询", () => {
   const sources = normalizeDiscoverySources([
     ...defaultDiscoverySources(),
-    { id: "github_explore", enabled: true, weight: 1.1 }
+    { id: "github_explore", enabled: true, weight: 1.1 },
   ]);
-  assert.equal(sources.find((source) => source.id === "github_explore")?.enabled, true);
+  assert.equal(
+    sources.find((source) => source.id === "github_explore")?.enabled,
+    true,
+  );
 
   const plans = buildGitHubSearchQueryPlans({
     ...baseProfile,
     config: {
       ...baseProfile.config,
-      sources
-    }
+      sources,
+    },
   });
   assert.ok(plans.some((plan) => plan.sourceId === "github_explore"));
   assert.ok(plans.some((plan) => plan.query.includes("topic:ai")));
@@ -194,14 +208,14 @@ test("待接入榜单来源可以保存启用状态，但不会生成未实现�
 test("GitHub Trending 会生成 source adapter plan", () => {
   const sources = normalizeDiscoverySources([
     ...defaultDiscoverySources(),
-    { id: "github_trending", enabled: true, weight: 1.15 }
+    { id: "github_trending", enabled: true, weight: 1.15 },
   ]);
   const plans = buildSourceAdapterPlans({
     ...baseProfile,
     config: {
       ...baseProfile.config,
-      sources
-    }
+      sources,
+    },
   });
 
   assert.ok(plans.some((plan) => plan.sourceId === "github_trending"));
@@ -221,21 +235,21 @@ test("GitHub Trending HTML 可以解析出仓库链接", () => {
 
   assert.deepEqual(links, [
     { owner: "owner-one", name: "repo-one" },
-    { owner: "owner-two", name: "repo-two" }
+    { owner: "owner-two", name: "repo-two" },
   ]);
 });
 
 test("OSS Insight Trending 会生成 source adapter plan", () => {
   const sources = normalizeDiscoverySources([
     ...defaultDiscoverySources(),
-    { id: "ossinsight_trending", enabled: true, weight: 1.12 }
+    { id: "ossinsight_trending", enabled: true, weight: 1.12 },
   ]);
   const plans = buildSourceAdapterPlans({
     ...baseProfile,
     config: {
       ...baseProfile.config,
-      sources
-    }
+      sources,
+    },
   });
 
   const plan = plans.find((item) => item.sourceId === "ossinsight_trending");
@@ -252,10 +266,10 @@ test("OSS Insight Trending 响应可以映射为仓库候选", () => {
         description: "Give your AI agent eyes to see the entire internet.",
         stars: "102",
         forks: "11",
-        collection_names: "ai,agent"
-      }
+        collection_names: "ai,agent",
+      },
     ],
-    "2026-06-15T00:00:00.000Z"
+    "2026-06-15T00:00:00.000Z",
   );
 
   assert.equal(repo.id, "github-1165277268");
@@ -270,7 +284,7 @@ test("OSS Insight Trending 响应可以映射为仓库候选", () => {
 
 test("自然语言兜底解析会生成适合 GitHub 的英文条件", () => {
   const generated = heuristicDiscoveryPreferences(
-    "找最近半年活跃、适合做 AI agent 工作流编排的 TypeScript 项目，不要加密货币相关项目，stars 超过 500"
+    "找最近半年活跃、适合做 AI agent 工作流编排的 TypeScript 项目，不要加密货币相关项目，stars 超过 500",
   );
   assert.ok(generated.keywords.includes("agent"));
   assert.ok(generated.keywords.includes("workflow"));
@@ -281,16 +295,18 @@ test("自然语言兜底解析会生成适合 GitHub 的英文条件", () => {
 });
 
 test("自然语言预览会限制查询计划数量", () => {
-  const generated = heuristicDiscoveryPreferences("AI agent RAG workflow TypeScript Python Go Rust Java");
+  const generated = heuristicDiscoveryPreferences(
+    "AI agent RAG workflow TypeScript Python Go Rust Java",
+  );
   const preview = buildDiscoveryPreview({
     profile: baseProfile,
     generated,
-    mode: "merge"
+    mode: "merge",
   });
   assert.ok(preview.queryPlans.length <= 40);
 });
 
-test("漏跑策略 skip 只保留当前周期，不会批量补跑", () => {
+test("固定扫描周期下，漏跑策略 skip 不补跑历史周期", () => {
   const profile: DiscoveryProfile = {
     ...baseProfile,
     config: {
@@ -299,19 +315,19 @@ test("漏跑策略 skip 只保留当前周期，不会批量补跑", () => {
         ...baseProfile.config.schedule,
         missedRunPolicy: "skip",
         timezone: "Asia/Shanghai",
-        cron: "0 9 * * *"
-      }
-    }
+        cron: "0 9 * * *",
+      },
+    },
   };
   const plan = buildSchedulePlan(
     profile,
     { lastScheduledAt: "2026-06-08T01:00:00.000Z" },
-    new Date("2026-06-10T02:00:00.000Z")
+    new Date("2026-06-10T02:00:00.000Z"),
   );
   assert.equal(plan.occurrences.length, 0);
 });
 
-test("漏跑策略 run_once 补最新一次，resume 逐次补最早漏跑周期", () => {
+test("固定扫描周期下，run_once 补最新周期，resume 补最早周期", () => {
   const base: DiscoveryProfile = {
     ...baseProfile,
     config: {
@@ -319,9 +335,9 @@ test("漏跑策略 run_once 补最新一次，resume 逐次补最早漏跑周期
       schedule: {
         ...baseProfile.config.schedule,
         timezone: "Asia/Shanghai",
-        cron: "0 9 * * *"
-      }
-    }
+        cron: "0 9 * * *",
+      },
+    },
   };
 
   const runOncePlan = buildSchedulePlan(
@@ -331,15 +347,18 @@ test("漏跑策略 run_once 补最新一次，resume 逐次补最早漏跑周期
         ...base.config,
         schedule: {
           ...base.config.schedule,
-          missedRunPolicy: "run_once"
-        }
-      }
+          missedRunPolicy: "run_once",
+        },
+      },
     },
     { lastScheduledAt: "2026-06-08T01:00:00.000Z" },
-    new Date("2026-06-10T02:00:00.000Z")
+    new Date("2026-06-10T02:00:00.000Z"),
   );
   assert.equal(runOncePlan.occurrences.length, 1);
-  assert.equal(runOncePlan.occurrences[0].toISOString(), "2026-06-10T01:00:00.000Z");
+  assert.equal(
+    runOncePlan.occurrences[0].toISOString(),
+    "2026-06-10T02:00:00.000Z",
+  );
 
   const resumePlan = buildSchedulePlan(
     {
@@ -348,15 +367,18 @@ test("漏跑策略 run_once 补最新一次，resume 逐次补最早漏跑周期
         ...base.config,
         schedule: {
           ...base.config.schedule,
-          missedRunPolicy: "resume"
-        }
-      }
+          missedRunPolicy: "resume",
+        },
+      },
     },
     { lastScheduledAt: "2026-06-08T01:00:00.000Z" },
-    new Date("2026-06-10T02:00:00.000Z")
+    new Date("2026-06-10T02:00:00.000Z"),
   );
   assert.equal(resumePlan.occurrences.length, 1);
-  assert.equal(resumePlan.occurrences[0].toISOString(), "2026-06-09T01:00:00.000Z");
+  assert.equal(
+    resumePlan.occurrences[0].toISOString(),
+    "2026-06-08T01:01:00.000Z",
+  );
 });
 
 test("推荐生成会保留关联我的 GitHub 项目的外键", () => {
@@ -376,7 +398,7 @@ test("推荐生成会保留关联我的 GitHub 项目的外键", () => {
       pushedAt: "2026-06-09T00:00:00.000Z",
       updatedAt: "2026-06-09T00:00:00.000Z",
       archived: false,
-      fork: false
+      fork: false,
     },
     baseProfile,
     1,
@@ -390,16 +412,19 @@ test("推荐生成会保留关联我的 GitHub 项目的外键", () => {
         primaryLanguage: "TypeScript",
         topics: ["ai", "workflow"],
         visibility: "public",
-        selectedForContext: true
-      }
-    ]
+        selectedForContext: true,
+      },
+    ],
   );
 
   assert.equal(recommendation.relatedUserRepos[0]?.userRepoId, "user-repo-1");
   assert.equal(recommendation.relatedUserRepos[0]?.fullName, "me/fetchGithub");
   assert.equal(recommendation.repo.description, "AI workflow developer tool");
   assert.match(recommendation.summaryZh ?? "", /^功能：/);
-  assert.match(recommendation.summaryZh ?? "", /AI 工作流开发工具|AI 产品开发团队|工作流编排/);
+  assert.match(
+    recommendation.summaryZh ?? "",
+    /AI 工作流开发工具|AI 产品开发团队|工作流编排/,
+  );
   assert.ok((recommendation.scores.opportunity ?? 0) > 0);
   assert.ok(recommendation.opportunity?.monetizationPaths.length);
 });
@@ -412,7 +437,8 @@ test("英文 LLM 摘要不会作为中文展示摘要直接展示", () => {
       owner: "example",
       name: "english-summary",
       htmlUrl: "https://github.com/example/english-summary",
-      description: "A production-ready open-source platform for building LLM applications.",
+      description:
+        "A production-ready open-source platform for building LLM applications.",
       primaryLanguage: "TypeScript",
       topics: ["ai", "developer-tools"],
       stars: 1500,
@@ -421,12 +447,13 @@ test("英文 LLM 摘要不会作为中文展示摘要直接展示", () => {
       pushedAt: "2026-06-09T00:00:00.000Z",
       updatedAt: "2026-06-09T00:00:00.000Z",
       archived: false,
-      fork: false
+      fork: false,
     },
     baseProfile,
     1,
     {
-      summary: "A production-ready open-source platform for building LLM applications.",
+      summary:
+        "A production-ready open-source platform for building LLM applications.",
       categories: [],
       target_users: [],
       core_features: [],
@@ -449,20 +476,26 @@ test("英文 LLM 摘要不会作为中文展示摘要直接展示", () => {
         monetizationPaths: ["托管版 SaaS", "私有化部署"],
         validationSteps: ["做一个付费落地页验证需求。"],
         suggestedAction: "validate",
-        evidence: ["LLM 应用平台具备明确商业场景。"]
-      }
-    }
+        evidence: ["LLM 应用平台具备明确商业场景。"],
+      },
+    },
   );
 
   assert.equal(
     recommendation.repo.description,
-    "A production-ready open-source platform for building LLM applications."
+    "A production-ready open-source platform for building LLM applications.",
   );
   assert.match(recommendation.summaryZh ?? "", /^功能：/);
-  assert.ok(recommendation.summaryZh?.includes("用于构建 LLM / AI 应用的开发平台"));
+  assert.ok(
+    recommendation.summaryZh?.includes("用于构建 LLM / AI 应用的开发平台"),
+  );
   assert.ok(!(recommendation.summaryZh ?? "").includes("A production-ready"));
-  assert.deepEqual(recommendation.matchedPreferences, ["命中偏好 topic：开发者工具"]);
-  assert.deepEqual(recommendation.reasons.slice(0, 1), ["与 开发者工具 topic 强匹配"]);
+  assert.deepEqual(recommendation.matchedPreferences, [
+    "命中偏好 topic：开发者工具",
+  ]);
+  assert.deepEqual(recommendation.reasons.slice(0, 1), [
+    "与 开发者工具 topic 强匹配",
+  ]);
   assert.equal(recommendation.opportunity?.type, "SaaS/工具机会");
   assert.equal(recommendation.opportunity?.suggestedAction, "validate");
   assert.equal(recommendation.scores.opportunity, 0.88);
@@ -486,16 +519,16 @@ test("旧版包含原始英文描述的摘要会重建为中文展示摘要", ()
       pushedAt: "2026-06-09T00:00:00.000Z",
       updatedAt: "2026-06-09T00:00:00.000Z",
       archived: false,
-      fork: false
+      fork: false,
     },
-    ["命中偏好 topic：ai"]
+    ["命中偏好 topic：ai"],
   );
 
   assert.match(summary, /^功能：/);
   assert.ok(
     summary.includes("用于构建 LLM / AI 应用") ||
       summary.includes("AI 应用开发框架") ||
-      summary.includes("AI 工作流")
+      summary.includes("AI 工作流"),
   );
   assert.doesNotMatch(summary, /原始描述/);
 });
@@ -514,7 +547,7 @@ test("长 README 会压缩为保留商业分析信号的输入", () => {
     "```",
     "x".repeat(20000),
     "## License",
-    "MIT"
+    "MIT",
   ].join("\n");
 
   const compacted = compactMarkdownForAnalysis(readme, 1200);
@@ -536,11 +569,11 @@ test("LLM 分析 prompt 会使用紧凑协议和压缩 README", () => {
         "## Features",
         "- Self-hosted deployment",
         "- API integration",
-        "x".repeat(12000)
+        "x".repeat(12000),
       ].join("\n"),
-      7000
+      7000,
     ),
-    compressed: true
+    compressed: true,
   });
 
   assert.ok(prompt.length < 9000);
@@ -557,9 +590,9 @@ test("语义门控只延后低相关项目，不延后高优先级或高机会�
       threshold: 0.42,
       priorityScore: 0.4,
       opportunityScore: 0.3,
-      minOpportunityScore: 0.55
+      minOpportunityScore: 0.55,
     }),
-    true
+    true,
   );
   assert.equal(
     shouldDeferLlmBySemanticFit({
@@ -567,9 +600,9 @@ test("语义门控只延后低相关项目，不延后高优先级或高机会�
       threshold: 0.42,
       priorityScore: 0.8,
       opportunityScore: 0.3,
-      minOpportunityScore: 0.55
+      minOpportunityScore: 0.55,
     }),
-    false
+    false,
   );
   assert.equal(
     shouldDeferLlmBySemanticFit({
@@ -577,9 +610,9 @@ test("语义门控只延后低相关项目，不延后高优先级或高机会�
       threshold: 0.42,
       priorityScore: 0.4,
       opportunityScore: 0.7,
-      minOpportunityScore: 0.55
+      minOpportunityScore: 0.55,
     }),
-    false
+    false,
   );
 });
 
@@ -590,13 +623,13 @@ test("重新分析 delta prompt 使用旧分析和更短上下文", () => {
     "## Features",
     "- Self-hosted deployment",
     "- API integration",
-    "x".repeat(12000)
+    "x".repeat(12000),
   ].join("\n");
   const fullPrompt = buildRepoAnalysisPrompt({
     repo: baseRepo,
     profile: baseProfile,
     readme: compactMarkdownForAnalysis(readme, 7000),
-    compressed: true
+    compressed: true,
   });
   const deltaPrompt = buildRepoDeltaAnalysisPrompt({
     repo: baseRepo,
@@ -627,9 +660,9 @@ test("重新分析 delta prompt 使用旧分析和更短上下文", () => {
         monetizationPaths: ["托管版 SaaS"],
         validationSteps: ["访谈 3 个潜在客户"],
         suggestedAction: "validate",
-        evidence: ["stars 增长明显"]
-      }
-    }
+        evidence: ["stars 增长明显"],
+      },
+    },
   });
 
   assert.ok(deltaPrompt.length < fullPrompt.length);
@@ -654,7 +687,7 @@ test("知识库 Markdown 会包含推荐理由和关联项目解释", () => {
       pushedAt: "2026-06-09T00:00:00.000Z",
       updatedAt: "2026-06-09T00:00:00.000Z",
       archived: false,
-      fork: false
+      fork: false,
     },
     baseProfile,
     1,
@@ -668,9 +701,9 @@ test("知识库 Markdown 会包含推荐理由和关联项目解释", () => {
         primaryLanguage: "TypeScript",
         topics: ["ai", "developer-tools"],
         visibility: "public",
-        selectedForContext: true
-      }
-    ]
+        selectedForContext: true,
+      },
+    ],
   );
 
   const markdown = buildRecommendationMarkdown(recommendation);
@@ -688,9 +721,9 @@ test("推荐项目会按主题生成轻量分组并计算组内位置", () => {
       id: "agent-repo",
       fullName: "example/agent-workflow",
       description: "AI agent workflow automation platform",
-      topics: ["agent", "workflow"]
+      topics: ["agent", "workflow"],
     },
-    "Agent 自动化机会"
+    "Agent 自动化机会",
   );
   assert.equal(agentCluster.key, "ai-agent-workflow");
 
@@ -700,10 +733,10 @@ test("推荐项目会按主题生成轻量分组并计算组内位置", () => {
       id: "cluster-1",
       fullName: "example/agent-one",
       description: "AI agent workflow tool",
-      stars: 2000
+      stars: 2000,
     },
     baseProfile,
-    1
+    1,
   );
   const second = buildRecommendation(
     {
@@ -711,10 +744,10 @@ test("推荐项目会按主题生成轻量分组并计算组内位置", () => {
       id: "cluster-2",
       fullName: "example/agent-two",
       description: "AI agent automation toolkit",
-      stars: 1000
+      stars: 1000,
     },
     baseProfile,
-    2
+    2,
   );
   const grouped = annotateRecommendationClusters([second, first]);
 
@@ -732,14 +765,19 @@ test("推荐项目语义搜索缺少向量时仍可用文本信号召回", () =>
       fullName: "example/rag-hosting",
       description: "RAG knowledge base with self-hosted deployment",
       topics: ["rag", "embedding", "search"],
-      stars: 1800
+      stars: 1800,
     },
     baseProfile,
-    1
+    1,
   );
 
-  assert.ok(lexicalRecommendationSearchScore(recommendation, "托管 rag knowledge") > 0);
-  assert.equal(lexicalRecommendationSearchScore(recommendation, "crypto exchange wallet"), 0);
+  assert.ok(
+    lexicalRecommendationSearchScore(recommendation, "托管 rag knowledge") > 0,
+  );
+  assert.equal(
+    lexicalRecommendationSearchScore(recommendation, "crypto exchange wallet"),
+    0,
+  );
 });
 
 test("Token 汇总会标记 provider 未返回 usage 的 AI 作业", () => {
@@ -760,7 +798,7 @@ test("Token 汇总会标记 provider 未返回 usage 的 AI 作业", () => {
         completionTokens: 50,
         totalTokens: 150,
         estimatedCostUsd: 0.001,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       },
       {
         id: "llm-unknown",
@@ -777,11 +815,11 @@ test("Token 汇总会标记 provider 未返回 usage 的 AI 作业", () => {
         completionTokens: 0,
         totalTokens: 0,
         estimatedCostUsd: 0,
-        createdAt: new Date().toISOString()
-      }
+        createdAt: new Date().toISOString(),
+      },
     ],
     (job) => job.repoId,
-    (job) => job.repoFullName ?? job.repoId
+    (job) => job.repoFullName ?? job.repoId,
   );
 
   assert.equal(rows.length, 1);
@@ -792,30 +830,42 @@ test("Token 汇总会标记 provider 未返回 usage 的 AI 作业", () => {
 
 test("OpenSSF 和 ecosyste.ms 质量信号会参与推荐评分", () => {
   const recommendation = buildRecommendation(baseRepo, baseProfile, 1);
-  const enriched = applyQualitySignalsToRecommendation(recommendation, baseProfile, {
-    openssf: {
-      score: 8.5
+  const enriched = applyQualitySignalsToRecommendation(
+    recommendation,
+    baseProfile,
+    {
+      openssf: {
+        score: 8.5,
+      },
+      ecosystems: {
+        dependentReposCount: 1200,
+        packagesCount: 8,
+        dockerDownloadsCount: 100000,
+        score: 0.82,
+      },
     },
-    ecosystems: {
-      dependentReposCount: 1200,
-      packagesCount: 8,
-      dockerDownloadsCount: 100000,
-      score: 0.82
-    }
-  });
+  );
 
   assert.equal(enriched.qualitySignals?.openssf?.score, 8.5);
-  assert.ok((enriched.scores.technicalQuality ?? 0) >= (recommendation.scores.technicalQuality ?? 0));
-  assert.ok(enriched.reasons.some((reason) => reason.includes("OpenSSF Scorecard")));
+  assert.ok(
+    (enriched.scores.technicalQuality ?? 0) >=
+      (recommendation.scores.technicalQuality ?? 0),
+  );
+  assert.ok(
+    enriched.reasons.some((reason) => reason.includes("OpenSSF Scorecard")),
+  );
   assert.ok(enriched.reasons.some((reason) => reason.includes("ecosyste.ms")));
 });
 
 test("上游账号池暂无可用账号会作为临时 AI 错误重试", () => {
   assert.equal(
     isTransientAiProviderError(
-      'Chat provider failed: 503 {"error":{"message":"No available accounts: no available accounts","type":"api_error"}}'
+      'Chat provider failed: 503 {"error":{"message":"No available accounts: no available accounts","type":"api_error"}}',
     ),
-    true
+    true,
   );
-  assert.equal(isTransientAiProviderError("Chat provider failed: 401 invalid api key"), false);
+  assert.equal(
+    isTransientAiProviderError("Chat provider failed: 401 invalid api key"),
+    false,
+  );
 });

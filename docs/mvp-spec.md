@@ -29,18 +29,18 @@ Required fields:
 
 - `name`
 - `enabled`
-- `schedule`
-- `limits`
+- `missed_run_policy`
 - `preferences`
-- `resource_policy`
-- `chat_provider_id`
-- `embedding_provider_id`
+- `opportunity.brief`
+- `opportunity.min_opportunity_score`
+- `resource_policy.min_available_memory_mb`
 
 Acceptance:
 
 - Profile config persists.
 - Disabled profiles do not run scheduled scans.
-- Limits include initial candidates, rule top K, detail top K, LLM top K, final report top K.
+- Runtime, candidate-count, stage Top K, and concrete provider selection are not user-facing controls.
+- The worker keeps scanning in persisted batches and uses free memory as the execution gate.
 
 ### F2. AI Provider Management
 
@@ -53,6 +53,8 @@ Required fields:
 - `base_url`
 - `api_key_env`
 - `model`
+- `priority`
+- `reasoning_effort` for chat providers
 - `dimensions` for embeddings
 - `rate_limit`
 - `timeout`
@@ -64,6 +66,10 @@ Acceptance:
 - Embedding provider cannot be selected as a chat provider.
 - API key value is not stored, only `api_key_env`.
 - Test connection action verifies provider availability without printing secrets.
+- Provider selection is automatic by kind and ascending priority.
+- The list shows availability status, sanitized unavailable reason, recovery guidance, and cooldown deadline.
+- Persistent unavailable states can return to `available` only after “检测并恢复” succeeds.
+- Delete is a soft delete so historical embedding and LLM foreign keys remain valid.
 
 ### F3. GitHub Collection
 
@@ -76,6 +82,7 @@ Acceptance:
 - Persists L1 candidate records for repositories passing hard filters.
 - Stores checkpoints for pagination progress.
 - Can resume an interrupted scan.
+- Uses canonical repository URL as the processing key; `processed` and `skipped` are terminal, while `failed` and `exception` can be retried.
 
 ### F4. Low-Memory Queue Processing
 
@@ -87,6 +94,7 @@ Acceptance:
 - Worker fetches small batches from `candidate_queue`.
 - Job can enter `throttled`, `paused_by_memory`, and resume states.
 - Resource events are recorded.
+- Batch size is derived from current free memory and no user-configured candidate count ends the scan.
 
 ### F5. Scoring And Recommendations
 
@@ -98,7 +106,7 @@ Acceptance:
 - Calculates final score using rule/context/LLM/feedback components.
 - Stores `score_version`.
 - Recommendations are sorted by final score.
-- Final report respects `final_report_top_k`.
+- Every recommendation that satisfies the match and minimum opportunity score is retained; pagination is presentation-only and does not cap storage.
 
 ### F6. README And AI Analysis
 
@@ -132,14 +140,15 @@ Actions:
 
 - `save`
 - `hide`
-- `like`
-- `dislike`
+- preference: `pending`, `liked`, `disliked`
+- qualification: `unassessed`, `qualified`, `not_qualified`
+- stage: `observing`, `pending_validation`, `validating`, `validated`, `monetization_ready`, `abandoned`
 - `track`
 
 Acceptance:
 
 - Feedback persists.
-- Feedback updates recommendation status.
+- Feedback updates only its corresponding status axis; save, hide, and track remain independent timestamps.
 - Future scoring includes feedback score.
 
 ### F9. My GitHub Context
@@ -174,20 +183,7 @@ Acceptance:
 name: AI Dev Tools
 enabled: true
 schedule:
-  type: cron
-  cron: "0 9 * * *"
-  timezone: Asia/Shanghai
-  start_at: "2026-06-08 09:00:00"
-  max_runtime_minutes: 120
   missed_run_policy: skip
-limits:
-  source_limit_per_query: 100
-  max_candidates: 5000
-  rule_filter_top_k: 1000
-  detail_fetch_top_k: 300
-  embedding_top_k: 1000
-  llm_analyze_top_k: 100
-  final_report_top_k: 30
 preferences:
   keywords: ["agent", "llm", "rag", "workflow"]
   topics: ["ai", "developer-tools", "automation"]
@@ -231,19 +227,10 @@ sources:
     enabled: true
     weight: 1.02
 resource_policy:
-  mode: complete_low_memory
-  memory:
-    target_available_mb: 1024
-    min_available_mb: 512
-    critical_available_mb: 256
-  execution:
-    batch_size: 10
-    max_concurrency: 1
-    checkpoint_every_items: 10
-    pause_on_pressure: true
-ai:
-  chat_provider_id: default_chat
-  embedding_provider_id: default_embedding
+  min_available_memory_mb: 512
+opportunity:
+  brief: 寻找可做 SaaS、托管版、私有化部署或集成服务的项目
+  min_opportunity_score: 0.55
 ```
 
 ## Key API Contracts
@@ -259,6 +246,7 @@ PUT    /api/profiles/:id
 GET    /api/ai-providers
 POST   /api/ai-providers
 POST   /api/ai-providers/:id/test
+POST   /api/ai-providers/:id/recover
 
 POST   /api/scans
 GET    /api/scans/:id
@@ -302,11 +290,10 @@ POST   /api/knowledge-syncs/run
 ### Profiles
 
 - Basic settings.
-- Schedule.
-- Limits.
+- Missed-run policy.
 - Preferences.
-- Resource policy.
-- AI provider selection.
+- Opportunity brief and minimum score.
+- Minimum available memory.
 
 ### Scan Jobs
 
@@ -327,7 +314,9 @@ POST   /api/knowledge-syncs/run
 
 - Chat providers tab.
 - Embedding providers tab.
+- Priority, reasoning effort, and availability details.
 - Test connection action.
+- Detection and recovery action.
 
 ## Delivery Phases
 
@@ -387,6 +376,9 @@ When implementation exists, add tests for:
 - Queue checkpoint/resume.
 - README chunking.
 - LLM JSON parsing and retry behavior.
+- Provider priority, error classification, rotation, and recovery behavior.
+- Canonical URL processing deduplication.
+- Memory-driven batch selection.
 - Feedback scoring.
 - GitHub external link rendering.
 

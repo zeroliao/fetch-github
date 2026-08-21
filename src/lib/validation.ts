@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeOpportunityProfile } from "./opportunity";
 
 const discoverySourceIdSchema = z.enum([
   "github_search_preferences",
@@ -10,7 +11,7 @@ const discoverySourceIdSchema = z.enum([
   "ossinsight_trending",
   "gharchive_velocity",
   "openssf_scorecard",
-  "ecosystems_usage"
+  "ecosystems_usage",
 ]);
 
 export const providerSchema = z.object({
@@ -22,102 +23,142 @@ export const providerSchema = z.object({
   model: z.string().min(1),
   apiKeyValue: z.string().optional(),
   dimensions: z.number().int().positive().optional(),
+  priority: z.number().int().min(1).max(10000).default(100),
+  reasoningEffort: z
+    .enum(["default", "minimal", "low", "medium", "high", "xhigh"])
+    .optional(),
   enabled: z.boolean().default(true),
   timeoutSeconds: z.number().int().positive().optional(),
   rateLimit: z
     .object({
       requestsPerMinute: z.number().int().positive().optional(),
-      tokensPerMinute: z.number().int().positive().optional()
+      tokensPerMinute: z.number().int().positive().optional(),
     })
-    .optional()
+    .optional(),
 });
 
 export const profileSchema = z.object({
   name: z.string().min(1),
   enabled: z.boolean().default(true),
   config: z.object({
-    schedule: z.object({
-      type: z.enum(["cron", "interval"]),
-      cron: z.string().optional(),
-      intervalHours: z.number().int().positive().optional(),
-      timezone: z.string().min(1),
-      startAt: z.string().optional(),
-      maxRuntimeMinutes: z.number().int().positive(),
-      missedRunPolicy: z.enum(["skip", "run_once", "resume"])
-    }),
-    limits: z.object({
-      sourceLimitPerQuery: z.number().int().positive(),
-      maxCandidates: z.number().int().positive(),
-      ruleFilterTopK: z.number().int().positive(),
-      detailFetchTopK: z.number().int().positive(),
-      embeddingTopK: z.number().int().positive(),
-      llmAnalyzeTopK: z.number().int().positive(),
-      semanticFitThreshold: z.number().min(0).max(1).optional(),
-      finalReportTopK: z.number().int().positive()
-    }),
-    preferences: z.object({
-      keywords: z.array(z.string()),
-      topics: z.array(z.string()),
-      languages: z.record(z.string(), z.number()),
-      excludeKeywords: z.array(z.string()),
-      minStars: z.number().int().nonnegative(),
-      pushedWithinDays: z.number().int().positive(),
-      excludeArchived: z.boolean(),
-      excludeForks: z.boolean()
-    }),
+    schedule: z
+      .object({
+        type: z.enum(["cron", "interval"]).optional(),
+        cron: z.string().optional(),
+        intervalHours: z.number().int().positive().optional(),
+        timezone: z.string().min(1).optional(),
+        startAt: z.string().optional(),
+        maxRuntimeMinutes: z.number().int().positive().optional(),
+        missedRunPolicy: z.enum(["skip", "run_once", "resume"]).default("skip"),
+      })
+      .default({ missedRunPolicy: "skip" }),
+    limits: z
+      .object({
+        sourceLimitPerQuery: z.number().int().positive().optional(),
+        maxCandidates: z.number().int().positive().optional(),
+        ruleFilterTopK: z.number().int().positive().optional(),
+        detailFetchTopK: z.number().int().positive().optional(),
+        embeddingTopK: z.number().int().positive().optional(),
+        llmAnalyzeTopK: z.number().int().positive().optional(),
+        semanticFitThreshold: z.number().min(0).max(1).optional(),
+        finalReportTopK: z.number().int().positive().optional(),
+      })
+      .default({}),
+    preferences: z
+      .object({
+        keywords: z.array(z.string()).default([]),
+        topics: z.array(z.string()).default([]),
+        languages: z.record(z.string(), z.number()).default({}),
+        excludeKeywords: z.array(z.string()).default([]),
+        minStars: z.number().int().nonnegative().default(0),
+        pushedWithinDays: z.number().int().positive().default(365),
+        excludeArchived: z.boolean().default(true),
+        excludeForks: z.boolean().default(true),
+      })
+      .default({
+        keywords: [],
+        topics: [],
+        languages: {},
+        excludeKeywords: [],
+        minStars: 0,
+        pushedWithinDays: 365,
+        excludeArchived: true,
+        excludeForks: true,
+      }),
     opportunity: z
       .object({
-        goals: z.array(z.string()),
-        targetCustomers: z.array(z.string()),
-        monetizationChannels: z.array(z.string()),
-        preferredAdvantages: z.array(z.string()),
-        excludeSignals: z.array(z.string()),
-        minOpportunityScore: z.number().min(0).max(1)
+        brief: z.string().max(2000).optional(),
+        goals: z.array(z.string()).optional(),
+        targetCustomers: z.array(z.string()).optional(),
+        monetizationChannels: z.array(z.string()).optional(),
+        preferredAdvantages: z.array(z.string()).optional(),
+        excludeSignals: z.array(z.string()).optional(),
+        minOpportunityScore: z.number().min(0).max(1).optional(),
       })
+      .transform((value) => normalizeOpportunityProfile(value))
       .optional(),
     sources: z
       .array(
         z.object({
           id: discoverySourceIdSchema,
           enabled: z.boolean(),
-          weight: z.number().positive()
-        })
+          weight: z.number().positive(),
+        }),
       )
       .optional(),
-    resourcePolicy: z.object({
-      mode: z.enum(["complete_low_memory", "balanced", "fast"]),
-      memory: z.object({
-        targetAvailableMb: z.number().int().positive(),
-        minAvailableMb: z.number().int().positive(),
-        criticalAvailableMb: z.number().int().positive()
-      }),
-      execution: z.object({
-        batchSize: z.number().int().positive(),
-        maxConcurrency: z.number().int().positive(),
-        checkpointEveryItems: z.number().int().positive(),
-        pauseOnPressure: z.boolean()
+    resourcePolicy: z
+      .object({
+        minAvailableMemoryMb: z.number().int().positive().optional(),
+        mode: z.enum(["complete_low_memory", "balanced", "fast"]).optional(),
+        memory: z
+          .object({
+            targetAvailableMb: z.number().int().positive().optional(),
+            minAvailableMb: z.number().int().positive().optional(),
+            criticalAvailableMb: z.number().int().positive().optional(),
+          })
+          .optional(),
+        execution: z
+          .object({
+            batchSize: z.number().int().positive().optional(),
+            maxConcurrency: z.number().int().positive().optional(),
+            checkpointEveryItems: z.number().int().positive().optional(),
+            pauseOnPressure: z.boolean().optional(),
+          })
+          .optional(),
       })
-    }),
-    ai: z.object({
-      chatProviderId: z.string().min(1),
-      embeddingProviderId: z.string().min(1)
-    })
-  })
+      .default({}),
+    ai: z
+      .object({
+        chatProviderId: z.string().min(1).optional(),
+        embeddingProviderId: z.string().min(1).optional(),
+      })
+      .default({}),
+  }),
 });
 
 export const feedbackSchema = z.object({
   profileId: z.string().min(1),
   action: z.enum([
     "save",
+    "unsave",
     "hide",
     "restore",
     "like",
     "dislike",
+    "set_pending",
+    "set_liked",
+    "set_disliked",
     "track",
+    "untrack",
     "to_validate",
     "validating",
+    "mark_validated",
+    "mark_qualified",
+    "mark_not_qualified",
+    "reset_qualification",
     "monetization_ready",
-    "abandon"
+    "abandon",
+    "reopen",
   ]),
-  note: z.string().optional()
+  note: z.string().optional(),
 });

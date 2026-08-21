@@ -26,7 +26,10 @@ export async function GET(request: Request) {
   }
 
   const page = positiveInteger(url.searchParams.get("page"), 1);
-  const pageSize = Math.min(positiveInteger(url.searchParams.get("pageSize"), 50), 200);
+  const pageSize = Math.min(
+    positiveInteger(url.searchParams.get("pageSize"), 50),
+    200,
+  );
   const profileId = url.searchParams.get("profileId") ?? "";
   const status = url.searchParams.get("status") ?? "visible";
   const preference = url.searchParams.get("preference") ?? "all";
@@ -37,10 +40,11 @@ export async function GET(request: Request) {
     (url.searchParams.get("ids") ?? "")
       .split(",")
       .map((value) => value.trim())
-      .filter(Boolean)
+      .filter(Boolean),
   );
-  const sort = url.searchParams.get("sort") ?? "rank";
-  const direction = url.searchParams.get("direction") === "asc" ? "asc" : "desc";
+  const sort = url.searchParams.get("sort") ?? "score";
+  const direction =
+    url.searchParams.get("direction") === "asc" ? "asc" : "desc";
 
   const filtered = recommendations
     .filter((item) => !profileId || item.profileId === profileId)
@@ -49,52 +53,72 @@ export async function GET(request: Request) {
     .filter((item) => recommendationMatchesPreference(item, preference))
     .filter((item) => recommendationMatchesOpportunity(item, opportunity))
     .filter((item) => recommendationMatchesGroup(item, group, clusterKey))
-    .sort((left, right) => compareRecommendations(left, right, sort, direction));
+    .sort((left, right) =>
+      compareRecommendations(left, right, sort, direction),
+    );
   const offset = (page - 1) * pageSize;
 
   return NextResponse.json({
     items: filtered.slice(offset, offset + pageSize),
     total: filtered.length,
     page,
-    pageSize
+    pageSize,
   });
 }
 
-function recommendationMatchesStatus(recommendation: Recommendation, status: string) {
+function recommendationMatchesStatus(
+  recommendation: Recommendation,
+  status: string,
+) {
   if (status === "all") {
     return true;
   }
   if (status === "visible") {
-    return recommendation.status !== "hidden";
+    return !recommendation.hiddenAt;
   }
+  if (status === "hidden") return Boolean(recommendation.hiddenAt);
+  if (status === "saved") return Boolean(recommendation.savedAt);
+  if (status === "tracked") return Boolean(recommendation.trackedAt);
   return recommendation.status === status;
 }
 
-function recommendationMatchesPreference(recommendation: Recommendation, preference: string) {
+function recommendationMatchesPreference(
+  recommendation: Recommendation,
+  preference: string,
+) {
   if (preference === "all") {
     return true;
   }
-  if (preference === "unrated") {
-    return recommendation.status !== "liked" && recommendation.status !== "disliked";
+  if (preference === "unrated" || preference === "pending") {
+    return recommendation.preferenceStatus === "pending";
   }
-  return recommendation.status === preference;
+  return recommendation.preferenceStatus === preference;
 }
 
-function recommendationMatchesOpportunity(recommendation: Recommendation, opportunity: string) {
-  const action = recommendation.opportunity?.suggestedAction;
+function recommendationMatchesOpportunity(
+  recommendation: Recommendation,
+  opportunity: string,
+) {
   if (opportunity === "all") {
     return true;
   }
   if (opportunity === "has_opportunity") {
-    return Boolean(action);
+    return recommendation.opportunityStatus === "qualified";
   }
   if (opportunity === "no_opportunity") {
-    return !action;
+    return recommendation.opportunityStatus === "not_qualified";
   }
-  return action === opportunity;
+  if (["unassessed", "qualified", "not_qualified"].includes(opportunity)) {
+    return recommendation.opportunityStatus === opportunity;
+  }
+  return recommendation.opportunityStage === opportunity;
 }
 
-function recommendationMatchesGroup(recommendation: Recommendation, group: string, clusterKey: string) {
+function recommendationMatchesGroup(
+  recommendation: Recommendation,
+  group: string,
+  clusterKey: string,
+) {
   if (clusterKey) {
     return recommendation.cluster?.key === clusterKey;
   }
@@ -111,7 +135,7 @@ function compareRecommendations(
   left: Recommendation,
   right: Recommendation,
   sort: string,
-  direction: "asc" | "desc"
+  direction: "asc" | "desc",
 ) {
   const sign = direction === "asc" ? 1 : -1;
   const rankFallback = left.rank - right.rank;

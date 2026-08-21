@@ -7,13 +7,13 @@ import { normalizeOpportunityProfile } from "@/lib/opportunity";
 import { cosineSimilarity, normalizeDiscoveryLimits } from "@/lib/semanticGate";
 import {
   repoHasMaterialMetadataChanges,
-  shouldAnalyzeDiscoveredRepo
+  shouldAnalyzeDiscoveredRepo,
 } from "@/lib/repoRefresh";
 import { normalizeAppSettings } from "@/lib/settings";
 import { annotateRecommendationClusters } from "@/lib/repoCluster";
 import {
   ensureChineseSummary,
-  normalizeChineseLabels
+  normalizeChineseLabels,
 } from "@/lib/recommendationText";
 import type {
   AiProvider,
@@ -24,8 +24,12 @@ import type {
   Feedback,
   FeedbackAction,
   PreferenceSignal,
+  ProviderAvailabilityStatus,
+  ProviderKind,
   Recommendation,
   RepoDataLevel,
+  RepoProcessing,
+  RepoProcessingStatus,
   RepoSummary,
   ResourceEvent,
   ScanCheckpoint,
@@ -34,8 +38,10 @@ import type {
   GithubAccount,
   KnowledgeSync,
   OperationsSnapshot,
-  UserGitHubRepo
+  UserGitHubRepo,
 } from "@/lib/types";
+import { canonicalizeGitHubRepoUrl } from "@/lib/repoProcessing";
+import { orderEligibleProviders } from "./aiProviderPolicy";
 import { buildRecommendation } from "./ranking";
 import { isDatabaseAvailable } from "./db";
 import * as postgresStore from "./postgresStore";
@@ -81,7 +87,35 @@ interface StoreState extends DashboardSnapshot {
     score: number;
     reasons: string[];
   }>;
+  repoProcessing: RepoProcessing[];
+  scanProviderStates: Array<{
+    jobId: string;
+    providerId: string;
+    kind: ProviderKind;
+    consecutiveParseFailures: number;
+    exhausted: boolean;
+    lastErrorCode?: string;
+    lastErrorMessage?: string;
+  }>;
 }
+
+type AiProviderCreateInput = Omit<
+  AiProvider,
+  | "id"
+  | "createdAt"
+  | "updatedAt"
+  | "availabilityStatus"
+  | "unavailableCode"
+  | "unavailableReason"
+  | "recoverySuggestion"
+  | "unavailableAt"
+  | "lastCheckedAt"
+  | "recoveredAt"
+  | "cooldownUntil"
+  | "archivedAt"
+> & {
+  availabilityStatus?: ProviderAvailabilityStatus;
+};
 
 let cache: StoreState | null = null;
 
@@ -90,9 +124,14 @@ const storePath = path.join(process.cwd(), "runtime", "dev-store.json");
 function createInitialState(): StoreState {
   return {
     ...seedSnapshot,
-    repos: seedSnapshot.recommendations.map((recommendation) => recommendation.repo),
+    repos: seedSnapshot.recommendations.map(
+      (recommendation) => recommendation.repo,
+    ),
     repoDataLevels: Object.fromEntries(
-      seedSnapshot.recommendations.map((recommendation) => [recommendation.repo.id, "L3"])
+      seedSnapshot.recommendations.map((recommendation) => [
+        recommendation.repo.id,
+        "L3",
+      ]),
     ),
     feedback: [],
     checkpoints: [],
@@ -103,7 +142,24 @@ function createInitialState(): StoreState {
     llmResults: [],
     preferenceSignals: [],
     knowledgeSyncs: [],
-    repoContextMatches: []
+    repoContextMatches: [],
+    repoProcessing: seedSnapshot.recommendations.flatMap((recommendation) => {
+      const canonicalUrl = canonicalizeGitHubRepoUrl(
+        recommendation.repo.htmlUrl,
+      );
+      return canonicalUrl
+        ? [
+            {
+              canonicalUrl,
+              repoId: recommendation.repo.id,
+              status: "processed" as const,
+              processedAt: recommendation.createdAt,
+              updatedAt: recommendation.createdAt,
+            },
+          ]
+        : [];
+    }),
+    scanProviderStates: [],
   };
 }
 
@@ -129,13 +185,17 @@ function normalizeState(state: Partial<StoreState>): StoreState {
   return {
     settings: normalizeAppSettings(state.settings),
     profiles: normalizeProfiles(state.profiles ?? seedSnapshot.profiles),
-    aiProviders: state.aiProviders ?? seedSnapshot.aiProviders,
-    recommendations,
+    aiProviders: (state.aiProviders ?? seedSnapshot.aiProviders).map(
+      normalizeProvider,
+    ),
+    recommendations: recommendations.map(normalizeRecommendationState),
     jobs: normalizeScanJobs(state.jobs ?? seedSnapshot.jobs),
     githubRepos: state.githubRepos ?? seedSnapshot.githubRepos,
     queueStats: state.queueStats ?? [],
     githubAccounts: state.githubAccounts ?? seedSnapshot.githubAccounts ?? [],
-    repos: state.repos ?? recommendations.map((recommendation) => recommendation.repo),
+    repos:
+      state.repos ??
+      recommendations.map((recommendation) => recommendation.repo),
     repoDataLevels: state.repoDataLevels ?? {},
     feedback: state.feedback ?? [],
     checkpoints: state.checkpoints ?? [],
@@ -147,19 +207,21 @@ function normalizeState(state: Partial<StoreState>): StoreState {
     preferenceSignals: state.preferenceSignals ?? [],
     knowledgeSyncs: state.knowledgeSyncs ?? seedSnapshot.knowledgeSyncs ?? [],
     repoContextMatches: state.repoContextMatches ?? [],
-    operations: state.operations ?? seedSnapshot.operations
+    repoProcessing: state.repoProcessing ?? [],
+    scanProviderStates: state.scanProviderStates ?? [],
+    operations: state.operations ?? seedSnapshot.operations,
   };
 }
 
 function normalizeProfiles(profiles: DiscoveryProfile[]) {
   return profiles.map((profile) => ({
     ...profile,
-      config: {
-        ...profile.config,
-        limits: normalizeDiscoveryLimits(profile.config.limits),
-        opportunity: normalizeOpportunityProfile(profile.config.opportunity),
-        sources: normalizeDiscoverySources(profile.config.sources)
-      }
+    config: {
+      ...profile.config,
+      limits: normalizeDiscoveryLimits(profile.config.limits),
+      opportunity: normalizeOpportunityProfile(profile.config.opportunity),
+      sources: normalizeDiscoverySources(profile.config.sources),
+    },
   }));
 }
 
@@ -170,8 +232,70 @@ function normalizeScanJobs(jobs: ScanJob[]) {
     updatedRepoCount: job.updatedRepoCount ?? 0,
     unchangedRepoCount: job.unchangedRepoCount ?? 0,
     candidateCount: job.candidateCount ?? job.processedCount ?? 0,
-    failedCandidateCount: job.failedCandidateCount ?? 0
+    failedCandidateCount: job.failedCandidateCount ?? 0,
   }));
+}
+
+function normalizeProvider(provider: AiProvider): AiProvider {
+  return {
+    ...provider,
+    priority: provider.priority ?? 100,
+    reasoningEffort: provider.reasoningEffort ?? "default",
+    availabilityStatus: provider.availabilityStatus ?? "available",
+  };
+}
+
+function visibleLocalProviders(providers: AiProvider[]) {
+  return providers
+    .filter((provider) => !provider.archivedAt)
+    .sort(
+      (left, right) =>
+        left.priority - right.priority ||
+        left.createdAt.localeCompare(right.createdAt) ||
+        left.id.localeCompare(right.id),
+    );
+}
+
+function normalizeRecommendationState(
+  recommendation: Recommendation,
+): Recommendation {
+  const legacyStatus = recommendation.status;
+  return {
+    ...recommendation,
+    preferenceStatus:
+      recommendation.preferenceStatus ??
+      (legacyStatus === "liked"
+        ? "liked"
+        : legacyStatus === "disliked"
+          ? "disliked"
+          : "pending"),
+    opportunityStatus:
+      recommendation.opportunityStatus ??
+      (recommendation.opportunity ? "qualified" : "unassessed"),
+    opportunityStage:
+      recommendation.opportunityStage ??
+      (legacyStatus === "to_validate"
+        ? "pending_validation"
+        : legacyStatus === "validating"
+          ? "validating"
+          : legacyStatus === "monetization_ready"
+            ? "monetization_ready"
+            : legacyStatus === "abandoned"
+              ? "abandoned"
+              : "observing"),
+    viewedAt:
+      recommendation.viewedAt ??
+      (legacyStatus === "viewed" ? recommendation.createdAt : undefined),
+    savedAt:
+      recommendation.savedAt ??
+      (legacyStatus === "saved" ? recommendation.createdAt : undefined),
+    hiddenAt:
+      recommendation.hiddenAt ??
+      (legacyStatus === "hidden" ? recommendation.createdAt : undefined),
+    trackedAt:
+      recommendation.trackedAt ??
+      (legacyStatus === "tracked" ? recommendation.createdAt : undefined),
+  };
 }
 
 function findLocalRepo(repos: RepoSummary[], repo: RepoSummary) {
@@ -179,7 +303,7 @@ function findLocalRepo(repos: RepoSummary[], repo: RepoSummary) {
     (item) =>
       item.id === repo.id ||
       item.fullName === repo.fullName ||
-      (repo.githubId !== undefined && item.githubId === repo.githubId)
+      (repo.githubId !== undefined && item.githubId === repo.githubId),
   );
 }
 
@@ -187,7 +311,10 @@ function repoHasMaterialChanges(existing: RepoSummary, next: RepoSummary) {
   return repoHasMaterialMetadataChanges(existing, next);
 }
 
-function mergeDataLevel(current: RepoDataLevel | undefined, next: RepoDataLevel) {
+function mergeDataLevel(
+  current: RepoDataLevel | undefined,
+  next: RepoDataLevel,
+) {
   const order: RepoDataLevel[] = ["L0", "L1", "L2", "L3", "L4"];
   const currentIndex = current ? order.indexOf(current) : 0;
   const nextIndex = order.indexOf(next);
@@ -210,14 +337,14 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
   return {
     settings: state.settings,
     profiles: state.profiles,
-    aiProviders: state.aiProviders,
+    aiProviders: visibleLocalProviders(state.aiProviders),
     recommendations: state.recommendations.map(withChineseDisplay),
     jobs: state.jobs,
     githubAccounts: state.githubAccounts,
     githubRepos: state.githubRepos,
     knowledgeSyncs: state.knowledgeSyncs,
     queueStats: state.queueStats,
-    operations: buildLocalOperationsSnapshot(state)
+    operations: buildLocalOperationsSnapshot(state),
   };
 }
 
@@ -232,7 +359,7 @@ export async function getDashboardShellSnapshot(): Promise<DashboardSnapshot> {
       githubRepos,
       knowledgeSyncs,
       queueStats,
-      operations
+      operations,
     ] = await Promise.all([
       postgresStore.getAppSettings(),
       postgresStore.listProfiles(),
@@ -242,7 +369,7 @@ export async function getDashboardShellSnapshot(): Promise<DashboardSnapshot> {
       postgresStore.listGithubRepos(),
       postgresStore.listKnowledgeSyncs(),
       postgresStore.getQueueStats(),
-      postgresStore.getOperationsSnapshot()
+      postgresStore.getOperationsSnapshot(),
     ]);
 
     return {
@@ -255,7 +382,7 @@ export async function getDashboardShellSnapshot(): Promise<DashboardSnapshot> {
       githubRepos,
       knowledgeSyncs,
       queueStats,
-      operations
+      operations,
     };
   }
 
@@ -264,14 +391,14 @@ export async function getDashboardShellSnapshot(): Promise<DashboardSnapshot> {
   return {
     settings: state.settings,
     profiles: state.profiles,
-    aiProviders: state.aiProviders,
+    aiProviders: visibleLocalProviders(state.aiProviders),
     recommendations: [],
     jobs: state.jobs,
     githubAccounts: state.githubAccounts,
     githubRepos: state.githubRepos,
     knowledgeSyncs: state.knowledgeSyncs,
     queueStats: state.queueStats,
-    operations: buildLocalOperationsSnapshot(state)
+    operations: buildLocalOperationsSnapshot(state),
   };
 }
 
@@ -285,8 +412,8 @@ function buildLocalOperationsSnapshot(state: StoreState): OperationsSnapshot {
       totalJobs: 0,
       unknownJobCount: 0,
       totalTokens: 0,
-      estimatedCostUsd: 0
-    }
+      estimatedCostUsd: 0,
+    },
   };
 }
 
@@ -306,7 +433,9 @@ export async function getAppSettings(): Promise<AppSettings> {
   return (await loadState()).settings;
 }
 
-export async function updateAppSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+export async function updateAppSettings(
+  patch: Partial<AppSettings>,
+): Promise<AppSettings> {
   if (await isDatabaseAvailable()) {
     return postgresStore.updateAppSettings(patch);
   }
@@ -314,7 +443,7 @@ export async function updateAppSettings(patch: Partial<AppSettings>): Promise<Ap
   const state = await loadState();
   state.settings = normalizeAppSettings({
     ...state.settings,
-    ...patch
+    ...patch,
   });
   await saveState(state);
   return state.settings;
@@ -329,7 +458,7 @@ export async function listProfiles(): Promise<DiscoveryProfile[]> {
 }
 
 export async function createProfile(
-  input: Omit<DiscoveryProfile, "id" | "createdAt" | "updatedAt">
+  input: Omit<DiscoveryProfile, "id" | "createdAt" | "updatedAt">,
 ): Promise<DiscoveryProfile> {
   if (await isDatabaseAvailable()) {
     return postgresStore.createProfile(input);
@@ -341,7 +470,7 @@ export async function createProfile(
     ...input,
     id: crypto.randomUUID(),
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
   };
 
   state.profiles.push(profile);
@@ -351,7 +480,7 @@ export async function createProfile(
 
 export async function updateProfile(
   id: string,
-  patch: Partial<Pick<DiscoveryProfile, "config" | "enabled" | "name">>
+  patch: Partial<Pick<DiscoveryProfile, "config" | "enabled" | "name">>,
 ): Promise<DiscoveryProfile | undefined> {
   if (await isDatabaseAvailable()) {
     return postgresStore.updateProfile(id, patch);
@@ -368,7 +497,7 @@ export async function updateProfile(
       ...profile,
       ...patch,
       config: patch.config ?? profile.config,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     };
     return updated;
   });
@@ -382,11 +511,11 @@ export async function listAiProviders(): Promise<AiProvider[]> {
     return postgresStore.listAiProviders();
   }
 
-  return (await loadState()).aiProviders;
+  return visibleLocalProviders((await loadState()).aiProviders);
 }
 
 export async function createAiProvider(
-  input: Omit<AiProvider, "id" | "createdAt" | "updatedAt">
+  input: AiProviderCreateInput,
 ): Promise<AiProvider> {
   if (await isDatabaseAvailable()) {
     return postgresStore.createAiProvider(input);
@@ -397,8 +526,9 @@ export async function createAiProvider(
   const provider: AiProvider = {
     ...input,
     id: crypto.randomUUID(),
+    availabilityStatus: input.availabilityStatus ?? "available",
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
   };
 
   state.aiProviders.push(provider);
@@ -406,48 +536,40 @@ export async function createAiProvider(
   return provider;
 }
 
-export async function getAiProvider(id: string): Promise<AiProvider | undefined> {
+export async function getAiProvider(
+  id: string,
+): Promise<AiProvider | undefined> {
   if (await isDatabaseAvailable()) {
     return postgresStore.getAiProvider(id);
   }
 
   const state = await loadState();
-  return state.aiProviders.find((provider) => provider.id === id);
+  return state.aiProviders.find(
+    (provider) => provider.id === id && !provider.archivedAt,
+  );
 }
 
 export async function updateAiProvider(
   id: string,
-  patch: Partial<Omit<AiProvider, "id" | "kind" | "type" | "createdAt" | "updatedAt">>
+  patch: Partial<
+    Omit<AiProvider, "id" | "kind" | "type" | "createdAt" | "updatedAt">
+  >,
 ): Promise<{ provider?: AiProvider; reason?: string }> {
   if (await isDatabaseAvailable()) {
     return postgresStore.updateAiProvider(id, patch);
   }
 
   const state = await loadState();
-  if (patch.enabled === false) {
-    const inUse = state.profiles.find(
-      (profile) =>
-        profile.config.ai.chatProviderId === id ||
-        profile.config.ai.embeddingProviderId === id
-    );
-
-    if (inUse) {
-      return {
-        reason: `该 AI 配置正在被发现配置「${inUse.name}」使用，请先修改发现配置的 AI 绑定。`
-      };
-    }
-  }
-
   let updated: AiProvider | undefined;
   state.aiProviders = state.aiProviders.map((provider) => {
-    if (provider.id !== id) {
+    if (provider.id !== id || provider.archivedAt) {
       return provider;
     }
 
     updated = {
       ...provider,
       ...patch,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     };
     return updated;
   });
@@ -465,22 +587,238 @@ export async function deleteAiProvider(id: string): Promise<{
   }
 
   const state = await loadState();
-  const inUse = state.profiles.find(
-    (profile) =>
-      profile.config.ai.chatProviderId === id ||
-      profile.config.ai.embeddingProviderId === id
-  );
-
-  if (inUse) {
+  let deleted = false;
+  state.aiProviders = state.aiProviders.map((provider) => {
+    if (provider.id !== id || provider.archivedAt) {
+      return provider;
+    }
+    deleted = true;
     return {
-      deleted: false,
-      reason: `该 AI 配置正在被发现配置「${inUse.name}」使用，不能删除。`
+      ...provider,
+      enabled: false,
+      archivedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
+  });
+  await saveState(state);
+  return deleted
+    ? { deleted: true }
+    : { deleted: false, reason: "AI 配置不存在或已删除。" };
+}
+
+export async function resolveAiProvider(
+  kind: ProviderKind,
+  excludedIds: Iterable<string> = [],
+): Promise<AiProvider | undefined> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.resolveAiProvider(kind, excludedIds);
+  }
+  return orderEligibleProviders(await listAiProviders(), kind, excludedIds)[0];
+}
+
+export async function updateAiProviderAvailability(
+  id: string,
+  input: {
+    status: ProviderAvailabilityStatus;
+    code?: string;
+    reason?: string;
+    recoverySuggestion?: string;
+    cooldownUntil?: string;
+    recovered?: boolean;
+  },
+): Promise<AiProvider | undefined> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.updateAiProviderAvailability(id, input);
   }
 
-  state.aiProviders = state.aiProviders.filter((provider) => provider.id !== id);
+  const state = await loadState();
+  let updated: AiProvider | undefined;
+  state.aiProviders = state.aiProviders.map((provider) => {
+    if (provider.id !== id || provider.archivedAt) return provider;
+    const now = new Date().toISOString();
+    updated = {
+      ...provider,
+      availabilityStatus: input.status,
+      unavailableCode: input.status === "available" ? undefined : input.code,
+      unavailableReason:
+        input.status === "available" ? undefined : input.reason,
+      recoverySuggestion:
+        input.status === "available" ? undefined : input.recoverySuggestion,
+      unavailableAt: input.status === "available" ? undefined : now,
+      lastCheckedAt: now,
+      recoveredAt: input.recovered ? now : provider.recoveredAt,
+      cooldownUntil:
+        input.status === "cooldown" ? input.cooldownUntil : undefined,
+      updatedAt: now,
+    };
+    return updated;
+  });
   await saveState(state);
-  return { deleted: true };
+  return updated;
+}
+
+export async function listScanProviderStates(
+  jobId: string,
+  kind: ProviderKind,
+): Promise<
+  Array<{
+    providerId: string;
+    consecutiveParseFailures: number;
+    exhausted: boolean;
+  }>
+> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.listScanProviderStates(jobId, kind);
+  }
+  return (await loadState()).scanProviderStates
+    .filter((item) => item.jobId === jobId && item.kind === kind)
+    .map(({ providerId, consecutiveParseFailures, exhausted }) => ({
+      providerId,
+      consecutiveParseFailures,
+      exhausted,
+    }));
+}
+
+export async function recordScanProviderFailure(input: {
+  jobId: string;
+  providerId: string;
+  kind: ProviderKind;
+  code: string;
+  message: string;
+  parseFailure: boolean;
+  parseFailureThreshold: number;
+  immediatelyExhausted: boolean;
+  availabilityStatus?: ProviderAvailabilityStatus;
+  cooldownUntil?: string;
+  recoverySuggestion?: string;
+}): Promise<{ consecutiveParseFailures: number; exhausted: boolean }> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.recordScanProviderFailure(input);
+  }
+
+  const state = await loadState();
+  const existing = state.scanProviderStates.find(
+    (item) =>
+      item.jobId === input.jobId && item.providerId === input.providerId,
+  );
+  const consecutiveParseFailures = input.parseFailure
+    ? (existing?.consecutiveParseFailures ?? 0) + 1
+    : (existing?.consecutiveParseFailures ?? 0);
+  const exhausted =
+    Boolean(existing?.exhausted) ||
+    input.immediatelyExhausted ||
+    (input.parseFailure &&
+      consecutiveParseFailures >= Math.max(1, input.parseFailureThreshold));
+  const next = {
+    jobId: input.jobId,
+    providerId: input.providerId,
+    kind: input.kind,
+    consecutiveParseFailures,
+    exhausted,
+    lastErrorCode: input.code,
+    lastErrorMessage: input.message.slice(0, 2_000),
+  };
+  state.scanProviderStates = [
+    next,
+    ...state.scanProviderStates.filter(
+      (item) =>
+        item.jobId !== input.jobId || item.providerId !== input.providerId,
+    ),
+  ];
+  if (input.availabilityStatus) {
+    const now = new Date().toISOString();
+    state.aiProviders = state.aiProviders.map((provider) =>
+      provider.id === input.providerId
+        ? {
+            ...provider,
+            availabilityStatus: input.availabilityStatus!,
+            unavailableCode: input.code,
+            unavailableReason: input.message.slice(0, 2_000),
+            recoverySuggestion: input.recoverySuggestion,
+            unavailableAt: now,
+            lastCheckedAt: now,
+            cooldownUntil: input.cooldownUntil,
+            updatedAt: now,
+          }
+        : provider,
+    );
+  }
+  await saveState(state);
+  return { consecutiveParseFailures, exhausted };
+}
+
+export async function recordScanProviderSuccess(input: {
+  jobId: string;
+  providerId: string;
+  kind: ProviderKind;
+}): Promise<void> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.recordScanProviderSuccess(input);
+  }
+  const state = await loadState();
+  state.scanProviderStates = [
+    {
+      jobId: input.jobId,
+      providerId: input.providerId,
+      kind: input.kind,
+      consecutiveParseFailures: 0,
+      exhausted: false,
+    },
+    ...state.scanProviderStates.filter(
+      (item) =>
+        item.jobId !== input.jobId || item.providerId !== input.providerId,
+    ),
+  ];
+  const now = new Date().toISOString();
+  state.aiProviders = state.aiProviders.map((provider) =>
+    provider.id === input.providerId
+      ? {
+          ...provider,
+          availabilityStatus:
+            provider.availabilityStatus === "cooldown"
+              ? "available"
+              : provider.availabilityStatus,
+          unavailableCode:
+            provider.availabilityStatus === "cooldown"
+              ? undefined
+              : provider.unavailableCode,
+          unavailableReason:
+            provider.availabilityStatus === "cooldown"
+              ? undefined
+              : provider.unavailableReason,
+          recoverySuggestion:
+            provider.availabilityStatus === "cooldown"
+              ? undefined
+              : provider.recoverySuggestion,
+          cooldownUntil:
+            provider.availabilityStatus === "cooldown"
+              ? undefined
+              : provider.cooldownUntil,
+          lastCheckedAt: now,
+          updatedAt: now,
+        }
+      : provider,
+  );
+  await saveState(state);
+}
+
+export async function resetScanProviderFailures(jobId: string): Promise<void> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.resetScanProviderFailures(jobId);
+  }
+  const state = await loadState();
+  state.scanProviderStates = state.scanProviderStates.map((item) =>
+    item.jobId === jobId
+      ? {
+          ...item,
+          consecutiveParseFailures: 0,
+          exhausted: false,
+          lastErrorCode: undefined,
+          lastErrorMessage: undefined,
+        }
+      : item,
+  );
+  await saveState(state);
 }
 
 export async function listScanJobs(): Promise<ScanJob[]> {
@@ -503,7 +841,9 @@ export async function getScanJob(jobId: string): Promise<ScanJob | undefined> {
   return state.jobs.find((job) => job.id === jobId);
 }
 
-export async function archiveScanJob(jobId: string): Promise<ScanJob | undefined> {
+export async function archiveScanJob(
+  jobId: string,
+): Promise<ScanJob | undefined> {
   if (await isDatabaseAvailable()) {
     return postgresStore.archiveScanJob(jobId);
   }
@@ -518,7 +858,7 @@ export async function archiveScanJob(jobId: string): Promise<ScanJob | undefined
 
     archived = {
       ...job,
-      archivedAt: new Date().toISOString()
+      archivedAt: new Date().toISOString(),
     };
     return archived;
   });
@@ -527,7 +867,9 @@ export async function archiveScanJob(jobId: string): Promise<ScanJob | undefined
   return archived;
 }
 
-export async function completeScanJob(jobId: string): Promise<ScanJob | undefined> {
+export async function completeScanJob(
+  jobId: string,
+): Promise<ScanJob | undefined> {
   if (await isDatabaseAvailable()) {
     return postgresStore.completeScanJob(jobId);
   }
@@ -537,7 +879,13 @@ export async function completeScanJob(jobId: string): Promise<ScanJob | undefine
   state.jobs = state.jobs.map((job) => {
     if (
       job.id !== jobId ||
-      !["paused_by_user", "paused_by_memory", "paused_by_runtime", "retry_later"].includes(job.status)
+      ![
+        "paused_by_user",
+        "paused_by_memory",
+        "paused_by_runtime",
+        "retry_later",
+        "exception",
+      ].includes(job.status)
     ) {
       return job;
     }
@@ -548,7 +896,7 @@ export async function completeScanJob(jobId: string): Promise<ScanJob | undefine
       stage: job.stage,
       statusReason: "已手动完成，后续不再继续扫描。",
       errorMessage: undefined,
-      finishedAt: new Date().toISOString()
+      finishedAt: new Date().toISOString(),
     };
     return completed;
   });
@@ -564,15 +912,25 @@ export async function listRunnableScanJobs(limit = 1): Promise<ScanJob[]> {
 
   const state = await loadState();
   return state.jobs
-    .filter((job) =>
-      !job.archivedAt &&
-      ["pending", "running", "throttled", "retry_later", "paused_by_memory", "paused_by_runtime"].includes(job.status)
+    .filter(
+      (job) =>
+        !job.archivedAt &&
+        [
+          "pending",
+          "running",
+          "throttled",
+          "retry_later",
+          "paused_by_memory",
+          "paused_by_runtime",
+        ].includes(job.status),
     )
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .slice(0, limit);
 }
 
-export async function findActiveScanJobByProfile(profileId: string): Promise<ScanJob | undefined> {
+export async function findActiveScanJobByProfile(
+  profileId: string,
+): Promise<ScanJob | undefined> {
   if (await isDatabaseAvailable()) {
     return postgresStore.findActiveScanJobByProfile(profileId);
   }
@@ -590,8 +948,9 @@ export async function findActiveScanJobByProfile(profileId: string): Promise<Sca
           "retry_later",
           "paused_by_user",
           "paused_by_memory",
-          "paused_by_runtime"
-        ].includes(job.status)
+          "paused_by_runtime",
+          "exception",
+        ].includes(job.status),
     )
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 }
@@ -627,14 +986,13 @@ export async function touchScheduleState(input: {
 
 export async function createScanJob(
   profileId: string,
-  type: ScanJob["type"] = "manual_scan"
+  type: ScanJob["type"] = "manual_scan",
 ): Promise<ScanJob> {
   if (await isDatabaseAvailable()) {
     return postgresStore.createScanJob(profileId, type);
   }
 
   const state = await loadState();
-  const profile = state.profiles.find((item) => item.id === profileId);
   const now = new Date().toISOString();
   const job: ScanJob = {
     id: crypto.randomUUID(),
@@ -642,7 +1000,7 @@ export async function createScanJob(
     type,
     status: "pending",
     stage: "collect",
-    maxCandidates: profile?.config.limits.maxCandidates ?? 0,
+    maxCandidates: 0,
     fetchedCount: 0,
     processedCount: 0,
     analyzedCount: 0,
@@ -651,7 +1009,7 @@ export async function createScanJob(
     unchangedRepoCount: 0,
     candidateCount: 0,
     failedCandidateCount: 0,
-    createdAt: now
+    createdAt: now,
   };
 
   state.jobs.unshift(job);
@@ -661,7 +1019,7 @@ export async function createScanJob(
 
 export async function updateScanJob(
   jobId: string,
-  patch: Partial<ScanJob>
+  patch: Partial<ScanJob>,
 ): Promise<ScanJob | undefined> {
   if (await isDatabaseAvailable()) {
     return postgresStore.updateScanJob(jobId, patch);
@@ -675,8 +1033,14 @@ export async function updateScanJob(
       return job;
     }
 
-    const hasErrorPatch = Object.prototype.hasOwnProperty.call(patch, "errorMessage");
-    const hasStatusReasonPatch = Object.prototype.hasOwnProperty.call(patch, "statusReason");
+    const hasErrorPatch = Object.prototype.hasOwnProperty.call(
+      patch,
+      "errorMessage",
+    );
+    const hasStatusReasonPatch = Object.prototype.hasOwnProperty.call(
+      patch,
+      "statusReason",
+    );
     updated = {
       ...job,
       ...patch,
@@ -689,7 +1053,7 @@ export async function updateScanJob(
         ? patch.statusReason
         : hasErrorPatch
           ? patch.errorMessage
-          : job.statusReason
+          : job.statusReason,
     };
     return updated;
   });
@@ -700,7 +1064,7 @@ export async function updateScanJob(
 
 export async function upsertRepos(
   repos: RepoSummary[],
-  dataLevel: RepoDataLevel = "L1"
+  dataLevel: RepoDataLevel = "L1",
 ): Promise<UpsertRepoStats> {
   if (await isDatabaseAvailable()) {
     return postgresStore.upsertRepos(repos, dataLevel);
@@ -712,16 +1076,18 @@ export async function upsertRepos(
     newCount: 0,
     updatedCount: 0,
     unchangedCount: 0,
-    repos: []
+    repos: [],
   };
 
   for (const repo of repos) {
     const existing = findLocalRepo(state.repos, repo);
-    const existingDataLevel = existing ? state.repoDataLevels[existing.id] ?? "L0" : undefined;
+    const existingDataLevel = existing
+      ? (state.repoDataLevels[existing.id] ?? "L0")
+      : undefined;
     const analysisDecision = shouldAnalyzeDiscoveredRepo({
       existing,
       existingDataLevel,
-      next: repo
+      next: repo,
     });
     if (!existing) {
       stats.newCount += 1;
@@ -729,14 +1095,19 @@ export async function upsertRepos(
         repo,
         status: "new",
         shouldAnalyze: analysisDecision.shouldAnalyze,
-        analyzeReason: analysisDecision.reason
+        analyzeReason: analysisDecision.reason,
       });
-      state.repoDataLevels[repo.id] = mergeDataLevel(state.repoDataLevels[repo.id], dataLevel);
+      state.repoDataLevels[repo.id] = mergeDataLevel(
+        state.repoDataLevels[repo.id],
+        dataLevel,
+      );
       byId.set(repo.id, repo);
       continue;
     }
 
-    const status = repoHasMaterialChanges(existing, repo) ? "updated" : "unchanged";
+    const status = repoHasMaterialChanges(existing, repo)
+      ? "updated"
+      : "unchanged";
     if (status === "updated") {
       stats.updatedCount += 1;
     } else {
@@ -746,16 +1117,19 @@ export async function upsertRepos(
     repo.id = existing.id;
     byId.set(existing.id, {
       ...existing,
-      ...repo
+      ...repo,
     });
     stats.repos.push({
       repo,
       status,
       existingDataLevel,
       shouldAnalyze: analysisDecision.shouldAnalyze,
-      analyzeReason: analysisDecision.reason
+      analyzeReason: analysisDecision.reason,
     });
-    state.repoDataLevels[existing.id] = mergeDataLevel(existingDataLevel, dataLevel);
+    state.repoDataLevels[existing.id] = mergeDataLevel(
+      existingDataLevel,
+      dataLevel,
+    );
   }
 
   state.repos = [...byId.values()];
@@ -763,8 +1137,137 @@ export async function upsertRepos(
   return stats;
 }
 
+export async function claimRepoProcessing(input: {
+  repo: RepoSummary;
+  jobId: string;
+}): Promise<{ claimed: boolean; record: RepoProcessing }> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.claimRepoProcessing(input);
+  }
+
+  const state = await loadState();
+  const canonicalUrl = canonicalizeGitHubRepoUrl(input.repo.htmlUrl);
+  if (!canonicalUrl) {
+    throw new Error("无法识别 GitHub 仓库地址。");
+  }
+  const existing = state.repoProcessing.find(
+    (item) => item.canonicalUrl === canonicalUrl,
+  );
+  if (
+    existing &&
+    (existing.status === "processed" ||
+      existing.status === "skipped" ||
+      (existing.status === "processing" && existing.jobId !== input.jobId))
+  ) {
+    return { claimed: false, record: existing };
+  }
+
+  const now = new Date().toISOString();
+  const record: RepoProcessing = {
+    canonicalUrl,
+    repoId: input.repo.id,
+    status: "processing",
+    jobId: input.jobId,
+    claimedAt: now,
+    updatedAt: now,
+  };
+  state.repoProcessing = [
+    record,
+    ...state.repoProcessing.filter(
+      (item) => item.canonicalUrl !== canonicalUrl,
+    ),
+  ];
+  await saveState(state);
+  return { claimed: true, record };
+}
+
+export async function finishRepoProcessing(input: {
+  canonicalUrl: string;
+  repoId?: string;
+  jobId: string;
+  status: Extract<
+    RepoProcessingStatus,
+    "processed" | "skipped" | "failed" | "exception"
+  >;
+  skipReasonCode?: string;
+  errorCode?: string;
+  errorMessage?: string;
+}): Promise<RepoProcessing> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.finishRepoProcessing(input);
+  }
+
+  const state = await loadState();
+  const canonicalUrl = canonicalizeGitHubRepoUrl(input.canonicalUrl);
+  if (!canonicalUrl) {
+    throw new Error("无法识别 GitHub 仓库地址。");
+  }
+  const existing = state.repoProcessing.find(
+    (item) => item.canonicalUrl === canonicalUrl,
+  );
+  if (
+    existing &&
+    existing.jobId !== input.jobId &&
+    (existing.status === "processed" || existing.status === "skipped")
+  ) {
+    return existing;
+  }
+
+  const now = new Date().toISOString();
+  const record: RepoProcessing = {
+    canonicalUrl,
+    repoId: input.repoId ?? existing?.repoId,
+    status: input.status,
+    jobId: input.jobId,
+    skipReasonCode: input.skipReasonCode,
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage?.slice(0, 2_000),
+    claimedAt: existing?.claimedAt ?? now,
+    processedAt:
+      input.status === "processed" || input.status === "skipped"
+        ? now
+        : undefined,
+    updatedAt: now,
+  };
+  state.repoProcessing = [
+    record,
+    ...state.repoProcessing.filter(
+      (item) => item.canonicalUrl !== canonicalUrl,
+    ),
+  ];
+  await saveState(state);
+  return record;
+}
+
+export async function finishJobRepoProcessing(input: {
+  jobId: string;
+  status: Extract<RepoProcessingStatus, "failed" | "exception">;
+  errorCode?: string;
+  errorMessage?: string;
+}): Promise<void> {
+  if (await isDatabaseAvailable()) {
+    return postgresStore.finishJobRepoProcessing(input);
+  }
+
+  const state = await loadState();
+  const now = new Date().toISOString();
+  state.repoProcessing = state.repoProcessing.map((record) =>
+    record.jobId === input.jobId && record.status === "processing"
+      ? {
+          ...record,
+          status: input.status,
+          errorCode: input.errorCode,
+          errorMessage: input.errorMessage?.slice(0, 2_000),
+          processedAt: undefined,
+          updatedAt: now,
+        }
+      : record,
+  );
+  await saveState(state);
+}
+
 export async function upsertRecommendations(
-  recommendations: Recommendation[]
+  recommendations: Recommendation[],
 ): Promise<void> {
   if (await isDatabaseAvailable()) {
     return postgresStore.upsertRecommendations(recommendations);
@@ -773,18 +1276,30 @@ export async function upsertRecommendations(
   const state = await loadState();
   const byId = new Map(state.recommendations.map((item) => [item.id, item]));
 
-  for (const recommendation of annotateRecommendationClusters(recommendations)) {
+  for (const recommendation of annotateRecommendationClusters(
+    recommendations,
+  )) {
     const existing = byId.get(recommendation.id);
     const displayRecommendation = withChineseDisplay(recommendation);
     byId.set(recommendation.id, {
       ...displayRecommendation,
       status: existing?.status ?? recommendation.status,
-      tags: existing?.tags ?? recommendation.tags ?? []
+      preferenceStatus:
+        existing?.preferenceStatus ?? recommendation.preferenceStatus,
+      opportunityStatus:
+        existing?.opportunityStatus ?? recommendation.opportunityStatus,
+      opportunityStage:
+        existing?.opportunityStage ?? recommendation.opportunityStage,
+      viewedAt: existing?.viewedAt ?? recommendation.viewedAt,
+      savedAt: existing?.savedAt ?? recommendation.savedAt,
+      hiddenAt: existing?.hiddenAt ?? recommendation.hiddenAt,
+      trackedAt: existing?.trackedAt ?? recommendation.trackedAt,
+      tags: existing?.tags ?? recommendation.tags ?? [],
     });
 
     state.repoContextMatches = [
       ...state.repoContextMatches.filter(
-        (item) => item.candidateRepoId !== recommendation.repo.id
+        (item) => item.candidateRepoId !== recommendation.repo.id,
       ),
       ...displayRecommendation.relatedUserRepos
         .filter((repo) => repo.userRepoId)
@@ -792,13 +1307,13 @@ export async function upsertRecommendations(
           candidateRepoId: displayRecommendation.repo.id,
           userRepoId: repo.userRepoId as string,
           score: repo.score,
-          reasons: [repo.reason]
-        }))
+          reasons: [repo.reason],
+        })),
     ];
   }
 
   state.recommendations = annotateRecommendationClusters(
-    [...byId.values()].sort((a, b) => b.scores.final - a.scores.final)
+    [...byId.values()].sort((a, b) => b.scores.final - a.scores.final),
   );
 
   await saveState(state);
@@ -806,7 +1321,11 @@ export async function upsertRecommendations(
 
 export async function enqueueCandidates(
   jobId: string,
-  candidates: Array<{ repo: RepoSummary; priorityScore: number; stage?: string }>
+  candidates: Array<{
+    repo: RepoSummary;
+    priorityScore: number;
+    stage?: string;
+  }>,
 ): Promise<void> {
   if (await isDatabaseAvailable()) {
     return postgresStore.enqueueCandidates(jobId, candidates);
@@ -818,7 +1337,7 @@ export async function enqueueCandidates(
 
 export async function upgradeRepoDataLevel(
   repos: RepoSummary[],
-  dataLevel: RepoDataLevel
+  dataLevel: RepoDataLevel,
 ): Promise<void> {
   if (await isDatabaseAvailable()) {
     return postgresStore.upgradeRepoDataLevel(repos, dataLevel);
@@ -828,7 +1347,10 @@ export async function upgradeRepoDataLevel(
   for (const repo of repos) {
     const existing = findLocalRepo(state.repos, repo);
     if (existing) {
-      state.repoDataLevels[existing.id] = mergeDataLevel(state.repoDataLevels[existing.id], dataLevel);
+      state.repoDataLevels[existing.id] = mergeDataLevel(
+        state.repoDataLevels[existing.id],
+        dataLevel,
+      );
       repo.id = existing.id;
     }
   }
@@ -836,7 +1358,7 @@ export async function upgradeRepoDataLevel(
 }
 
 export async function upsertScanCheckpoint(
-  checkpoint: Omit<ScanCheckpoint, "id" | "updatedAt">
+  checkpoint: Omit<ScanCheckpoint, "id" | "updatedAt">,
 ): Promise<ScanCheckpoint> {
   if (await isDatabaseAvailable()) {
     return postgresStore.upsertScanCheckpoint(checkpoint);
@@ -849,17 +1371,17 @@ export async function upsertScanCheckpoint(
       item.jobId === checkpoint.jobId &&
       item.source === checkpoint.source &&
       item.queryHash === checkpoint.queryHash &&
-      item.stage === checkpoint.stage
+      item.stage === checkpoint.stage,
   );
   const next: ScanCheckpoint = {
     id: existing?.id ?? crypto.randomUUID(),
     updatedAt: now,
-    ...checkpoint
+    ...checkpoint,
   };
 
   state.checkpoints = [
     next,
-    ...state.checkpoints.filter((item) => item.id !== next.id)
+    ...state.checkpoints.filter((item) => item.id !== next.id),
   ];
   await saveState(state);
   return next;
@@ -869,7 +1391,7 @@ export async function getScanCheckpoint(
   jobId: string,
   source: string,
   queryHash: string,
-  stage: string
+  stage: string,
 ): Promise<ScanCheckpoint | undefined> {
   if (await isDatabaseAvailable()) {
     return postgresStore.getScanCheckpoint(jobId, source, queryHash, stage);
@@ -881,11 +1403,13 @@ export async function getScanCheckpoint(
       item.jobId === jobId &&
       item.source === source &&
       item.queryHash === queryHash &&
-      item.stage === stage
+      item.stage === stage,
   );
 }
 
-export async function listScanCheckpoints(jobId: string): Promise<ScanCheckpoint[]> {
+export async function listScanCheckpoints(
+  jobId: string,
+): Promise<ScanCheckpoint[]> {
   if (await isDatabaseAvailable()) {
     return postgresStore.listScanCheckpoints(jobId);
   }
@@ -900,32 +1424,14 @@ export async function listRecommendations() {
   }
 
   const state = await loadState();
-  const profileLimitById = new Map(
-    state.profiles.map((profile) => [
-      profile.id,
-      Math.max(1, profile.config.limits.finalReportTopK || 100)
-    ])
-  );
-
-  const profileCounts = new Map<string, number>();
   return state.recommendations
     .map(withChineseDisplay)
-    .sort((a, b) => b.scores.final - a.scores.final || a.rank - b.rank)
-    .filter((recommendation) => {
-      const profileLimit = profileLimitById.get(recommendation.profileId) ?? 100;
-      const currentCount = profileCounts.get(recommendation.profileId) ?? 0;
-      if (currentCount >= profileLimit) {
-        return false;
-      }
-
-      profileCounts.set(recommendation.profileId, currentCount + 1);
-      return true;
-    });
+    .sort((a, b) => b.scores.final - a.scores.final || a.rank - b.rank);
 }
 
 export async function updateRecommendationTags(
   id: string,
-  tags: string[]
+  tags: string[],
 ): Promise<Recommendation | undefined> {
   if (await isDatabaseAvailable()) {
     return postgresStore.updateRecommendationTags(id, tags);
@@ -940,7 +1446,7 @@ export async function updateRecommendationTags(
     }
     updated = {
       ...recommendation,
-      tags: normalizedTags
+      tags: normalizedTags,
     };
     return updated;
   });
@@ -955,11 +1461,17 @@ export async function listRecommendationTags(): Promise<string[]> {
   }
 
   const state = await loadState();
-  return normalizeTagInput(state.recommendations.flatMap((recommendation) => recommendation.tags ?? []));
+  return normalizeTagInput(
+    state.recommendations.flatMap(
+      (recommendation) => recommendation.tags ?? [],
+    ),
+  );
 }
 
 function withChineseDisplay(recommendation: Recommendation): Recommendation {
-  const matchedPreferences = normalizeChineseLabels(recommendation.matchedPreferences);
+  const matchedPreferences = normalizeChineseLabels(
+    recommendation.matchedPreferences,
+  );
 
   return {
     ...recommendation,
@@ -967,27 +1479,30 @@ function withChineseDisplay(recommendation: Recommendation): Recommendation {
     summaryZh: ensureChineseSummary(
       recommendation.summaryZh ?? recommendation.summary,
       recommendation.repo,
-      matchedPreferences
+      matchedPreferences,
     ),
     reasons: normalizeChineseLabels(recommendation.reasons),
     risks: normalizeChineseLabels(recommendation.risks),
     matchedPreferences,
     relatedUserRepos: recommendation.relatedUserRepos.map((repo) => ({
       ...repo,
-      reason: normalizeChineseLabels([repo.reason])[0] ?? ""
-    }))
+      reason: normalizeChineseLabels([repo.reason])[0] ?? "",
+    })),
   };
 }
 
 function normalizeTagInput(tags: string[]) {
-  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 20);
+  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(
+    0,
+    20,
+  );
 }
 
 export async function recordFeedback(
   repoId: string,
   profileId: string,
   action: FeedbackAction,
-  note?: string
+  note?: string,
 ): Promise<Feedback> {
   if (await isDatabaseAvailable()) {
     return postgresStore.recordFeedback(repoId, profileId, action, note);
@@ -1000,7 +1515,7 @@ export async function recordFeedback(
     profileId,
     action,
     note,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
   };
 
   state.feedback.push(feedback);
@@ -1012,41 +1527,74 @@ export async function recordFeedback(
       ...buildPreferenceSignals(repo, profileId, action).map((signal) => ({
         ...signal,
         id: crypto.randomUUID(),
-        updatedAt: new Date().toISOString()
-      }))
+        updatedAt: new Date().toISOString(),
+      })),
     );
   }
   state.recommendations = state.recommendations.map((recommendation) => {
-    if (recommendation.repo.id !== repoId || recommendation.profileId !== profileId) {
+    if (
+      recommendation.repo.id !== repoId ||
+      recommendation.profileId !== profileId
+    ) {
       return recommendation;
     }
 
-    const status =
-      action === "save"
-        ? "saved"
-        : action === "like"
-          ? "liked"
-          : action === "dislike"
-            ? "disliked"
-            : action === "hide"
-              ? "hidden"
-              : action === "restore"
-                ? "viewed"
-                : action === "track"
-                  ? "tracked"
-                  : action === "to_validate"
-                    ? "to_validate"
-                    : action === "validating"
-                      ? "validating"
-                      : action === "monetization_ready"
-                        ? "monetization_ready"
-                        : action === "abandon"
-                          ? "abandoned"
-                          : recommendation.status;
-
+    const now = new Date().toISOString();
     return {
       ...recommendation,
-      status
+      preferenceStatus:
+        action === "like" || action === "set_liked"
+          ? "liked"
+          : action === "dislike" || action === "set_disliked"
+            ? "disliked"
+            : action === "set_pending"
+              ? "pending"
+              : recommendation.preferenceStatus,
+      opportunityStatus:
+        action === "mark_qualified"
+          ? "qualified"
+          : action === "mark_not_qualified"
+            ? "not_qualified"
+            : action === "reset_qualification"
+              ? "unassessed"
+              : recommendation.opportunityStatus,
+      opportunityStage:
+        action === "to_validate"
+          ? "pending_validation"
+          : action === "validating"
+            ? "validating"
+            : action === "mark_validated"
+              ? "validated"
+              : action === "monetization_ready"
+                ? "monetization_ready"
+                : action === "abandon"
+                  ? "abandoned"
+                  : action === "reopen"
+                    ? "observing"
+                    : recommendation.opportunityStage,
+      savedAt:
+        action === "save"
+          ? now
+          : action === "unsave"
+            ? undefined
+            : recommendation.savedAt,
+      hiddenAt:
+        action === "hide"
+          ? now
+          : action === "restore"
+            ? undefined
+            : recommendation.hiddenAt,
+      trackedAt:
+        action === "track"
+          ? now
+          : action === "untrack"
+            ? undefined
+            : recommendation.trackedAt,
+      viewedAt:
+        action === "restore"
+          ? (recommendation.viewedAt ?? now)
+          : recommendation.viewedAt,
+      status: legacyRecommendationStatus(recommendation.status, action),
     };
   });
 
@@ -1056,17 +1604,28 @@ export async function recordFeedback(
 
 export async function rebuildRecommendationScores(profileId: string) {
   if (await isDatabaseAvailable()) {
-    const profile = (await listProfiles()).find((item) => item.id === profileId);
+    const profile = (await listProfiles()).find(
+      (item) => item.id === profileId,
+    );
     if (!profile) {
       return;
     }
     const signals = await listPreferenceSignals(profileId);
     const userRepos = await listGithubRepos();
-    const target = (await listRecommendations()).filter((item) => item.profileId === profileId);
+    const target = (await listRecommendations()).filter(
+      (item) => item.profileId === profileId,
+    );
     await upsertRecommendations(
       target.map((item, index) =>
-        buildRecommendation(item.repo, profile, index + 1, undefined, signals, userRepos)
-      )
+        buildRecommendation(
+          item.repo,
+          profile,
+          index + 1,
+          undefined,
+          signals,
+          userRepos,
+        ),
+      ),
     );
     return;
   }
@@ -1076,7 +1635,9 @@ export async function rebuildRecommendationScores(profileId: string) {
   if (!profile) {
     return;
   }
-  const signals = state.preferenceSignals.filter((signal) => signal.profileId === profileId);
+  const signals = state.preferenceSignals.filter(
+    (signal) => signal.profileId === profileId,
+  );
   state.recommendations = state.recommendations.map((recommendation) =>
     recommendation.profileId === profileId
       ? {
@@ -1086,25 +1647,36 @@ export async function rebuildRecommendationScores(profileId: string) {
             recommendation.rank,
             undefined,
             signals,
-            state.githubRepos
+            state.githubRepos,
           ),
           id: recommendation.id,
           status: recommendation.status,
+          preferenceStatus: recommendation.preferenceStatus,
+          opportunityStatus: recommendation.opportunityStatus,
+          opportunityStage: recommendation.opportunityStage,
+          viewedAt: recommendation.viewedAt,
+          savedAt: recommendation.savedAt,
+          hiddenAt: recommendation.hiddenAt,
+          trackedAt: recommendation.trackedAt,
           tags: recommendation.tags ?? [],
-          createdAt: recommendation.createdAt
+          createdAt: recommendation.createdAt,
         }
-      : recommendation
+      : recommendation,
   );
   await saveState(state);
 }
 
-export async function listPreferenceSignals(profileId: string): Promise<PreferenceSignal[]> {
+export async function listPreferenceSignals(
+  profileId: string,
+): Promise<PreferenceSignal[]> {
   if (await isDatabaseAvailable()) {
     return postgresStore.listPreferenceSignals(profileId);
   }
 
   const state = await loadState();
-  return state.preferenceSignals.filter((signal) => signal.profileId === profileId);
+  return state.preferenceSignals.filter(
+    (signal) => signal.profileId === profileId,
+  );
 }
 
 export async function listGithubRepos() {
@@ -1134,39 +1706,46 @@ export async function upsertGithubAccount(input: {
   }
 
   const state = await loadState();
-  const existing = state.githubAccounts.find((item) => item.username === input.username);
+  const existing = state.githubAccounts.find(
+    (item) => item.username === input.username,
+  );
   const account: GithubAccount = {
     id: existing?.id ?? crypto.randomUUID(),
     username: input.username,
     tokenRef: input.tokenRef,
     connectedAt: existing?.connectedAt ?? new Date().toISOString(),
-    lastSyncedAt: new Date().toISOString()
+    lastSyncedAt: new Date().toISOString(),
   };
 
   state.githubAccounts = [
     account,
-    ...state.githubAccounts.filter((item) => item.username !== input.username)
+    ...state.githubAccounts.filter((item) => item.username !== input.username),
   ];
   await saveState(state);
   return account;
 }
 
-export async function replaceUserRepos(githubAccountId: string, repos: UserGitHubRepo[]) {
+export async function replaceUserRepos(
+  githubAccountId: string,
+  repos: UserGitHubRepo[],
+) {
   if (await isDatabaseAvailable()) {
     return postgresStore.replaceUserRepos(githubAccountId, repos);
   }
 
   const state = await loadState();
   state.githubRepos = [
-    ...state.githubRepos.filter((repo) => repo.githubAccountId !== githubAccountId),
-    ...repos
+    ...state.githubRepos.filter(
+      (repo) => repo.githubAccountId !== githubAccountId,
+    ),
+    ...repos,
   ];
   await saveState(state);
 }
 
 export async function updateGithubRepoContext(
   id: string,
-  patch: Pick<UserGitHubRepo, "selectedForContext">
+  patch: Pick<UserGitHubRepo, "selectedForContext">,
 ) {
   if (await isDatabaseAvailable()) {
     return postgresStore.updateGithubRepoContext(id, patch);
@@ -1181,7 +1760,7 @@ export async function updateGithubRepoContext(
 
     updated = {
       ...repo,
-      selectedForContext: patch.selectedForContext
+      selectedForContext: patch.selectedForContext,
     };
     return updated;
   });
@@ -1220,7 +1799,7 @@ export async function upsertKnowledgeSync(input: {
       item.repoId === input.repoId &&
       item.target === input.target &&
       (item.datasetId ?? "") === (input.datasetId ?? "") &&
-      item.contentHash === input.contentHash
+      item.contentHash === input.contentHash,
   );
   const sync: KnowledgeSync = {
     id: existing?.id ?? crypto.randomUUID(),
@@ -1235,12 +1814,12 @@ export async function upsertKnowledgeSync(input: {
     contentHash: input.contentHash,
     status: input.status,
     syncedAt: input.syncedAt,
-    errorMessage: input.errorMessage
+    errorMessage: input.errorMessage,
   };
 
   state.knowledgeSyncs = [
     sync,
-    ...state.knowledgeSyncs.filter((item) => item.id !== sync.id)
+    ...state.knowledgeSyncs.filter((item) => item.id !== sync.id),
   ];
   await saveState(state);
   return sync;
@@ -1266,7 +1845,7 @@ export async function getQueuedRepoBatch(
   jobId: string,
   stage = "profile",
   status = "pending",
-  limit = 10
+  limit = 10,
 ) {
   if (await isDatabaseAvailable()) {
     return postgresStore.getQueuedRepoBatch(jobId, stage, status, limit);
@@ -1282,7 +1861,7 @@ export async function getQueuedRepoBatch(
 export async function claimQueuedRepoBatch(
   jobId: string,
   stage = "profile",
-  limit = 10
+  limit = 10,
 ) {
   if (await isDatabaseAvailable()) {
     return postgresStore.claimQueuedRepoBatch(jobId, stage, limit);
@@ -1312,7 +1891,11 @@ export async function requeueStaleRunningCandidates(staleAfterMinutes = 5) {
   return [];
 }
 
-export async function getJobQueueCount(jobId: string, stage?: string, status?: string) {
+export async function getJobQueueCount(
+  jobId: string,
+  stage?: string,
+  status?: string,
+) {
   if (await isDatabaseAvailable()) {
     return postgresStore.getJobQueueCount(jobId, stage, status);
   }
@@ -1341,7 +1924,7 @@ export async function retryCandidate(id: string, retryAfterSeconds: number) {
 export async function failCandidate(
   id: string,
   reason: string,
-  retryAfterSeconds?: number
+  retryAfterSeconds?: number,
 ) {
   if (await isDatabaseAvailable()) {
     return postgresStore.failCandidate(id, reason, retryAfterSeconds);
@@ -1353,7 +1936,7 @@ export async function failCandidate(
 }
 
 export async function recordResourceEvent(
-  event: Omit<ResourceEvent, "id" | "createdAt">
+  event: Omit<ResourceEvent, "id" | "createdAt">,
 ): Promise<ResourceEvent> {
   if (await isDatabaseAvailable()) {
     return postgresStore.recordResourceEvent(event);
@@ -1363,30 +1946,12 @@ export async function recordResourceEvent(
   const resourceEvent: ResourceEvent = {
     ...event,
     id: crypto.randomUUID(),
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
   };
 
   state.resourceEvents.unshift(resourceEvent);
   await saveState(state);
   return resourceEvent;
-}
-
-export async function trimRecommendations(profileId: string, limit: number) {
-  if (await isDatabaseAvailable()) {
-    return postgresStore.trimRecommendations(profileId, limit);
-  }
-
-  const state = await loadState();
-  state.recommendations = state.recommendations
-    .filter((recommendation) => recommendation.profileId !== profileId)
-    .concat(
-      state.recommendations
-        .filter((recommendation) => recommendation.profileId === profileId)
-        .sort((a, b) => b.scores.final - a.scores.final)
-        .slice(0, limit)
-        .map((recommendation, index) => ({ ...recommendation, rank: index + 1 }))
-    );
-  await saveState(state);
 }
 
 export async function upsertRepoDocument(input: {
@@ -1410,7 +1975,7 @@ export async function upsertRepoDocument(input: {
       sourceUrl: input.sourceUrl,
       contentHash: input.contentHash,
       rawContent: input.rawContent ?? "",
-      summary: input.summary
+      summary: input.summary,
     },
     ...state.repoDocuments.filter(
       (item) =>
@@ -1418,8 +1983,8 @@ export async function upsertRepoDocument(input: {
           item.repoId === input.repoId &&
           item.type === input.type &&
           item.contentHash === input.contentHash
-        )
-    )
+        ),
+    ),
   ];
   await saveState(state);
   return input;
@@ -1431,7 +1996,9 @@ export async function getLatestRepoDocument(repoId: string, type: string) {
   }
 
   const state = await loadState();
-  return state.repoDocuments.find((item) => item.repoId === repoId && item.type === type);
+  return state.repoDocuments.find(
+    (item) => item.repoId === repoId && item.type === type,
+  );
 }
 
 export async function upsertRepoEmbedding(input: {
@@ -1450,7 +2017,7 @@ export async function upsertRepoEmbedding(input: {
   state.repoEmbeddings = [
     {
       ...input,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
     },
     ...state.repoEmbeddings.filter(
       (item) =>
@@ -1458,8 +2025,8 @@ export async function upsertRepoEmbedding(input: {
           item.repoId === input.repoId &&
           item.providerId === input.providerId &&
           item.contentHash === input.contentHash
-        )
-    )
+        ),
+    ),
   ];
   await saveState(state);
 }
@@ -1480,7 +2047,7 @@ export async function getRepoEmbedding(input: {
       item.repoId === input.repoId &&
       item.providerId === input.providerId &&
       item.model === input.model &&
-      item.contentHash === input.contentHash
+      item.contentHash === input.contentHash,
   );
 }
 
@@ -1500,11 +2067,13 @@ export async function getRepoEmbeddingVector(input: {
       item.repoId === input.repoId &&
       item.providerId === input.providerId &&
       (!input.model || item.model === input.model) &&
-      (!input.contentHash || item.contentHash === input.contentHash)
+      (!input.contentHash || item.contentHash === input.contentHash),
   );
 }
 
-export async function upsertCachedEmbedding(input: CachedEmbedding & { cacheKey: string }) {
+export async function upsertCachedEmbedding(
+  input: CachedEmbedding & { cacheKey: string },
+) {
   if (await isDatabaseAvailable()) {
     return postgresStore.upsertCachedEmbedding(input);
   }
@@ -1513,9 +2082,9 @@ export async function upsertCachedEmbedding(input: CachedEmbedding & { cacheKey:
   state.embeddingCache = [
     {
       ...input,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
     },
-    ...state.embeddingCache.filter((item) => item.cacheKey !== input.cacheKey)
+    ...state.embeddingCache.filter((item) => item.cacheKey !== input.cacheKey),
   ];
   await saveState(state);
 }
@@ -1536,7 +2105,7 @@ export async function getCachedEmbedding(input: {
       item.cacheKey === input.cacheKey &&
       item.providerId === input.providerId &&
       item.model === input.model &&
-      item.contentHash === input.contentHash
+      item.contentHash === input.contentHash,
   );
 }
 
@@ -1557,7 +2126,7 @@ export async function rerankRecommendationsWithSemanticFit(input: {
         .filter(
           (item) =>
             item.repoId === recommendation.repo.id &&
-            item.providerId === input.providerId
+            item.providerId === input.providerId,
         )
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
       const semanticFit = embedding
@@ -1572,10 +2141,16 @@ export async function rerankRecommendationsWithSemanticFit(input: {
         ...recommendation,
         scores: {
           ...recommendation.scores,
-          githubContextFit: Math.max(recommendation.scores.githubContextFit, semanticFit),
+          githubContextFit: Math.max(
+            recommendation.scores.githubContextFit,
+            semanticFit,
+          ),
           final: calculateFinalScore({
             ruleScore: recommendation.scores.rule,
-            githubContextFit: Math.max(recommendation.scores.githubContextFit, semanticFit),
+            githubContextFit: Math.max(
+              recommendation.scores.githubContextFit,
+              semanticFit,
+            ),
             llmMatchScore: recommendation.scores.llmMatch,
             feedbackScore: recommendation.scores.feedback,
             opportunityScore: recommendation.scores.opportunity,
@@ -1583,15 +2158,15 @@ export async function rerankRecommendationsWithSemanticFit(input: {
             growthSignal: recommendation.scores.growth,
             executionFit: recommendation.scores.execution,
             differentiationSpace: recommendation.scores.differentiation,
-            technicalQuality: recommendation.scores.technicalQuality
-          })
-        }
+            technicalQuality: recommendation.scores.technicalQuality,
+          }),
+        },
       };
     })
     .sort((a, b) => b.scores.final - a.scores.final)
     .map((recommendation, index) => ({
       ...recommendation,
-      rank: index + 1
+      rank: index + 1,
     }));
 
   await upsertRecommendations(reranked);
@@ -1619,7 +2194,7 @@ export async function finishLlmJob(
   id: string,
   status: string,
   tokenUsage: Record<string, unknown> = {},
-  errorMessage?: string
+  errorMessage?: string,
 ) {
   if (await isDatabaseAvailable()) {
     return postgresStore.finishLlmJob(id, status, tokenUsage, errorMessage);
@@ -1653,7 +2228,7 @@ export async function upsertLlmResult(input: {
     model: input.model,
     promptVersion: input.promptVersion,
     inputHash: input.inputHash,
-    structured: input.structured
+    structured: input.structured,
   });
   await saveState(state);
 }
@@ -1666,7 +2241,7 @@ export async function getLatestLlmResult(
     model?: string;
     promptVersion?: string;
     inputHash?: string;
-  } = {}
+  } = {},
 ) {
   if (await isDatabaseAvailable()) {
     return postgresStore.getLatestLlmResult(repoId, jobType, options);
@@ -1696,7 +2271,7 @@ export async function getLatestLlmResult(
 function buildPreferenceSignals(
   repo: RepoSummary,
   profileId: string,
-  action: FeedbackAction
+  action: FeedbackAction,
 ): Array<Omit<PreferenceSignal, "id" | "updatedAt">> {
   const delta =
     action === "save" ||
@@ -1722,7 +2297,7 @@ function buildPreferenceSignals(
       signalType: "language",
       value: repo.primaryLanguage,
       weight: delta,
-      source: `feedback:${action}`
+      source: `feedback:${action}`,
     });
   }
   for (const topic of repo.topics) {
@@ -1731,9 +2306,49 @@ function buildPreferenceSignals(
       signalType: "topic",
       value: topic.toLowerCase(),
       weight: delta,
-      source: `feedback:${action}`
+      source: `feedback:${action}`,
     });
   }
 
   return signals;
+}
+
+function legacyRecommendationStatus(
+  current: Recommendation["status"],
+  action: FeedbackAction,
+): Recommendation["status"] {
+  switch (action) {
+    case "save":
+      return "saved";
+    case "hide":
+      return "hidden";
+    case "like":
+    case "set_liked":
+      return "liked";
+    case "dislike":
+    case "set_disliked":
+      return "disliked";
+    case "track":
+      return "tracked";
+    case "to_validate":
+      return "to_validate";
+    case "validating":
+      return "validating";
+    case "monetization_ready":
+      return "monetization_ready";
+    case "abandon":
+      return "abandoned";
+    case "unsave":
+    case "restore":
+    case "set_pending":
+    case "untrack":
+    case "mark_validated":
+    case "mark_qualified":
+    case "mark_not_qualified":
+    case "reset_qualification":
+    case "reopen":
+      return "viewed";
+    default:
+      return current;
+  }
 }

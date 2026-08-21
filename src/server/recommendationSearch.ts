@@ -1,14 +1,15 @@
 import crypto from "node:crypto";
 import { cosineSimilarity } from "@/lib/semanticGate";
-import type { Recommendation } from "@/lib/types";
+import type { AiProvider, Recommendation } from "@/lib/types";
 import { callEmbedding } from "@/server/aiClient";
+import { orderEligibleProviders } from "@/server/aiProviderPolicy";
 import {
-  getAiProvider,
   getCachedEmbedding,
   getRepoEmbeddingVector,
+  listAiProviders,
   listProfiles,
   listRecommendations,
-  upsertCachedEmbedding
+  upsertCachedEmbedding,
 } from "@/server/store";
 
 export interface RecommendationSearchResult {
@@ -31,11 +32,12 @@ export async function searchRecommendations(input: {
   query: string;
   profileId?: string;
   limit?: number;
+  embeddingProvider?: AiProvider;
 }): Promise<RecommendationSearchResponse> {
   const query = input.query.trim();
   const limit = Math.max(1, Math.min(input.limit ?? 100, 200));
   const recommendations = (await listRecommendations()).filter(
-    (item) => !input.profileId || item.profileId === input.profileId
+    (item) => !input.profileId || item.profileId === input.profileId,
   );
 
   if (!query) {
@@ -47,8 +49,8 @@ export async function searchRecommendations(input: {
         id: item.id,
         score: item.scores.final,
         lexicalScore: 1,
-        mode: "lexical"
-      }))
+        mode: "lexical",
+      })),
     };
   }
 
@@ -57,31 +59,49 @@ export async function searchRecommendations(input: {
     providerId?: string;
     model?: string;
     warning?: string;
-  } = await getQueryEmbedding(query, input.profileId).catch((error) => ({
+  } = await getQueryEmbedding(
+    query,
+    input.profileId,
+    input.embeddingProvider,
+  ).catch((error) => ({
     vector: undefined,
-    warning: error instanceof Error ? error.message : String(error)
+    warning: error instanceof Error ? error.message : String(error),
   }));
 
   const results = await Promise.all(
     recommendations.map(async (recommendation) => {
-      const lexicalScore = lexicalRecommendationSearchScore(recommendation, query);
-      const semanticScore = semantic.vector && semantic.providerId && semantic.model
-        ? await getRecommendationSemanticScore(recommendation, semantic.providerId, semantic.model, semantic.vector)
-        : undefined;
+      const lexicalScore = lexicalRecommendationSearchScore(
+        recommendation,
+        query,
+      );
+      const semanticScore =
+        semantic.vector && semantic.providerId && semantic.model
+          ? await getRecommendationSemanticScore(
+              recommendation,
+              semantic.providerId,
+              semantic.model,
+              semantic.vector,
+            )
+          : undefined;
       const score =
         semanticScore === undefined
           ? lexicalScore
           : Math.max(semanticScore, lexicalScore * 0.85);
-      const mode = semanticScore === undefined ? "lexical" : lexicalScore > 0 ? "hybrid" : "semantic";
+      const mode =
+        semanticScore === undefined
+          ? "lexical"
+          : lexicalScore > 0
+            ? "hybrid"
+            : "semantic";
 
       return {
         id: recommendation.id,
         score,
         semanticScore,
         lexicalScore,
-        mode
+        mode,
       } satisfies RecommendationSearchResult;
-    })
+    }),
   );
 
   const filtered = results
@@ -92,14 +112,21 @@ export async function searchRecommendations(input: {
   const hasSemantic = filtered.some((item) => item.semanticScore !== undefined);
   return {
     query,
-    mode: hasSemantic ? (filtered.some((item) => item.lexicalScore > 0) ? "hybrid" : "semantic") : "lexical",
+    mode: hasSemantic
+      ? filtered.some((item) => item.lexicalScore > 0)
+        ? "hybrid"
+        : "semantic"
+      : "lexical",
     providerReady: Boolean(semantic.vector),
     results: filtered,
-    warning: semantic.warning
+    warning: semantic.warning,
   };
 }
 
-export function lexicalRecommendationSearchScore(recommendation: Recommendation, query: string) {
+export function lexicalRecommendationSearchScore(
+  recommendation: Recommendation,
+  query: string,
+) {
   const normalizedQuery = normalizeText(query);
   const terms = normalizedQuery.split(/\s+/).filter((term) => term.length >= 2);
   if (!terms.length) {
@@ -114,7 +141,9 @@ export function lexicalRecommendationSearchScore(recommendation: Recommendation,
       continue;
     }
     hits += 1;
-    weightedHits += recommendation.repo.fullName.toLowerCase().includes(term) ? 1.35 : 1;
+    weightedHits += recommendation.repo.fullName.toLowerCase().includes(term)
+      ? 1.35
+      : 1;
   }
 
   if (!hits) {
@@ -139,13 +168,17 @@ function buildRecommendationSearchText(recommendation: Recommendation) {
     recommendation.cluster?.label,
     recommendation.cluster?.representativeTerms.join(" "),
     recommendation.reasons.join(" "),
-    recommendation.matchedPreferences.join(" ")
+    recommendation.matchedPreferences.join(" "),
   ]
     .filter(Boolean)
     .join("\n");
 }
 
-async function getQueryEmbedding(query: string, profileId?: string) {
+async function getQueryEmbedding(
+  query: string,
+  profileId?: string,
+  explicitProvider?: AiProvider,
+) {
   const profiles = await listProfiles();
   const profile =
     profiles.find((item) => item.id === profileId) ??
@@ -155,9 +188,12 @@ async function getQueryEmbedding(query: string, profileId?: string) {
     throw new Error("没有可用的发现配置，已改用文本匹配。");
   }
 
-  const provider = await getAiProvider(profile.config.ai.embeddingProviderId);
-  if (!provider || provider.kind !== "embedding") {
-    throw new Error("当前发现配置没有可用的 Embedding 模型，已改用文本匹配。");
+  const providers = explicitProvider
+    ? [explicitProvider]
+    : await listAiProviders();
+  const provider = orderEligibleProviders(providers, "embedding")[0];
+  if (!provider) {
+    throw new Error("当前没有可用的 Embedding 模型，已改用文本匹配。");
   }
 
   const contentHash = hashText(normalizeText(query));
@@ -166,10 +202,14 @@ async function getQueryEmbedding(query: string, profileId?: string) {
     cacheKey,
     providerId: provider.id,
     model: provider.model,
-    contentHash
+    contentHash,
   });
   if (cached?.vector?.length) {
-    return { vector: cached.vector, providerId: provider.id, model: provider.model };
+    return {
+      vector: cached.vector,
+      providerId: provider.id,
+      model: provider.model,
+    };
   }
 
   const [vector] = await callEmbedding(provider, query);
@@ -183,7 +223,7 @@ async function getQueryEmbedding(query: string, profileId?: string) {
     model: provider.model,
     dimensions: provider.dimensions ?? vector.length,
     contentHash,
-    vector
+    vector,
   });
 
   return { vector, providerId: provider.id, model: provider.model };
@@ -193,12 +233,12 @@ async function getRecommendationSemanticScore(
   recommendation: Recommendation,
   providerId: string,
   model: string,
-  queryVector: number[]
+  queryVector: number[],
 ) {
   const embedding = await getRepoEmbeddingVector({
     repoId: recommendation.repo.id,
     providerId,
-    model
+    model,
   });
   if (!embedding?.vector?.length) {
     return undefined;

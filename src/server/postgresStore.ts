@@ -11,8 +11,12 @@ import type {
   OperationsSnapshot,
   OpportunityAnalysis,
   PreferenceSignal,
+  ProviderAvailabilityStatus,
+  ProviderKind,
   Recommendation,
   RepoDataLevel,
+  RepoProcessing,
+  RepoProcessingStatus,
   RepoSummary,
   ResourceEvent,
   ScanCheckpoint,
@@ -41,6 +45,8 @@ import {
   normalizeChineseLabels,
 } from "@/lib/recommendationText";
 import { calculateFinalScore } from "@/lib/scoring";
+import { canonicalizeGitHubRepoUrl } from "@/lib/repoProcessing";
+import { orderEligibleProviders } from "./aiProviderPolicy";
 import { getPool } from "./db";
 
 interface RepoDocumentInput {
@@ -69,10 +75,33 @@ type QueryRunner = {
   query: (sql: string, values?: unknown[]) => Promise<unknown>;
 };
 
+type AiProviderCreateInput = Omit<
+  AiProvider,
+  | "id"
+  | "createdAt"
+  | "updatedAt"
+  | "availabilityStatus"
+  | "unavailableCode"
+  | "unavailableReason"
+  | "recoverySuggestion"
+  | "unavailableAt"
+  | "lastCheckedAt"
+  | "recoveredAt"
+  | "cooldownUntil"
+  | "archivedAt"
+> & {
+  availabilityStatus?: ProviderAvailabilityStatus;
+};
+
 const JOB_SELECT_FIELDS = `id, profile_id, type, status, stage, max_candidates, fetched_count,
             processed_count, analyzed_count, new_repo_count, updated_repo_count,
             unchanged_repo_count, candidate_count, failed_candidate_count, started_at, finished_at,
             error_message, error_code, error_resolution, archived_at, created_at`;
+
+const PROVIDER_SELECT_FIELDS = `id, name, kind, type, base_url, api_key_env, model, dimensions,
+            priority, reasoning_effort, availability_status, unavailable_code, unavailable_reason,
+            recovery_suggestion, unavailable_at, last_checked_at, recovered_at, cooldown_until,
+            archived_at, config_json, enabled, created_at, updated_at`;
 
 export async function ensureSeedData() {
   const pool = getPool();
@@ -157,6 +186,72 @@ export async function ensureSeedData() {
     await client.query(
       `alter table llm_jobs
        add column if not exists error_message text`,
+    );
+    const providerColumns = [
+      `add column if not exists priority integer not null default 100`,
+      `add column if not exists reasoning_effort text`,
+      `add column if not exists availability_status text not null default 'available'`,
+      `add column if not exists unavailable_code text`,
+      `add column if not exists unavailable_reason text`,
+      `add column if not exists recovery_suggestion text`,
+      `add column if not exists unavailable_at timestamptz`,
+      `add column if not exists last_checked_at timestamptz`,
+      `add column if not exists recovered_at timestamptz`,
+      `add column if not exists cooldown_until timestamptz`,
+      `add column if not exists archived_at timestamptz`,
+    ];
+    for (const definition of providerColumns) {
+      await client.query(`alter table ai_providers ${definition}`);
+    }
+    const recommendationColumns = [
+      `add column if not exists preference_status text not null default 'pending'`,
+      `add column if not exists opportunity_status text not null default 'unassessed'`,
+      `add column if not exists opportunity_stage text not null default 'observing'`,
+      `add column if not exists viewed_at timestamptz`,
+      `add column if not exists saved_at timestamptz`,
+      `add column if not exists hidden_at timestamptz`,
+      `add column if not exists tracked_at timestamptz`,
+    ];
+    for (const definition of recommendationColumns) {
+      await client.query(`alter table recommendations ${definition}`);
+    }
+    await client.query(
+      `create table if not exists repo_processing (
+        canonical_url text primary key,
+        repo_id text references repos(id) on delete set null,
+        status text not null check (status in ('pending','processing','processed','skipped','failed','exception')),
+        job_id text references discovery_jobs(id) on delete set null,
+        skip_reason_code text,
+        error_code text,
+        error_message text,
+        claimed_at timestamptz,
+        processed_at timestamptz,
+        updated_at timestamptz not null default now()
+      )`,
+    );
+    await client.query(
+      `create table if not exists provider_health_events (
+        id text primary key,
+        provider_id text not null references ai_providers(id) on delete cascade,
+        availability_status text not null,
+        code text,
+        reason text,
+        recovery_suggestion text,
+        created_at timestamptz not null default now()
+      )`,
+    );
+    await client.query(
+      `create table if not exists scan_provider_states (
+        job_id text not null references discovery_jobs(id) on delete cascade,
+        provider_id text not null references ai_providers(id),
+        kind text not null check (kind in ('chat','embedding')),
+        consecutive_parse_failures integer not null default 0,
+        exhausted boolean not null default false,
+        last_error_code text,
+        last_error_message text,
+        updated_at timestamptz not null default now(),
+        primary key (job_id, provider_id)
+      )`,
     );
     await client.query(
       `create table if not exists embedding_cache (
@@ -316,6 +411,12 @@ async function ensurePerformanceIndexes(queryRunner: QueryRunner) {
      on repos (full_name)`,
     `create index if not exists idx_repos_github_id
      on repos (github_id)`,
+    `create index if not exists idx_repo_processing_status
+     on repo_processing (status, updated_at)`,
+    `create index if not exists idx_provider_health_events_provider
+     on provider_health_events (provider_id, created_at desc)`,
+    `create index if not exists idx_ai_providers_selection
+     on ai_providers (kind, enabled, availability_status, priority, created_at)`,
   ];
 
   for (const sql of indexes) {
@@ -479,29 +580,32 @@ export async function updateProfile(
 export async function listAiProviders(): Promise<AiProvider[]> {
   await ensureSeedDataOnce();
   const result = await getPool().query(
-    `select id, name, kind, type, base_url, api_key_env, model, dimensions, config_json, enabled, created_at, updated_at
+    `select ${PROVIDER_SELECT_FIELDS}
      from ai_providers
-     order by created_at asc`,
+     where archived_at is null
+     order by priority asc, created_at asc, id asc`,
   );
 
   return result.rows.map(mapProviderRow);
 }
 
 export async function createAiProvider(
-  input: Omit<AiProvider, "id" | "createdAt" | "updatedAt">,
+  input: AiProviderCreateInput,
 ): Promise<AiProvider> {
   const now = new Date().toISOString();
   const provider: AiProvider = {
     ...input,
     id: crypto.randomUUID(),
+    availabilityStatus: input.availabilityStatus ?? "available",
     createdAt: now,
     updatedAt: now,
   };
 
   await getPool().query(
     `insert into ai_providers
-      (id, name, kind, type, base_url, api_key_env, model, dimensions, config_json, enabled, created_at, updated_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      (id, name, kind, type, base_url, api_key_env, model, dimensions, priority,
+       reasoning_effort, availability_status, config_json, enabled, created_at, updated_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
     [
       provider.id,
       provider.name,
@@ -511,6 +615,11 @@ export async function createAiProvider(
       provider.apiKeyEnv,
       provider.model,
       provider.dimensions ?? null,
+      provider.priority,
+      provider.reasoningEffort === "default"
+        ? null
+        : (provider.reasoningEffort ?? null),
+      provider.availabilityStatus,
       JSON.stringify({
         rateLimit: provider.rateLimit,
         timeoutSeconds: provider.timeoutSeconds,
@@ -528,9 +637,9 @@ export async function getAiProvider(
   id: string,
 ): Promise<AiProvider | undefined> {
   const result = await getPool().query(
-    `select id, name, kind, type, base_url, api_key_env, model, dimensions, config_json, enabled, created_at, updated_at
+    `select ${PROVIDER_SELECT_FIELDS}
      from ai_providers
-     where id = $1`,
+     where id = $1 and archived_at is null`,
     [id],
   );
 
@@ -548,15 +657,6 @@ export async function updateAiProvider(
     return {};
   }
 
-  if (patch.enabled === false) {
-    const inUse = await findProfileUsingProvider(id);
-    if (inUse) {
-      return {
-        reason: `该 AI 配置正在被发现配置「${inUse.name}」使用，请先修改发现配置的 AI 绑定。`,
-      };
-    }
-  }
-
   const nextProvider: AiProvider = {
     ...provider,
     ...patch,
@@ -570,11 +670,22 @@ export async function updateAiProvider(
          api_key_env=$4,
          model=$5,
          dimensions=$6,
-         config_json=$7,
-         enabled=$8,
+         priority=$7,
+         reasoning_effort=$8,
+         availability_status=$9,
+         unavailable_code=$10,
+         unavailable_reason=$11,
+         recovery_suggestion=$12,
+         unavailable_at=$13,
+         last_checked_at=$14,
+         recovered_at=$15,
+         cooldown_until=$16,
+         config_json=$17,
+         enabled=$18,
          updated_at=now()
      where id=$1
-     returning id, name, kind, type, base_url, api_key_env, model, dimensions, config_json, enabled, created_at, updated_at`,
+       and archived_at is null
+     returning ${PROVIDER_SELECT_FIELDS}`,
     [
       id,
       nextProvider.name,
@@ -582,6 +693,18 @@ export async function updateAiProvider(
       nextProvider.apiKeyEnv,
       nextProvider.model,
       nextProvider.dimensions ?? null,
+      nextProvider.priority,
+      nextProvider.reasoningEffort === "default"
+        ? null
+        : (nextProvider.reasoningEffort ?? null),
+      nextProvider.availabilityStatus,
+      nextProvider.unavailableCode ?? null,
+      nextProvider.unavailableReason ?? null,
+      nextProvider.recoverySuggestion ?? null,
+      nextProvider.unavailableAt ?? null,
+      nextProvider.lastCheckedAt ?? null,
+      nextProvider.recoveredAt ?? null,
+      nextProvider.cooldownUntil ?? null,
       JSON.stringify({
         rateLimit: nextProvider.rateLimit,
         timeoutSeconds: nextProvider.timeoutSeconds,
@@ -599,16 +722,257 @@ export async function deleteAiProvider(id: string): Promise<{
   deleted: boolean;
   reason?: string;
 }> {
-  const inUse = await findProfileUsingProvider(id);
-  if (inUse) {
-    return {
-      deleted: false,
-      reason: `该 AI 配置正在被发现配置「${inUse.name}」使用，不能删除。`,
-    };
+  const result = await getPool().query(
+    `update ai_providers
+     set enabled=false, archived_at=now(), updated_at=now()
+     where id=$1 and archived_at is null
+     returning id`,
+    [id],
+  );
+  return result.rows[0]
+    ? { deleted: true }
+    : { deleted: false, reason: "AI 配置不存在或已删除。" };
+}
+
+export async function resolveAiProvider(
+  kind: ProviderKind,
+  excludedIds: Iterable<string> = [],
+): Promise<AiProvider | undefined> {
+  return orderEligibleProviders(await listAiProviders(), kind, excludedIds)[0];
+}
+
+export async function updateAiProviderAvailability(
+  id: string,
+  input: {
+    status: ProviderAvailabilityStatus;
+    code?: string;
+    reason?: string;
+    recoverySuggestion?: string;
+    cooldownUntil?: string;
+    recovered?: boolean;
+  },
+): Promise<AiProvider | undefined> {
+  const safeReason = input.reason
+    ? sanitizeProviderError(input.reason)
+    : undefined;
+  const result = await getPool().query(
+    `update ai_providers
+     set availability_status=$2,
+         unavailable_code=$3,
+         unavailable_reason=$4,
+         recovery_suggestion=$5,
+         unavailable_at=case when $2='available' then null else now() end,
+         last_checked_at=now(),
+         recovered_at=case when $7 then now() else recovered_at end,
+         cooldown_until=$6,
+         updated_at=now()
+     where id=$1 and archived_at is null
+     returning ${PROVIDER_SELECT_FIELDS}`,
+    [
+      id,
+      input.status,
+      input.status === "available" ? null : (input.code ?? null),
+      input.status === "available" ? null : (safeReason ?? null),
+      input.status === "available" ? null : (input.recoverySuggestion ?? null),
+      input.status === "cooldown" ? (input.cooldownUntil ?? null) : null,
+      Boolean(input.recovered),
+    ],
+  );
+
+  if (!result.rows[0]) {
+    return undefined;
   }
 
-  await getPool().query(`delete from ai_providers where id=$1`, [id]);
-  return { deleted: true };
+  await getPool().query(
+    `insert into provider_health_events
+      (id, provider_id, availability_status, code, reason, recovery_suggestion, created_at)
+     values ($1,$2,$3,$4,$5,$6,now())`,
+    [
+      crypto.randomUUID(),
+      id,
+      input.status,
+      input.code ?? null,
+      safeReason ?? null,
+      input.recoverySuggestion ?? null,
+    ],
+  );
+  return mapProviderRow(result.rows[0]);
+}
+
+export async function listScanProviderStates(
+  jobId: string,
+  kind: ProviderKind,
+): Promise<
+  Array<{
+    providerId: string;
+    consecutiveParseFailures: number;
+    exhausted: boolean;
+  }>
+> {
+  const result = await getPool().query(
+    `select provider_id, consecutive_parse_failures, exhausted
+     from scan_provider_states
+     where job_id=$1 and kind=$2`,
+    [jobId, kind],
+  );
+  return result.rows.map((row) => ({
+    providerId: String(row.provider_id),
+    consecutiveParseFailures: Number(row.consecutive_parse_failures ?? 0),
+    exhausted: Boolean(row.exhausted),
+  }));
+}
+
+export async function recordScanProviderFailure(input: {
+  jobId: string;
+  providerId: string;
+  kind: ProviderKind;
+  code: string;
+  message: string;
+  parseFailure: boolean;
+  parseFailureThreshold: number;
+  immediatelyExhausted: boolean;
+  availabilityStatus?: ProviderAvailabilityStatus;
+  cooldownUntil?: string;
+  recoverySuggestion?: string;
+}): Promise<{ consecutiveParseFailures: number; exhausted: boolean }> {
+  const client = await getPool().connect();
+  const safeMessage = sanitizeProviderError(input.message);
+  try {
+    await client.query("begin");
+    const stateResult = await client.query(
+      `insert into scan_provider_states
+        (job_id, provider_id, kind, consecutive_parse_failures, exhausted,
+         last_error_code, last_error_message, updated_at)
+       values (
+         $1,$2,$3,
+         case when $4 then 1 else 0 end,
+         $5 or ($4 and 1 >= $6),
+         $7,$8,now()
+       )
+       on conflict (job_id, provider_id) do update set
+         kind=excluded.kind,
+         consecutive_parse_failures=case
+           when $4 then scan_provider_states.consecutive_parse_failures + 1
+           else scan_provider_states.consecutive_parse_failures
+         end,
+         exhausted=scan_provider_states.exhausted
+           or $5
+           or ($4 and scan_provider_states.consecutive_parse_failures + 1 >= $6),
+         last_error_code=excluded.last_error_code,
+         last_error_message=excluded.last_error_message,
+         updated_at=now()
+       returning consecutive_parse_failures, exhausted`,
+      [
+        input.jobId,
+        input.providerId,
+        input.kind,
+        input.parseFailure,
+        input.immediatelyExhausted,
+        Math.max(1, input.parseFailureThreshold),
+        input.code,
+        safeMessage,
+      ],
+    );
+    const consecutiveParseFailures = Number(
+      stateResult.rows[0]?.consecutive_parse_failures ?? 0,
+    );
+    const exhausted = Boolean(stateResult.rows[0]?.exhausted);
+
+    if (input.availabilityStatus) {
+      await client.query(
+        `update ai_providers
+         set availability_status=$2,
+             unavailable_code=$3,
+             unavailable_reason=$4,
+             recovery_suggestion=$5,
+             unavailable_at=now(),
+             last_checked_at=now(),
+             cooldown_until=$6,
+             updated_at=now()
+         where id=$1 and archived_at is null`,
+        [
+          input.providerId,
+          input.availabilityStatus,
+          input.code,
+          safeMessage,
+          input.recoverySuggestion ?? null,
+          input.availabilityStatus === "cooldown"
+            ? (input.cooldownUntil ?? null)
+            : null,
+        ],
+      );
+      await client.query(
+        `insert into provider_health_events
+          (id, provider_id, availability_status, code, reason, recovery_suggestion, created_at)
+         values ($1,$2,$3,$4,$5,$6,now())`,
+        [
+          crypto.randomUUID(),
+          input.providerId,
+          input.availabilityStatus,
+          input.code,
+          safeMessage,
+          input.recoverySuggestion ?? null,
+        ],
+      );
+    }
+
+    await client.query("commit");
+    return { consecutiveParseFailures, exhausted };
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function recordScanProviderSuccess(input: {
+  jobId: string;
+  providerId: string;
+  kind: ProviderKind;
+}): Promise<void> {
+  const pool = getPool();
+  await pool.query(
+    `insert into scan_provider_states
+      (job_id, provider_id, kind, consecutive_parse_failures, exhausted, updated_at)
+     values ($1,$2,$3,0,false,now())
+     on conflict (job_id, provider_id) do update set
+       consecutive_parse_failures=0,
+       exhausted=false,
+       last_error_code=null,
+       last_error_message=null,
+       updated_at=now()`,
+    [input.jobId, input.providerId, input.kind],
+  );
+  await pool.query(
+    `update ai_providers
+     set availability_status=case
+           when availability_status='cooldown'
+             and (cooldown_until is null or cooldown_until <= now()) then 'available'
+           else availability_status
+         end,
+         unavailable_code=case when availability_status='cooldown' then null else unavailable_code end,
+         unavailable_reason=case when availability_status='cooldown' then null else unavailable_reason end,
+         recovery_suggestion=case when availability_status='cooldown' then null else recovery_suggestion end,
+         cooldown_until=case when availability_status='cooldown' then null else cooldown_until end,
+         last_checked_at=now(),
+         updated_at=now()
+     where id=$1 and archived_at is null`,
+    [input.providerId],
+  );
+}
+
+export async function resetScanProviderFailures(jobId: string): Promise<void> {
+  await getPool().query(
+    `update scan_provider_states
+     set consecutive_parse_failures=0,
+         exhausted=false,
+         last_error_code=null,
+         last_error_message=null,
+         updated_at=now()
+     where job_id=$1`,
+    [jobId],
+  );
 }
 
 export async function listScanJobs(): Promise<ScanJob[]> {
@@ -664,7 +1028,7 @@ export async function completeScanJob(
          error_message='已手动完成，后续不再继续扫描。',
          finished_at=now()
      where id=$1
-       and status in ('paused_by_user', 'paused_by_memory', 'paused_by_runtime', 'retry_later')
+       and status in ('paused_by_user', 'paused_by_memory', 'paused_by_runtime', 'retry_later', 'exception')
        and archived_at is null
      returning ${JOB_SELECT_FIELDS}`,
     [jobId],
@@ -696,7 +1060,7 @@ export async function findActiveScanJobByProfile(
     `select ${JOB_SELECT_FIELDS}
      from discovery_jobs
      where profile_id=$1
-       and status in ('pending', 'running', 'throttled', 'retry_later', 'paused_by_user', 'paused_by_memory', 'paused_by_runtime')
+       and status in ('pending', 'running', 'throttled', 'retry_later', 'paused_by_user', 'paused_by_memory', 'paused_by_runtime', 'exception')
        and archived_at is null
      order by created_at desc
      limit 1`,
@@ -763,7 +1127,7 @@ export async function createScanJob(
     type,
     status: "pending",
     stage: "collect",
-    maxCandidates: profile?.config.limits.maxCandidates ?? 0,
+    maxCandidates: 0,
     fetchedCount: 0,
     processedCount: 0,
     analyzedCount: 0,
@@ -1034,6 +1398,145 @@ export async function upsertRepos(
   return stats;
 }
 
+export async function claimRepoProcessing(input: {
+  repo: RepoSummary;
+  jobId: string;
+}): Promise<{ claimed: boolean; record: RepoProcessing }> {
+  const canonicalUrl = canonicalizeGitHubRepoUrl(input.repo.htmlUrl);
+  if (!canonicalUrl) {
+    throw new Error("无法识别 GitHub 仓库地址。");
+  }
+
+  let repoId = await resolvePersistedRepoId(input.repo);
+  if (!repoId) {
+    await upsertRepos([input.repo], "L0");
+    repoId = await resolvePersistedRepoId(input.repo);
+  }
+
+  const result = await getPool().query(
+    `insert into repo_processing
+      (canonical_url, repo_id, status, job_id, claimed_at, processed_at, updated_at)
+     values ($1,$2,'processing',$3,now(),null,now())
+     on conflict (canonical_url) do update set
+       repo_id=coalesce(excluded.repo_id, repo_processing.repo_id),
+       status='processing',
+       job_id=excluded.job_id,
+       skip_reason_code=null,
+       error_code=null,
+       error_message=null,
+       claimed_at=now(),
+       processed_at=null,
+       updated_at=now()
+     where repo_processing.status in ('pending', 'failed', 'exception')
+        or (repo_processing.status='processing' and repo_processing.job_id=excluded.job_id)
+     returning canonical_url, repo_id, status, job_id, skip_reason_code,
+               error_code, error_message, claimed_at, processed_at, updated_at`,
+    [canonicalUrl, repoId ?? null, input.jobId],
+  );
+
+  if (result.rows[0]) {
+    return { claimed: true, record: mapRepoProcessingRow(result.rows[0]) };
+  }
+
+  const existing = await getPool().query(
+    `select canonical_url, repo_id, status, job_id, skip_reason_code,
+            error_code, error_message, claimed_at, processed_at, updated_at
+     from repo_processing
+     where canonical_url=$1`,
+    [canonicalUrl],
+  );
+  if (!existing.rows[0]) {
+    throw new Error("仓库处理状态写入失败。");
+  }
+  return { claimed: false, record: mapRepoProcessingRow(existing.rows[0]) };
+}
+
+export async function finishRepoProcessing(input: {
+  canonicalUrl: string;
+  repoId?: string;
+  jobId: string;
+  status: Extract<
+    RepoProcessingStatus,
+    "processed" | "skipped" | "failed" | "exception"
+  >;
+  skipReasonCode?: string;
+  errorCode?: string;
+  errorMessage?: string;
+}): Promise<RepoProcessing> {
+  const canonicalUrl = canonicalizeGitHubRepoUrl(input.canonicalUrl);
+  if (!canonicalUrl) {
+    throw new Error("无法识别 GitHub 仓库地址。");
+  }
+
+  const result = await getPool().query(
+    `insert into repo_processing
+      (canonical_url, repo_id, status, job_id, skip_reason_code, error_code,
+       error_message, claimed_at, processed_at, updated_at)
+     values ($1,$2,$3,$4,$5,$6,$7,now(),
+             case when $3 in ('processed','skipped') then now() else null end, now())
+     on conflict (canonical_url) do update set
+       repo_id=coalesce(excluded.repo_id, repo_processing.repo_id),
+       status=excluded.status,
+       job_id=excluded.job_id,
+       skip_reason_code=excluded.skip_reason_code,
+       error_code=excluded.error_code,
+       error_message=excluded.error_message,
+       processed_at=excluded.processed_at,
+       updated_at=now()
+     where repo_processing.job_id=excluded.job_id
+        or repo_processing.status not in ('processed','skipped')
+     returning canonical_url, repo_id, status, job_id, skip_reason_code,
+               error_code, error_message, claimed_at, processed_at, updated_at`,
+    [
+      canonicalUrl,
+      input.repoId ?? null,
+      input.status,
+      input.jobId,
+      input.skipReasonCode ?? null,
+      input.errorCode ?? null,
+      input.errorMessage ? sanitizeProviderError(input.errorMessage) : null,
+    ],
+  );
+
+  if (result.rows[0]) {
+    return mapRepoProcessingRow(result.rows[0]);
+  }
+
+  const existing = await getPool().query(
+    `select canonical_url, repo_id, status, job_id, skip_reason_code,
+            error_code, error_message, claimed_at, processed_at, updated_at
+     from repo_processing where canonical_url=$1`,
+    [canonicalUrl],
+  );
+  if (!existing.rows[0]) {
+    throw new Error("仓库处理状态更新失败。");
+  }
+  return mapRepoProcessingRow(existing.rows[0]);
+}
+
+export async function finishJobRepoProcessing(input: {
+  jobId: string;
+  status: Extract<RepoProcessingStatus, "failed" | "exception">;
+  errorCode?: string;
+  errorMessage?: string;
+}): Promise<void> {
+  await getPool().query(
+    `update repo_processing
+     set status=$2,
+         error_code=$3,
+         error_message=$4,
+         processed_at=null,
+         updated_at=now()
+     where job_id=$1 and status='processing'`,
+    [
+      input.jobId,
+      input.status,
+      input.errorCode ?? null,
+      input.errorMessage ? sanitizeProviderError(input.errorMessage) : null,
+    ],
+  );
+}
+
 async function resolvePersistedRepoId(
   repo: Pick<RepoSummary, "id" | "fullName" | "githubId">,
 ): Promise<string | undefined> {
@@ -1118,8 +1621,10 @@ export async function upsertRecommendations(
 
     await pool.query(
       `insert into recommendations
-        (id, profile_id, repo_id, rank, final_score, reasons_json, status, tags_json, created_at)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        (id, profile_id, repo_id, rank, final_score, reasons_json, status, tags_json,
+         preference_status, opportunity_status, opportunity_stage, viewed_at, saved_at,
+         hidden_at, tracked_at, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
        on conflict (id) do update set
          rank=excluded.rank,
          final_score=excluded.final_score,
@@ -1133,6 +1638,13 @@ export async function upsertRecommendations(
         reasonsPayload,
         recommendation.status,
         JSON.stringify(recommendation.tags ?? []),
+        recommendation.preferenceStatus,
+        recommendation.opportunityStatus,
+        recommendation.opportunityStage,
+        recommendation.viewedAt ?? null,
+        recommendation.savedAt ?? null,
+        recommendation.hiddenAt ?? null,
+        recommendation.trackedAt ?? null,
         recommendation.createdAt,
       ],
     );
@@ -1756,22 +2268,17 @@ export async function getLatestLlmResult(
 export async function listRecommendations(): Promise<Recommendation[]> {
   await ensureSeedDataOnce();
   const result = await getPool().query(
-    `with ranked as (
-     select
-       rec.id, rec.profile_id, rec.rank, rec.final_score, rec.reasons_json, rec.status, rec.tags_json, rec.created_at,
+    `select
+       rec.id, rec.profile_id, rec.rank, rec.final_score, rec.reasons_json, rec.status,
+       rec.tags_json, rec.preference_status, rec.opportunity_status, rec.opportunity_stage,
+       rec.viewed_at, rec.saved_at, rec.hidden_at, rec.tracked_at, rec.created_at,
        repo.id as repo_id, repo.github_id, repo.full_name, repo.owner, repo.name, repo.html_url,
        repo.description, repo.primary_language, repo.topics_json, repo.stars, repo.forks,
        repo.open_issues, repo.pushed_at, repo.updated_at, repo.archived, repo.fork,
        score.rule_score, score.github_context_fit, score.llm_match_score, score.feedback_score,
        score.score_version,
-       coalesce(context_matches.matches_json, '[]'::jsonb) as context_matches_json,
-       greatest(1, coalesce((profile.config_json #>> '{limits,finalReportTopK}')::int, 100)) as profile_limit,
-       row_number() over (
-         partition by rec.profile_id
-         order by rec.final_score desc, rec.rank asc
-       ) as profile_position
+       coalesce(context_matches.matches_json, '[]'::jsonb) as context_matches_json
      from recommendations rec
-     join discovery_profiles profile on profile.id = rec.profile_id
      join repos repo on repo.id = rec.repo_id
      left join repo_scores score on score.id = concat('score-', rec.id)
      left join lateral (
@@ -1788,10 +2295,6 @@ export async function listRecommendations(): Promise<Recommendation[]> {
        join user_repos user_repo on user_repo.id = match.user_repo_id
        where match.candidate_repo_id = repo.id
      ) context_matches on true
-     )
-     select *
-     from ranked
-     where profile_position <= profile_limit
      order by final_score desc, rank asc`,
   );
 
@@ -1846,35 +2349,64 @@ export async function recordFeedback(
     [feedback.id, repoId, profileId, action, note ?? null, feedback.createdAt],
   );
 
-  const status =
-    action === "save"
-      ? "saved"
-      : action === "like"
-        ? "liked"
-        : action === "dislike"
-          ? "disliked"
-          : action === "hide"
-            ? "hidden"
-            : action === "restore"
-              ? "viewed"
-              : action === "track"
-                ? "tracked"
-                : action === "to_validate"
-                  ? "to_validate"
-                  : action === "validating"
-                    ? "validating"
-                    : action === "monetization_ready"
-                      ? "monetization_ready"
-                      : action === "abandon"
-                        ? "abandoned"
-                        : null;
-
-  if (status) {
-    await getPool().query(
-      `update recommendations set status=$3 where repo_id=$1 and profile_id=$2`,
-      [repoId, profileId, status],
-    );
-  }
+  await getPool().query(
+    `update recommendations
+     set preference_status=case
+           when $3 in ('like','set_liked') then 'liked'
+           when $3 in ('dislike','set_disliked') then 'disliked'
+           when $3='set_pending' then 'pending'
+           else preference_status
+         end,
+         opportunity_status=case
+           when $3='mark_qualified' then 'qualified'
+           when $3='mark_not_qualified' then 'not_qualified'
+           when $3='reset_qualification' then 'unassessed'
+           else opportunity_status
+         end,
+         opportunity_stage=case
+           when $3='to_validate' then 'pending_validation'
+           when $3='validating' then 'validating'
+           when $3='mark_validated' then 'validated'
+           when $3='monetization_ready' then 'monetization_ready'
+           when $3='abandon' then 'abandoned'
+           when $3='reopen' then 'observing'
+           else opportunity_stage
+         end,
+         viewed_at=case
+           when $3='restore' then coalesce(viewed_at, now())
+           else viewed_at
+         end,
+         saved_at=case
+           when $3='save' then now()
+           when $3='unsave' then null
+           else saved_at
+         end,
+         hidden_at=case
+           when $3='hide' then now()
+           when $3='restore' then null
+           else hidden_at
+         end,
+         tracked_at=case
+           when $3='track' then now()
+           when $3='untrack' then null
+           else tracked_at
+         end,
+         status=case
+           when $3='save' then 'saved'
+           when $3 in ('unsave','restore','untrack','set_pending','reset_qualification','reopen','mark_validated','mark_qualified','mark_not_qualified') then 'viewed'
+           when $3='hide' then 'hidden'
+           when $3 in ('like','set_liked') then 'liked'
+           when $3 in ('dislike','set_disliked') then 'disliked'
+           when $3='track' then 'tracked'
+           when $3='to_validate' then 'to_validate'
+           when $3='validating' then 'validating'
+           when $3='monetization_ready' then 'monetization_ready'
+           when $3='abandon' then 'abandoned'
+           else status
+         end
+     where repo_id=$1 and profile_id=$2`,
+    [repoId, profileId, action],
+  );
 
   const repo = await getRepoById(repoId);
   if (repo) {
@@ -2422,29 +2954,6 @@ export async function completeCandidate(id: string) {
   );
 }
 
-export async function trimRecommendations(profileId: string, limit: number) {
-  if (limit <= 0) return;
-
-  await getPool().query(
-    `with ranked as (
-       select id, row_number() over (order by final_score desc, rank asc, created_at asc) as next_rank
-       from recommendations
-       where profile_id=$1
-     ),
-     updated as (
-       update recommendations rec
-       set rank = ranked.next_rank
-       from ranked
-       where rec.id = ranked.id
-       returning rec.id, rec.rank
-     )
-     delete from recommendations
-     where profile_id=$1
-       and id in (select id from updated where rank > $2)`,
-    [profileId, limit],
-  );
-}
-
 export async function recordResourceEvent(
   event: Omit<ResourceEvent, "id" | "createdAt">,
 ): Promise<ResourceEvent> {
@@ -2641,23 +3150,6 @@ async function markSeedDataInitialized(
   );
 }
 
-async function findProfileUsingProvider(
-  id: string,
-): Promise<{ id: string; name: string } | null> {
-  const inUse = await getPool().query(
-    `select id, name
-     from discovery_profiles
-     where config_json #>> '{ai,chatProviderId}' = $1
-        or config_json #>> '{ai,embeddingProviderId}' = $1
-     limit 1`,
-    [id],
-  );
-
-  return inUse.rows[0]
-    ? { id: inUse.rows[0].id, name: inUse.rows[0].name }
-    : null;
-}
-
 function mapProviderRow(row: Record<string, any>): AiProvider {
   const config = normalizeJsonObject(row.config_json);
 
@@ -2670,12 +3162,45 @@ function mapProviderRow(row: Record<string, any>): AiProvider {
     apiKeyEnv: row.api_key_env,
     model: row.model,
     dimensions: row.dimensions ?? undefined,
+    priority: Number(row.priority ?? 100),
+    reasoningEffort: row.reasoning_effort ?? "default",
     enabled: row.enabled,
+    availabilityStatus: row.availability_status ?? "available",
+    unavailableCode: row.unavailable_code ?? undefined,
+    unavailableReason: row.unavailable_reason ?? undefined,
+    recoverySuggestion: row.recovery_suggestion ?? undefined,
+    unavailableAt: row.unavailable_at ? toIso(row.unavailable_at) : undefined,
+    lastCheckedAt: row.last_checked_at ? toIso(row.last_checked_at) : undefined,
+    recoveredAt: row.recovered_at ? toIso(row.recovered_at) : undefined,
+    cooldownUntil: row.cooldown_until ? toIso(row.cooldown_until) : undefined,
+    archivedAt: row.archived_at ? toIso(row.archived_at) : undefined,
     rateLimit: config.rateLimit as AiProvider["rateLimit"],
     timeoutSeconds: config.timeoutSeconds as number | undefined,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
   };
+}
+
+function mapRepoProcessingRow(row: Record<string, any>): RepoProcessing {
+  return {
+    canonicalUrl: String(row.canonical_url),
+    repoId: row.repo_id ?? undefined,
+    status: row.status,
+    jobId: row.job_id ?? undefined,
+    skipReasonCode: row.skip_reason_code ?? undefined,
+    errorCode: row.error_code ?? undefined,
+    errorMessage: row.error_message ?? undefined,
+    claimedAt: row.claimed_at ? toIso(row.claimed_at) : undefined,
+    processedAt: row.processed_at ? toIso(row.processed_at) : undefined,
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+function sanitizeProviderError(value: string) {
+  return value
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+    .replace(/(api[_-]?key|token|secret)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
+    .slice(0, 2_000);
 }
 
 function normalizeProfileConfig(
@@ -2834,6 +3359,13 @@ function mapRecommendationRow(row: Record<string, any>): Recommendation {
       reasonsJson.qualitySignals,
     ),
     cluster: normalizePersistedCluster(reasonsJson.cluster),
+    preferenceStatus: row.preference_status ?? "pending",
+    opportunityStatus: row.opportunity_status ?? "unassessed",
+    opportunityStage: row.opportunity_stage ?? "observing",
+    viewedAt: row.viewed_at ? toIso(row.viewed_at) : undefined,
+    savedAt: row.saved_at ? toIso(row.saved_at) : undefined,
+    hiddenAt: row.hidden_at ? toIso(row.hidden_at) : undefined,
+    trackedAt: row.tracked_at ? toIso(row.tracked_at) : undefined,
     status: row.status,
     createdAt: toIso(row.created_at),
   };

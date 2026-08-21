@@ -31,6 +31,17 @@ CREATE TABLE IF NOT EXISTS ai_providers (
   api_key_env TEXT NOT NULL,
   model TEXT NOT NULL,
   dimensions INTEGER,
+  priority INTEGER NOT NULL DEFAULT 100,
+  reasoning_effort TEXT,
+  availability_status TEXT NOT NULL DEFAULT 'available',
+  unavailable_code TEXT,
+  unavailable_reason TEXT,
+  recovery_suggestion TEXT,
+  unavailable_at TIMESTAMPTZ,
+  last_checked_at TIMESTAMPTZ,
+  recovered_at TIMESTAMPTZ,
+  cooldown_until TIMESTAMPTZ,
+  archived_at TIMESTAMPTZ,
   config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -166,6 +177,19 @@ CREATE TABLE IF NOT EXISTS candidate_queue (
   UNIQUE(job_id, repo_id, stage)
 );
 
+CREATE TABLE IF NOT EXISTS repo_processing (
+  canonical_url TEXT PRIMARY KEY,
+  repo_id TEXT REFERENCES repos(id) ON DELETE SET NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'processed', 'skipped', 'failed', 'exception')),
+  job_id TEXT REFERENCES discovery_jobs(id) ON DELETE SET NULL,
+  skip_reason_code TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  claimed_at TIMESTAMPTZ,
+  processed_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS resource_events (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL REFERENCES discovery_jobs(id) ON DELETE CASCADE,
@@ -233,6 +257,28 @@ CREATE TABLE IF NOT EXISTS llm_results (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS provider_health_events (
+  id TEXT PRIMARY KEY,
+  provider_id TEXT NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE,
+  availability_status TEXT NOT NULL,
+  code TEXT,
+  reason TEXT,
+  recovery_suggestion TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS scan_provider_states (
+  job_id TEXT NOT NULL REFERENCES discovery_jobs(id) ON DELETE CASCADE,
+  provider_id TEXT NOT NULL REFERENCES ai_providers(id),
+  kind TEXT NOT NULL CHECK (kind IN ('chat', 'embedding')),
+  consecutive_parse_failures INTEGER NOT NULL DEFAULT 0,
+  exhausted BOOLEAN NOT NULL DEFAULT FALSE,
+  last_error_code TEXT,
+  last_error_message TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (job_id, provider_id)
+);
+
 CREATE TABLE IF NOT EXISTS repo_scores (
   id TEXT PRIMARY KEY,
   repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
@@ -256,6 +302,13 @@ CREATE TABLE IF NOT EXISTS recommendations (
   final_score NUMERIC NOT NULL,
   reasons_json JSONB NOT NULL DEFAULT '[]'::jsonb,
   status TEXT NOT NULL DEFAULT 'new',
+  preference_status TEXT NOT NULL DEFAULT 'pending',
+  opportunity_status TEXT NOT NULL DEFAULT 'unassessed',
+  opportunity_stage TEXT NOT NULL DEFAULT 'observing',
+  viewed_at TIMESTAMPTZ,
+  saved_at TIMESTAMPTZ,
+  hidden_at TIMESTAMPTZ,
+  tracked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -388,4 +441,87 @@ ALTER TABLE recommendations
   ADD COLUMN IF NOT EXISTS tags_json JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE llm_results
   ADD COLUMN IF NOT EXISTS input_hash TEXT;
+ALTER TABLE ai_providers
+  ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 100;
+ALTER TABLE ai_providers
+  ADD COLUMN IF NOT EXISTS reasoning_effort TEXT;
+ALTER TABLE ai_providers
+  ADD COLUMN IF NOT EXISTS availability_status TEXT NOT NULL DEFAULT 'available';
+ALTER TABLE ai_providers
+  ADD COLUMN IF NOT EXISTS unavailable_code TEXT;
+ALTER TABLE ai_providers
+  ADD COLUMN IF NOT EXISTS unavailable_reason TEXT;
+ALTER TABLE ai_providers
+  ADD COLUMN IF NOT EXISTS recovery_suggestion TEXT;
+ALTER TABLE ai_providers
+  ADD COLUMN IF NOT EXISTS unavailable_at TIMESTAMPTZ;
+ALTER TABLE ai_providers
+  ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ;
+ALTER TABLE ai_providers
+  ADD COLUMN IF NOT EXISTS recovered_at TIMESTAMPTZ;
+ALTER TABLE ai_providers
+  ADD COLUMN IF NOT EXISTS cooldown_until TIMESTAMPTZ;
+ALTER TABLE ai_providers
+  ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+ALTER TABLE recommendations
+  ADD COLUMN IF NOT EXISTS preference_status TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE recommendations
+  ADD COLUMN IF NOT EXISTS opportunity_status TEXT NOT NULL DEFAULT 'unassessed';
+ALTER TABLE recommendations
+  ADD COLUMN IF NOT EXISTS opportunity_stage TEXT NOT NULL DEFAULT 'observing';
+ALTER TABLE recommendations
+  ADD COLUMN IF NOT EXISTS viewed_at TIMESTAMPTZ;
+ALTER TABLE recommendations
+  ADD COLUMN IF NOT EXISTS saved_at TIMESTAMPTZ;
+ALTER TABLE recommendations
+  ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ;
+ALTER TABLE recommendations
+  ADD COLUMN IF NOT EXISTS tracked_at TIMESTAMPTZ;
+UPDATE recommendations
+SET preference_status = CASE status
+      WHEN 'liked' THEN 'liked'
+      WHEN 'disliked' THEN 'disliked'
+      ELSE preference_status
+    END,
+    opportunity_stage = CASE status
+      WHEN 'to_validate' THEN 'pending_validation'
+      WHEN 'validating' THEN 'validating'
+      WHEN 'monetization_ready' THEN 'monetization_ready'
+      WHEN 'abandoned' THEN 'abandoned'
+      ELSE opportunity_stage
+    END,
+    viewed_at = CASE WHEN status = 'viewed' AND viewed_at IS NULL THEN created_at ELSE viewed_at END,
+    saved_at = CASE WHEN status = 'saved' AND saved_at IS NULL THEN created_at ELSE saved_at END,
+    hidden_at = CASE WHEN status = 'hidden' AND hidden_at IS NULL THEN created_at ELSE hidden_at END,
+    tracked_at = CASE WHEN status = 'tracked' AND tracked_at IS NULL THEN created_at ELSE tracked_at END;
+INSERT INTO repo_processing (canonical_url, repo_id, status, processed_at, updated_at)
+SELECT
+  'https://github.com/' || lower(
+    regexp_replace(
+      split_part(
+        split_part(
+          regexp_replace(repo.html_url, '^https?://(www\.)?github\.com/', '', 'i'),
+          '?',
+          1
+        ),
+        '#',
+        1
+      ),
+      '(\.git)?/+$',
+      '',
+      'i'
+    )
+  ),
+  repo.id,
+  'processed',
+  now(),
+  now()
+FROM repos repo
+WHERE repo.data_level IN ('L3', 'L4')
+   OR EXISTS (SELECT 1 FROM recommendations rec WHERE rec.repo_id = repo.id)
+   OR EXISTS (SELECT 1 FROM llm_results result WHERE result.repo_id = repo.id)
+ON CONFLICT (canonical_url) DO NOTHING;
+CREATE INDEX IF NOT EXISTS idx_repo_processing_status ON repo_processing(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_provider_health_events_provider ON provider_health_events(provider_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_providers_selection ON ai_providers(kind, enabled, availability_status, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_recommendations_profile ON recommendations(profile_id, final_score DESC);

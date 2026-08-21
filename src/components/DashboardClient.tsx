@@ -34,10 +34,6 @@ import {
 import { usePathname, useRouter } from "next/navigation";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import {
-  discoverySourceCatalog,
-  normalizeDiscoverySources,
-} from "@/lib/discoverySources";
-import {
   sectionDefinitions,
   sectionFromPath,
   sectionLabel,
@@ -49,7 +45,6 @@ import {
   opportunityActionText,
 } from "@/lib/opportunity";
 import { getRecommendationSummaryZh } from "@/lib/recommendationText";
-import type { GitHubSearchQueryPlan } from "@/server/githubSearch";
 import type {
   AiProvider,
   DashboardSnapshot,
@@ -61,19 +56,6 @@ import type {
   ScanJob,
   UserGitHubRepo,
 } from "@/lib/types";
-
-type GeneratedPreferences = DiscoveryProfile["config"]["preferences"] & {
-  notes?: string[];
-};
-
-type NaturalLanguagePreview = {
-  generated: GeneratedPreferences;
-  preview: {
-    preferences: DiscoveryProfile["config"]["preferences"];
-    queryPlans: GitHubSearchQueryPlan[];
-  };
-  mode: "merge" | "replace";
-};
 
 const sectionIcons: Record<Section, React.ComponentType<{ size?: number }>> = {
   recommendations: Search,
@@ -140,11 +122,11 @@ export function DashboardClient({
     return {
       recommendations: profileItems.filter(
         (item) =>
-          !["hidden", "liked", "disliked", "tracked", "abandoned"].includes(
-            item.status,
-          ),
+          !recommendationIsHidden(item) &&
+          recommendationPreferenceStatus(item) === "pending" &&
+          recommendationOpportunityStage(item) !== "abandoned",
       ).length,
-      tracked: profileItems.filter((item) => item.status === "tracked").length,
+      tracked: profileItems.filter(recommendationIsTracked).length,
       providers: providers.length,
       jobStatus: jobs[0] ? `${jobs[0].status} / ${jobs[0].stage}` : "idle",
     };
@@ -201,30 +183,37 @@ export function DashboardClient({
   ) {
     const previousRecommendations = recommendations;
     const previousSelectedRepo = selectedRepo;
-    const status = statusFromFeedbackAction(action, recommendation.status);
+    const optimisticRecommendation = applyRecommendationFeedback(
+      recommendation,
+      action,
+    );
     setRecommendations((current) =>
       current.map((item) =>
-        item.id === recommendation.id ? { ...item, status } : item,
+        item.id === recommendation.id ? optimisticRecommendation : item,
       ),
     );
     setSelectedRepo((current) =>
-      current?.id === recommendation.id ? { ...current, status } : current,
+      current?.id === recommendation.id ? optimisticRecommendation : current,
     );
 
-    const response = await fetch(
-      `/api/repositories/${recommendation.repo.id}/feedback`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profileId: recommendation.profileId, action }),
-      },
-    );
-    if (!response.ok) {
+    try {
+      const response = await fetch(
+        `/api/repositories/${recommendation.repo.id}/feedback`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profileId: recommendation.profileId, action }),
+        },
+      );
+      if (response.ok) return;
       const body = await response.json().catch(() => ({}));
       setRecommendations(previousRecommendations);
       setSelectedRepo(previousSelectedRepo);
-      setMessage(body.error ?? "反馈保存失败。");
-      return;
+      setMessage(readApiError(body, "反馈保存失败。"));
+    } catch (error) {
+      setRecommendations(previousRecommendations);
+      setSelectedRepo(previousSelectedRepo);
+      setMessage(errorMessage(error, "反馈保存失败。"));
     }
   }
 
@@ -435,7 +424,6 @@ export function DashboardClient({
           <ProfilesPanel
             profiles={profiles}
             selectedProfile={selectedProfile}
-            providers={providers}
             onUpdated={(profile) =>
               setProfiles((current) =>
                 current.map((item) =>
@@ -481,7 +469,6 @@ export function DashboardClient({
         {activeSection === "providers" && (
           <ProvidersPanel
             providers={providers}
-            profiles={profiles}
             onChanged={(provider) =>
               setProviders((current) => {
                 return current.some((item) => item.id === provider.id)
@@ -590,7 +577,11 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div className="form-grid password-grid">
-          {message && <div className="notice">{message}</div>}
+          {message && (
+            <div className="notice" role="status">
+              {message}
+            </div>
+          )}
           <Field label="当前密码">
             <input
               className="input"
@@ -685,7 +676,7 @@ function RecommendationsPanel({
     useState<OpportunityFilter>("all");
   const [groupFilter, setGroupFilter] = useState<GroupFilter>("all");
   const [preferenceFilter, setPreferenceFilter] =
-    useState<PreferenceFilter>("unrated");
+    useState<PreferenceFilter>("pending");
   const [focusedClusterKey, setFocusedClusterKey] = useState("");
   const [statusFilter, setStatusFilter] =
     useState<RecommendationStatusFilter>("visible");
@@ -693,14 +684,15 @@ function RecommendationsPanel({
     null,
   );
   const [sortState, setSortState] = useState<RecommendationSortState>({
-    key: "rank",
-    direction: "asc",
+    key: "score",
+    direction: "desc",
   });
   const [semanticQuery, setSemanticQuery] = useState("");
   const [semanticSearch, setSemanticSearch] =
     useState<SemanticSearchState | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [busyFeedback, setBusyFeedback] = useState("");
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [page, setPage] = useState(1);
   const pageSize = 50;
@@ -759,15 +751,15 @@ function RecommendationsPanel({
   const activeFilterCount = [
     opportunityFilter !== "all",
     groupFilter !== "all" || Boolean(focusedClusterKey),
-    preferenceFilter !== "unrated",
+    preferenceFilter !== "pending",
     statusFilter !== "visible",
   ].filter(Boolean).length;
   const activeQuickView =
     opportunityFilter === "all" &&
-    preferenceFilter === "unrated" &&
+    preferenceFilter === "pending" &&
     statusFilter === "visible"
       ? "inbox"
-      : opportunityFilter === "has_opportunity" &&
+      : opportunityFilter === "qualified" &&
           preferenceFilter === "all" &&
           statusFilter === "visible"
         ? "opportunity"
@@ -788,10 +780,10 @@ function RecommendationsPanel({
     setSemanticQuery("");
     if (view === "inbox") {
       setOpportunityFilter("all");
-      setPreferenceFilter("unrated");
+      setPreferenceFilter("pending");
       setStatusFilter("visible");
     } else if (view === "opportunity") {
-      setOpportunityFilter("has_opportunity");
+      setOpportunityFilter("qualified");
       setPreferenceFilter("all");
       setStatusFilter("visible");
     } else if (view === "tracked") {
@@ -822,7 +814,7 @@ function RecommendationsPanel({
     const query = semanticQuery.trim();
     if (!query) {
       setSemanticSearch(null);
-      setSortState({ key: "rank", direction: "asc" });
+      setSortState({ key: "score", direction: "desc" });
       return;
     }
 
@@ -869,7 +861,7 @@ function RecommendationsPanel({
   function clearSemanticSearch() {
     setSemanticQuery("");
     setSemanticSearch(null);
-    setSortState({ key: "rank", direction: "asc" });
+    setSortState({ key: "score", direction: "desc" });
   }
 
   function toggleSort(key: RecommendationSortKey) {
@@ -892,9 +884,14 @@ function RecommendationsPanel({
 
   async function sendPreferenceFeedback(
     recommendation: Recommendation,
-    action: "like" | "dislike",
+    action: "set_pending" | "like" | "dislike",
   ) {
-    await onFeedback(recommendation, action);
+    setBusyFeedback(`${recommendation.id}:${action}`);
+    try {
+      await onFeedback(recommendation, action);
+    } finally {
+      setBusyFeedback("");
+    }
   }
 
   async function refreshList() {
@@ -935,7 +932,8 @@ function RecommendationsPanel({
             <strong>
               {
                 profileRecommendations.filter(
-                  (item) => item.opportunity?.suggestedAction,
+                  (item) =>
+                    recommendationOpportunityStatus(item) === "qualified",
                 ).length
               }
             </strong>
@@ -1154,7 +1152,7 @@ function RecommendationsPanel({
             <tbody>
               {visible.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="empty-table-cell">
+                  <td colSpan={7} className="empty-table-cell">
                     <Search size={22} />
                     <strong>没有符合条件的项目</strong>
                     <span>调整搜索词或清除筛选后重试。</span>
@@ -1224,39 +1222,100 @@ function RecommendationsPanel({
                       </span>
                     </td>
                     <td>
-                      <span className={`status ${recommendation.status}`}>
-                        {recommendationStatusText(recommendation.status)}
-                      </span>
+                      <div className="tags">
+                        <span
+                          className={`status ${preferenceStatusTone(recommendationPreferenceStatus(recommendation))}`}
+                        >
+                          喜好：
+                          {preferenceStatusText(
+                            recommendationPreferenceStatus(recommendation),
+                          )}
+                        </span>
+                        <span
+                          className={`status ${opportunityStatusTone(recommendationOpportunityStatus(recommendation))}`}
+                        >
+                          机会：
+                          {opportunityStatusText(
+                            recommendationOpportunityStatus(recommendation),
+                          )}
+                        </span>
+                        <span
+                          className={`status ${opportunityStageTone(recommendationOpportunityStage(recommendation))}`}
+                        >
+                          阶段：
+                          {opportunityStageText(
+                            recommendationOpportunityStage(recommendation),
+                          )}
+                        </span>
+                      </div>
                     </td>
                     <td>
                       <div className="action-row">
                         <IconButton
                           title={
-                            recommendation.status === "liked"
+                            recommendationPreferenceStatus(recommendation) ===
+                            "liked"
                               ? "已喜欢"
                               : "喜欢"
                           }
                           icon={ThumbsUp}
-                          active={recommendation.status === "liked"}
+                          active={
+                            recommendationPreferenceStatus(recommendation) ===
+                            "liked"
+                          }
                           tone="positive"
                           onClick={() =>
                             void sendPreferenceFeedback(recommendation, "like")
                           }
+                          disabled={busyFeedback.startsWith(
+                            `${recommendation.id}:`,
+                          )}
+                          loading={busyFeedback === `${recommendation.id}:like`}
+                        />
+                        <IconButton
+                          title="待定"
+                          icon={RefreshCw}
+                          active={
+                            recommendationPreferenceStatus(recommendation) ===
+                            "pending"
+                          }
+                          onClick={() =>
+                            void sendPreferenceFeedback(
+                              recommendation,
+                              "set_pending",
+                            )
+                          }
+                          disabled={busyFeedback.startsWith(
+                            `${recommendation.id}:`,
+                          )}
+                          loading={
+                            busyFeedback === `${recommendation.id}:set_pending`
+                          }
                         />
                         <IconButton
                           title={
-                            recommendation.status === "disliked"
+                            recommendationPreferenceStatus(recommendation) ===
+                            "disliked"
                               ? "已不喜欢"
                               : "不喜欢"
                           }
                           icon={ThumbsDown}
-                          active={recommendation.status === "disliked"}
+                          active={
+                            recommendationPreferenceStatus(recommendation) ===
+                            "disliked"
+                          }
                           tone="danger"
                           onClick={() =>
                             void sendPreferenceFeedback(
                               recommendation,
                               "dislike",
                             )
+                          }
+                          disabled={busyFeedback.startsWith(
+                            `${recommendation.id}:`,
+                          )}
+                          loading={
+                            busyFeedback === `${recommendation.id}:dislike`
                           }
                         />
                         <button
@@ -1330,18 +1389,35 @@ function RepoDrawer({
     action: FeedbackAction,
   ) => Promise<void>;
 }) {
+  const [busyAction, setBusyAction] = useState<
+    FeedbackAction | "hide_similar" | ""
+  >("");
   const similarRecommendations = recommendations.filter(
     (item) =>
       item.id !== recommendation.id &&
       item.cluster?.key &&
       item.cluster.key === recommendation.cluster?.key &&
-      item.status !== "hidden" &&
-      item.status !== "abandoned",
+      !recommendationIsHidden(item) &&
+      recommendationOpportunityStage(item) !== "abandoned",
   );
 
   async function hideSimilarRecommendations() {
-    for (const item of similarRecommendations) {
-      await onFeedback(item, "hide");
+    setBusyAction("hide_similar");
+    try {
+      for (const item of similarRecommendations) {
+        await onFeedback(item, "hide");
+      }
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function updateRecommendation(action: FeedbackAction) {
+    setBusyAction(action);
+    try {
+      await onFeedback(recommendation, action);
+    } finally {
+      setBusyAction("");
     }
   }
 
@@ -1384,7 +1460,7 @@ function RepoDrawer({
           </button>
         </div>
         <div className="drawer-content">
-          <div className="action-row">
+          <div className="action-row wrap">
             <a
               className="button primary"
               href={recommendation.repo.htmlUrl}
@@ -1395,85 +1471,181 @@ function RepoDrawer({
               <span>打开 GitHub</span>
             </a>
             <button
-              className="button"
-              onClick={() => onFeedback(recommendation, "to_validate")}
+              className={`button ${recommendationOpportunityStage(recommendation) === "pending_validation" ? "active" : ""}`}
+              onClick={() => void updateRecommendation("to_validate")}
               type="button"
+              disabled={Boolean(busyAction)}
             >
               <ClipboardCheck size={15} />
-              待验证
+              {busyAction === "to_validate" ? "更新中" : "待验证"}
             </button>
             <button
-              className="button"
-              onClick={() => onFeedback(recommendation, "validating")}
+              className={`button ${recommendationOpportunityStage(recommendation) === "validating" ? "active" : ""}`}
+              onClick={() => void updateRecommendation("validating")}
               type="button"
+              disabled={Boolean(busyAction)}
             >
-              验证中
+              {busyAction === "validating" ? "更新中" : "验证中"}
             </button>
             <button
-              className="button"
-              onClick={() => onFeedback(recommendation, "monetization_ready")}
+              className={`button ${recommendationOpportunityStage(recommendation) === "validated" ? "active" : ""}`}
+              onClick={() => void updateRecommendation("mark_validated")}
               type="button"
+              disabled={Boolean(busyAction)}
             >
-              准备变现
+              {busyAction === "mark_validated" ? "更新中" : "已验证"}
             </button>
             <button
-              className="button"
-              onClick={() => onFeedback(recommendation, "like")}
+              className={`button ${recommendationOpportunityStage(recommendation) === "monetization_ready" ? "active" : ""}`}
+              onClick={() => void updateRecommendation("monetization_ready")}
               type="button"
+              disabled={Boolean(busyAction)}
+            >
+              {busyAction === "monetization_ready" ? "更新中" : "准备变现"}
+            </button>
+            <button
+              className={`button ${recommendationOpportunityStatus(recommendation) === "qualified" ? "active positive" : ""}`}
+              onClick={() => void updateRecommendation("mark_qualified")}
+              type="button"
+              disabled={Boolean(busyAction)}
+            >
+              {busyAction === "mark_qualified" ? "更新中" : "符合机会条件"}
+            </button>
+            <button
+              className={`button ${recommendationOpportunityStatus(recommendation) === "unassessed" ? "active" : ""}`}
+              onClick={() => void updateRecommendation("reset_qualification")}
+              type="button"
+              disabled={Boolean(busyAction)}
+            >
+              {busyAction === "reset_qualification" ? "更新中" : "机会待评估"}
+            </button>
+            <button
+              className={`button ${recommendationOpportunityStatus(recommendation) === "not_qualified" ? "active danger" : ""}`}
+              onClick={() => void updateRecommendation("mark_not_qualified")}
+              type="button"
+              disabled={Boolean(busyAction)}
+            >
+              {busyAction === "mark_not_qualified"
+                ? "更新中"
+                : "不符合机会条件"}
+            </button>
+            <button
+              className={`button ${recommendationPreferenceStatus(recommendation) === "liked" ? "active positive" : ""}`}
+              onClick={() => void updateRecommendation("like")}
+              type="button"
+              disabled={Boolean(busyAction)}
             >
               <ThumbsUp size={15} />
-              {recommendation.status === "liked" ? "已喜欢" : "喜欢"}
+              {busyAction === "like"
+                ? "更新中"
+                : recommendationPreferenceStatus(recommendation) === "liked"
+                  ? "已喜欢"
+                  : "喜欢"}
             </button>
             <button
-              className="button"
-              onClick={() => onFeedback(recommendation, "dislike")}
+              className={`button ${recommendationPreferenceStatus(recommendation) === "pending" ? "active" : ""}`}
+              onClick={() => void updateRecommendation("set_pending")}
               type="button"
+              disabled={Boolean(busyAction)}
+            >
+              <RefreshCw size={15} />
+              {busyAction === "set_pending" ? "更新中" : "待定"}
+            </button>
+            <button
+              className={`button ${recommendationPreferenceStatus(recommendation) === "disliked" ? "active danger" : ""}`}
+              onClick={() => void updateRecommendation("dislike")}
+              type="button"
+              disabled={Boolean(busyAction)}
             >
               <ThumbsDown size={15} />
-              {recommendation.status === "disliked" ? "已不喜欢" : "不喜欢"}
+              {busyAction === "dislike"
+                ? "更新中"
+                : recommendationPreferenceStatus(recommendation) === "disliked"
+                  ? "已不喜欢"
+                  : "不喜欢"}
             </button>
             <button
-              className="button"
-              onClick={() => onFeedback(recommendation, "track")}
+              className={`button ${recommendationIsSaved(recommendation) ? "active" : ""}`}
+              onClick={() =>
+                void updateRecommendation(
+                  recommendationIsSaved(recommendation) ? "unsave" : "save",
+                )
+              }
               type="button"
+              disabled={Boolean(busyAction)}
             >
-              跟踪
+              {busyAction === "save" || busyAction === "unsave"
+                ? "更新中"
+                : recommendationIsSaved(recommendation)
+                  ? "已收藏"
+                  : "收藏"}
             </button>
             <button
-              className="button"
-              onClick={() => onFeedback(recommendation, "abandon")}
+              className={`button ${recommendationIsTracked(recommendation) ? "active" : ""}`}
+              onClick={() =>
+                void updateRecommendation(
+                  recommendationIsTracked(recommendation) ? "untrack" : "track",
+                )
+              }
               type="button"
+              disabled={Boolean(busyAction)}
             >
-              放弃
+              {busyAction === "track" || busyAction === "untrack"
+                ? "更新中"
+                : recommendationIsTracked(recommendation)
+                  ? "已跟踪"
+                  : "跟踪"}
+            </button>
+            <button
+              className={`button ${recommendationOpportunityStage(recommendation) === "abandoned" ? "active danger" : ""}`}
+              onClick={() =>
+                void updateRecommendation(
+                  recommendationOpportunityStage(recommendation) === "abandoned"
+                    ? "reopen"
+                    : "abandon",
+                )
+              }
+              type="button"
+              disabled={Boolean(busyAction)}
+            >
+              {busyAction === "abandon" || busyAction === "reopen"
+                ? "更新中"
+                : recommendationOpportunityStage(recommendation) === "abandoned"
+                  ? "重新观察"
+                  : "放弃"}
             </button>
             <button
               className="button"
               onClick={() => void hideSimilarRecommendations()}
-              disabled={similarRecommendations.length === 0}
+              disabled={
+                Boolean(busyAction) || similarRecommendations.length === 0
+              }
               type="button"
             >
               隐藏类似项目
             </button>
-            {recommendation.status === "hidden" ? (
+            {recommendationIsHidden(recommendation) ? (
               <button
                 className="button"
-                onClick={() => onFeedback(recommendation, "restore")}
+                onClick={() => void updateRecommendation("restore")}
                 type="button"
+                disabled={Boolean(busyAction)}
               >
                 恢复展示
               </button>
             ) : (
               <button
                 className="button"
-                onClick={() => onFeedback(recommendation, "hide")}
+                onClick={() => void updateRecommendation("hide")}
                 type="button"
+                disabled={Boolean(busyAction)}
               >
                 移出展示
               </button>
             )}
           </div>
           <DetailSection title="当前状态">
-            {recommendationStatusText(recommendation.status)}
+            {`喜好：${preferenceStatusText(recommendationPreferenceStatus(recommendation))}；机会：${opportunityStatusText(recommendationOpportunityStatus(recommendation))}；阶段：${opportunityStageText(recommendationOpportunityStage(recommendation))}；${recommendationCollectionStateText(recommendation)}。`}
           </DetailSection>
           {recommendation.cluster && (
             <DetailSection title="项目分组">
@@ -1678,174 +1850,88 @@ function RecommendationTagDialog({
 function ProfilesPanel({
   profiles,
   selectedProfile,
-  providers,
   onUpdated,
 }: {
   profiles: DiscoveryProfile[];
   selectedProfile?: DiscoveryProfile;
-  providers: AiProvider[];
   onUpdated: (profile: DiscoveryProfile) => void;
 }) {
   const [message, setMessage] = useState("");
   const [enabled, setEnabled] = useState(selectedProfile?.enabled ?? true);
-  const [chatProviderId, setChatProviderId] = useState(
-    selectedProfile?.config.ai.chatProviderId ?? "",
-  );
-  const [embeddingProviderId, setEmbeddingProviderId] = useState(
-    selectedProfile?.config.ai.embeddingProviderId ?? "",
-  );
-  const [sources, setSources] = useState(
-    normalizeDiscoverySources(selectedProfile?.config.sources),
-  );
-  const [schedule, setSchedule] = useState(selectedProfile?.config.schedule);
-  const [limits, setLimits] = useState(selectedProfile?.config.limits);
-  const [preferences, setPreferences] = useState(
-    selectedProfile?.config.preferences,
+  const [missedRunPolicy, setMissedRunPolicy] = useState<
+    DiscoveryProfile["config"]["schedule"]["missedRunPolicy"]
+  >(selectedProfile?.config.schedule.missedRunPolicy ?? "skip");
+  const [preferences, setPreferences] = useState<
+    DiscoveryProfile["config"]["preferences"]
+  >(
+    selectedProfile?.config.preferences ?? {
+      keywords: [],
+      topics: [],
+      languages: {},
+      excludeKeywords: [],
+      minStars: 0,
+      pushedWithinDays: 365,
+      excludeArchived: true,
+      excludeForks: true,
+    },
   );
   const [opportunity, setOpportunity] = useState(
     normalizeOpportunityProfile(selectedProfile?.config.opportunity),
   );
-  const [resourcePolicy, setResourcePolicy] = useState(
-    selectedProfile?.config.resourcePolicy,
+  const [minAvailableMemoryMb, setMinAvailableMemoryMb] = useState(
+    selectedProfile?.config.resourcePolicy.minAvailableMemoryMb ??
+      selectedProfile?.config.resourcePolicy.memory?.minAvailableMb ??
+      512,
   );
-  const [naturalLanguagePrompt, setNaturalLanguagePrompt] = useState("");
-  const [naturalLanguageMode, setNaturalLanguageMode] = useState<
-    "merge" | "replace"
-  >("merge");
-  const [naturalLanguagePreview, setNaturalLanguagePreview] =
-    useState<NaturalLanguagePreview | null>(null);
-  const [isGeneratingPreferences, setIsGeneratingPreferences] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
-  const chatProviders = providers.filter(
-    (provider) => provider.kind === "chat" && provider.enabled,
-  );
-  const embeddingProviders = providers.filter(
-    (provider) => provider.kind === "embedding" && provider.enabled,
-  );
-  const plannedAdapters = discoverySourceCatalog.filter(
-    (source) => source.capability === "planned_adapter",
-  );
 
   useEffect(() => {
     if (!selectedProfile) return;
     setEnabled(selectedProfile.enabled);
-    setChatProviderId(selectedProfile.config.ai.chatProviderId);
-    setEmbeddingProviderId(selectedProfile.config.ai.embeddingProviderId);
-    setSources(normalizeDiscoverySources(selectedProfile.config.sources));
-    setSchedule(selectedProfile.config.schedule);
-    setLimits(selectedProfile.config.limits);
+    setMissedRunPolicy(selectedProfile.config.schedule.missedRunPolicy);
     setPreferences(selectedProfile.config.preferences);
     setOpportunity(
       normalizeOpportunityProfile(selectedProfile.config.opportunity),
     );
-    setResourcePolicy(selectedProfile.config.resourcePolicy);
-    setNaturalLanguagePreview(null);
+    setMinAvailableMemoryMb(
+      selectedProfile.config.resourcePolicy.minAvailableMemoryMb ??
+        selectedProfile.config.resourcePolicy.memory?.minAvailableMb ??
+        512,
+    );
   }, [selectedProfile]);
 
-  function updateSource(
-    id: string,
-    patch: { enabled?: boolean; weight?: number },
-  ) {
-    setSources((current) =>
-      current.map((source) =>
-        source.id === id ? { ...source, ...patch } : source,
-      ),
-    );
-  }
-
   async function saveProfile() {
-    if (
-      !selectedProfile ||
-      !schedule ||
-      !limits ||
-      !preferences ||
-      !resourcePolicy
-    )
-      return;
+    if (!selectedProfile) return;
     setIsSavingProfile(true);
     setMessage("正在保存发现配置...");
-    const nextConfig = {
-      ...selectedProfile.config,
-      schedule,
-      limits,
+    const nextConfig: DiscoveryProfile["config"] = {
+      schedule: { missedRunPolicy },
+      limits: {},
       preferences,
       opportunity,
-      resourcePolicy,
-      sources,
-      ai: {
-        chatProviderId,
-        embeddingProviderId,
-      },
+      resourcePolicy: { minAvailableMemoryMb },
+      sources: selectedProfile.config.sources,
+      ai: {},
     };
+
     try {
-      const response = await fetch(`/api/profiles/${selectedProfile.id}`, {
+      const response = await fetch("/api/profiles/" + selectedProfile.id, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled, config: nextConfig }),
       });
       const body = await response.json().catch(() => ({}));
-      if (response.ok) {
-        onUpdated(body);
-        setMessage("发现配置已保存。");
-      } else {
-        setMessage(body.error ?? "发现配置保存失败。");
+      if (!response.ok) {
+        setMessage(readApiError(body, "发现配置保存失败。"));
+        return;
       }
+      onUpdated(body);
+      setMessage("发现配置已保存，扫描时会按模型优先级自动选择配置。");
     } catch (error) {
-      setMessage(
-        error instanceof Error
-          ? `发现配置保存失败：${error.message}`
-          : "发现配置保存失败。",
-      );
+      setMessage(errorMessage(error, "发现配置保存失败。"));
     } finally {
       setIsSavingProfile(false);
     }
-  }
-
-  async function generatePreferencesFromText() {
-    if (!selectedProfile || !naturalLanguagePrompt.trim()) return;
-    setIsGeneratingPreferences(true);
-    setMessage("");
-    try {
-      const response = await fetch(
-        `/api/profiles/${selectedProfile.id}/natural-language`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            prompt: naturalLanguagePrompt,
-            mode: naturalLanguageMode,
-          }),
-        },
-      );
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setMessage(body.error ?? "生成发现条件失败。");
-        return;
-      }
-      setNaturalLanguagePreview(body);
-      setMessage("已生成发现条件预览，确认后可应用到当前表单。");
-    } finally {
-      setIsGeneratingPreferences(false);
-    }
-  }
-
-  function applyGeneratedPreferences(mode: "merge" | "replace") {
-    if (!naturalLanguagePreview || !preferences) return;
-    const nextPreferences =
-      mode === naturalLanguagePreview.mode
-        ? naturalLanguagePreview.preview.preferences
-        : mergePreferenceState(
-            preferences,
-            naturalLanguagePreview.generated,
-            mode,
-          );
-    setPreferences(nextPreferences);
-    setNaturalLanguageMode(mode);
-    setMessage(
-      mode === "merge"
-        ? "已合并生成条件，请保存发现配置。"
-        : "已覆盖为生成条件，请保存发现配置。",
-    );
   }
 
   return (
@@ -1853,12 +1939,16 @@ function ProfilesPanel({
       <section className="panel">
         <div className="panel-header">
           <div className="panel-title">
-            <h2>发现配置</h2>
-            <p>当前展示核心绑定和状态；完整配置仍按已保存 JSON 执行。</p>
+            <h2>发现策略</h2>
+            <p>持续扫描由可用内存控制，同类型模型按优先级自动选择。</p>
           </div>
         </div>
         <div className="list-panel">
-          {message && <div className="notice">{message}</div>}
+          {message && (
+            <div className="notice" role="status">
+              {message}
+            </div>
+          )}
           {profiles.map((profile) => (
             <div className="row-item" key={profile.id}>
               <strong>{profile.name}</strong>
@@ -1867,775 +1957,240 @@ function ProfilesPanel({
               </span>
               <TagList
                 items={[
-                  `Chat: ${providerName(providers, profile.config.ai.chatProviderId)}`,
-                  `Embedding: ${providerName(providers, profile.config.ai.embeddingProviderId)}`,
-                  `扫描源: ${normalizeDiscoverySources(profile.config.sources).filter((source) => source.enabled).length}`,
+                  "模型：同类型按优先级自动选择",
+                  "最低可用内存：" +
+                    (profile.config.resourcePolicy.minAvailableMemoryMb ??
+                      profile.config.resourcePolicy.memory?.minAvailableMb ??
+                      512) +
+                    " MB",
+                  "漏跑策略：" +
+                    missedRunPolicyText(
+                      profile.config.schedule.missedRunPolicy,
+                    ),
                 ]}
               />
             </div>
           ))}
-          {selectedProfile && (
-            <div className="form-grid">
-              <label className="field checkbox-field">
-                <span>启用状态</span>
-                <span className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={enabled}
-                    onChange={(event) => setEnabled(event.target.checked)}
-                  />
-                  参与扫描
-                </span>
-              </label>
-              <label className="field">
-                <span>可用 Chat 配置</span>
-                <select
-                  className="select"
-                  value={chatProviderId}
-                  onChange={(event) => setChatProviderId(event.target.value)}
-                >
-                  {!chatProviders.some(
-                    (provider) => provider.id === chatProviderId,
-                  ) && (
-                    <option value={chatProviderId}>
-                      当前绑定：{providerName(providers, chatProviderId)}
-                    </option>
-                  )}
-                  {chatProviders.map((provider) => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span>可用 Embedding 配置</span>
-                <select
-                  className="select"
-                  value={embeddingProviderId}
-                  onChange={(event) =>
-                    setEmbeddingProviderId(event.target.value)
-                  }
-                >
-                  {!embeddingProviders.some(
-                    (provider) => provider.id === embeddingProviderId,
-                  ) && (
-                    <option value={embeddingProviderId}>
-                      当前绑定：{providerName(providers, embeddingProviderId)}
-                    </option>
-                  )}
-                  {embeddingProviders.map((provider) => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="form-actions">
-                <button
-                  className="button primary"
-                  type="button"
-                  onClick={saveProfile}
-                  disabled={isSavingProfile}
-                >
-                  {isSavingProfile ? (
-                    <RefreshCw size={15} />
-                  ) : (
-                    <Save size={15} />
-                  )}
-                  {isSavingProfile ? "保存中" : "保存发现配置"}
-                </button>
-              </div>
-            </div>
-          )}
-          {selectedProfile &&
-            schedule &&
-            limits &&
-            preferences &&
-            resourcePolicy && (
-              <div className="stack">
-                <section className="sub-panel">
-                  <div className="panel-header compact-header">
-                    <div className="panel-title">
-                      <h3>AI 生成发现条件</h3>
-                      <p>
-                        用中文描述想找的 GitHub
-                        项目，系统会转换成关键词、topic、语言和过滤条件。
-                      </p>
-                    </div>
-                  </div>
-                  <div className="form-grid">
-                    <Field label="自然语言需求">
-                      <textarea
-                        className="input textarea"
-                        value={naturalLanguagePrompt}
-                        onChange={(event) =>
-                          setNaturalLanguagePrompt(event.target.value)
-                        }
-                        placeholder="例如：找最近半年活跃、适合做 AI agent 工作流编排的 TypeScript 项目，不要加密货币相关项目，stars 超过 500"
-                      />
-                    </Field>
-                    <Field label="应用方式">
-                      <select
-                        className="select"
-                        value={naturalLanguageMode}
-                        onChange={(event) =>
-                          setNaturalLanguageMode(
-                            event.target.value as "merge" | "replace",
-                          )
-                        }
-                      >
-                        <option value="merge">合并到当前配置</option>
-                        <option value="replace">覆盖当前配置</option>
-                      </select>
-                    </Field>
-                    <div className="form-actions">
-                      <button
-                        className="button primary"
-                        type="button"
-                        disabled={
-                          isGeneratingPreferences ||
-                          !naturalLanguagePrompt.trim()
-                        }
-                        onClick={generatePreferencesFromText}
-                      >
-                        {isGeneratingPreferences ? (
-                          <RefreshCw size={15} />
-                        ) : (
-                          <Brain size={15} />
-                        )}
-                        生成条件
-                      </button>
-                    </div>
-                  </div>
-                  {naturalLanguagePreview && (
-                    <div className="preview-block">
-                      <PreferencePreview
-                        preferences={naturalLanguagePreview.preview.preferences}
-                        notes={naturalLanguagePreview.generated.notes ?? []}
-                      />
-                      <QueryPlanPreview
-                        plans={naturalLanguagePreview.preview.queryPlans}
-                      />
-                      <div className="action-row wrap">
-                        <button
-                          className="button"
-                          type="button"
-                          onClick={() => applyGeneratedPreferences("merge")}
-                        >
-                          合并应用
-                        </button>
-                        <button
-                          className="button"
-                          type="button"
-                          onClick={() => applyGeneratedPreferences("replace")}
-                        >
-                          覆盖应用
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </section>
-                <section className="sub-panel">
-                  <div className="panel-header compact-header">
-                    <div className="panel-title">
-                      <h3>变现机会配置</h3>
-                      <p>
-                        把发现目标从技术兴趣切换为可验证、可交付、可变现的项目机会。
-                      </p>
-                    </div>
-                  </div>
-                  <div className="form-grid">
-                    <Field label="变现目标">
-                      <input
-                        className="input"
-                        value={opportunity.goals.join(", ")}
-                        onChange={(event) =>
-                          setOpportunity({
-                            ...opportunity,
-                            goals: splitCsv(event.target.value),
-                          })
-                        }
-                      />
-                    </Field>
-                    <Field label="目标客户">
-                      <input
-                        className="input"
-                        value={opportunity.targetCustomers.join(", ")}
-                        onChange={(event) =>
-                          setOpportunity({
-                            ...opportunity,
-                            targetCustomers: splitCsv(event.target.value),
-                          })
-                        }
-                      />
-                    </Field>
-                    <Field label="变现方式">
-                      <input
-                        className="input"
-                        value={opportunity.monetizationChannels.join(", ")}
-                        onChange={(event) =>
-                          setOpportunity({
-                            ...opportunity,
-                            monetizationChannels: splitCsv(event.target.value),
-                          })
-                        }
-                      />
-                    </Field>
-                    <Field label="偏好优势">
-                      <input
-                        className="input"
-                        value={opportunity.preferredAdvantages.join(", ")}
-                        onChange={(event) =>
-                          setOpportunity({
-                            ...opportunity,
-                            preferredAdvantages: splitCsv(event.target.value),
-                          })
-                        }
-                      />
-                    </Field>
-                    <Field label="排除信号">
-                      <input
-                        className="input"
-                        value={opportunity.excludeSignals.join(", ")}
-                        onChange={(event) =>
-                          setOpportunity({
-                            ...opportunity,
-                            excludeSignals: splitCsv(event.target.value),
-                          })
-                        }
-                      />
-                    </Field>
-                    <Field label="最低机会分">
-                      <input
-                        className="input"
-                        type="number"
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        value={opportunity.minOpportunityScore}
-                        onChange={(event) =>
-                          setOpportunity({
-                            ...opportunity,
-                            minOpportunityScore: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </Field>
-                  </div>
-                </section>
-                <div className="form-grid">
-                  <Field label="调度类型">
-                    <select
-                      className="select"
-                      value={schedule.type}
-                      onChange={(event) =>
-                        setSchedule({
-                          ...schedule,
-                          type: event.target.value as "cron" | "interval",
-                        })
-                      }
-                    >
-                      <option value="cron">cron</option>
-                      <option value="interval">interval</option>
-                    </select>
-                  </Field>
-                  <Field label="Cron">
-                    <input
-                      className="input"
-                      value={schedule.cron ?? ""}
-                      onChange={(event) =>
-                        setSchedule({ ...schedule, cron: event.target.value })
-                      }
-                    />
-                  </Field>
-                  <Field label="间隔小时">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={schedule.intervalHours ?? 24}
-                      onChange={(event) =>
-                        setSchedule({
-                          ...schedule,
-                          intervalHours: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="时区">
-                    <input
-                      className="input"
-                      value={schedule.timezone}
-                      onChange={(event) =>
-                        setSchedule({
-                          ...schedule,
-                          timezone: event.target.value,
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="开始时间">
-                    <input
-                      className="input"
-                      value={schedule.startAt ?? ""}
-                      onChange={(event) =>
-                        setSchedule({
-                          ...schedule,
-                          startAt: event.target.value,
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="最大运行分钟">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={schedule.maxRuntimeMinutes}
-                      onChange={(event) =>
-                        setSchedule({
-                          ...schedule,
-                          maxRuntimeMinutes: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="漏跑策略">
-                    <select
-                      className="select"
-                      value={schedule.missedRunPolicy}
-                      onChange={(event) =>
-                        setSchedule({
-                          ...schedule,
-                          missedRunPolicy: event.target
-                            .value as DiscoveryProfile["config"]["schedule"]["missedRunPolicy"],
-                        })
-                      }
-                    >
-                      <option value="skip">跳过漏跑周期</option>
-                      <option value="run_once">补跑一次</option>
-                      <option value="resume">按漏跑周期补跑</option>
-                    </select>
-                  </Field>
-                  <Field label="单查询数量">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      max={100}
-                      value={limits.sourceLimitPerQuery}
-                      onChange={(event) =>
-                        setLimits({
-                          ...limits,
-                          sourceLimitPerQuery: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="最大候选">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={limits.maxCandidates}
-                      onChange={(event) =>
-                        setLimits({
-                          ...limits,
-                          maxCandidates: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="规则 Top K">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={limits.ruleFilterTopK}
-                      onChange={(event) =>
-                        setLimits({
-                          ...limits,
-                          ruleFilterTopK: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="详情 Top K">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={limits.detailFetchTopK}
-                      onChange={(event) =>
-                        setLimits({
-                          ...limits,
-                          detailFetchTopK: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="Embedding Top K">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={limits.embeddingTopK}
-                      onChange={(event) =>
-                        setLimits({
-                          ...limits,
-                          embeddingTopK: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="LLM Top K">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={limits.llmAnalyzeTopK}
-                      onChange={(event) =>
-                        setLimits({
-                          ...limits,
-                          llmAnalyzeTopK: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="LLM 语义阈值">
-                    <input
-                      className="input"
-                      type="number"
-                      min={0}
-                      max={1}
-                      step={0.01}
-                      value={limits.semanticFitThreshold ?? 0.42}
-                      onChange={(event) =>
-                        setLimits({
-                          ...limits,
-                          semanticFitThreshold: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="最终推荐 Top K">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={limits.finalReportTopK}
-                      onChange={(event) =>
-                        setLimits({
-                          ...limits,
-                          finalReportTopK: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="关键词">
-                    <input
-                      className="input"
-                      value={preferences.keywords.join(", ")}
-                      onChange={(event) =>
-                        setPreferences({
-                          ...preferences,
-                          keywords: splitCsv(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="Topics">
-                    <input
-                      className="input"
-                      value={preferences.topics.join(", ")}
-                      onChange={(event) =>
-                        setPreferences({
-                          ...preferences,
-                          topics: splitCsv(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="语言权重">
-                    <input
-                      className="input"
-                      value={formatLanguageWeights(preferences.languages)}
-                      onChange={(event) =>
-                        setPreferences({
-                          ...preferences,
-                          languages: parseLanguageWeights(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="排除关键词">
-                    <input
-                      className="input"
-                      value={preferences.excludeKeywords.join(", ")}
-                      onChange={(event) =>
-                        setPreferences({
-                          ...preferences,
-                          excludeKeywords: splitCsv(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="最低 Stars">
-                    <input
-                      className="input"
-                      type="number"
-                      min={0}
-                      value={preferences.minStars}
-                      onChange={(event) =>
-                        setPreferences({
-                          ...preferences,
-                          minStars: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="最近推送天数">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={preferences.pushedWithinDays}
-                      onChange={(event) =>
-                        setPreferences({
-                          ...preferences,
-                          pushedWithinDays: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </Field>
-                  <label className="field checkbox-field">
-                    <span>过滤规则</span>
-                    <span className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={preferences.excludeArchived}
-                        onChange={(event) =>
-                          setPreferences({
-                            ...preferences,
-                            excludeArchived: event.target.checked,
-                          })
-                        }
-                      />
-                      排除 archived
-                    </span>
-                    <span className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={preferences.excludeForks}
-                        onChange={(event) =>
-                          setPreferences({
-                            ...preferences,
-                            excludeForks: event.target.checked,
-                          })
-                        }
-                      />
-                      排除 fork
-                    </span>
-                  </label>
-                  <Field label="资源模式">
-                    <select
-                      className="select"
-                      value={resourcePolicy.mode}
-                      onChange={(event) =>
-                        setResourcePolicy({
-                          ...resourcePolicy,
-                          mode: event.target
-                            .value as DiscoveryProfile["config"]["resourcePolicy"]["mode"],
-                        })
-                      }
-                    >
-                      <option value="complete_low_memory">
-                        complete_low_memory
-                      </option>
-                      <option value="balanced">balanced</option>
-                      <option value="fast">fast</option>
-                    </select>
-                  </Field>
-                  <Field label="目标可用内存 MB">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={resourcePolicy.memory.targetAvailableMb}
-                      onChange={(event) =>
-                        setResourcePolicy({
-                          ...resourcePolicy,
-                          memory: {
-                            ...resourcePolicy.memory,
-                            targetAvailableMb: Number(event.target.value),
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="最低可用内存 MB">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={resourcePolicy.memory.minAvailableMb}
-                      onChange={(event) =>
-                        setResourcePolicy({
-                          ...resourcePolicy,
-                          memory: {
-                            ...resourcePolicy.memory,
-                            minAvailableMb: Number(event.target.value),
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="临界可用内存 MB">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={resourcePolicy.memory.criticalAvailableMb}
-                      onChange={(event) =>
-                        setResourcePolicy({
-                          ...resourcePolicy,
-                          memory: {
-                            ...resourcePolicy.memory,
-                            criticalAvailableMb: Number(event.target.value),
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="批量大小">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={resourcePolicy.execution.batchSize}
-                      onChange={(event) =>
-                        setResourcePolicy({
-                          ...resourcePolicy,
-                          execution: {
-                            ...resourcePolicy.execution,
-                            batchSize: Number(event.target.value),
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="并发数">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={resourcePolicy.execution.maxConcurrency}
-                      onChange={(event) =>
-                        setResourcePolicy({
-                          ...resourcePolicy,
-                          execution: {
-                            ...resourcePolicy.execution,
-                            maxConcurrency: Number(event.target.value),
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="Checkpoint 间隔">
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      value={resourcePolicy.execution.checkpointEveryItems}
-                      onChange={(event) =>
-                        setResourcePolicy({
-                          ...resourcePolicy,
-                          execution: {
-                            ...resourcePolicy.execution,
-                            checkpointEveryItems: Number(event.target.value),
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                  <label className="field checkbox-field">
-                    <span>内存压力</span>
-                    <span className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={resourcePolicy.execution.pauseOnPressure}
-                        onChange={(event) =>
-                          setResourcePolicy({
-                            ...resourcePolicy,
-                            execution: {
-                              ...resourcePolicy.execution,
-                              pauseOnPressure: event.target.checked,
-                            },
-                          })
-                        }
-                      />
-                      压力过高时暂停
-                    </span>
-                  </label>
+          {!selectedProfile ? (
+            <div className="muted">请选择发现策略。</div>
+          ) : (
+            <div className="stack">
+              <div className="panel-header compact-header">
+                <div className="panel-title">
+                  <h3>核心发现偏好</h3>
+                  <p>这些条件负责召回项目，机会 Brief 只负责后续商业判断。</p>
                 </div>
               </div>
-            )}
-          {selectedProfile && (
-            <div className="list-panel source-planned-list">
-              <strong>待接入 adapter</strong>
-              <span className="muted">
-                这些来源可以先保存启用状态和权重，但当前不会生成真实扫描查询。
-              </span>
-              <TagList items={plannedAdapters.map((source) => source.label)} />
-            </div>
-          )}
-          {selectedProfile && (
-            <div className="source-grid">
-              {discoverySourceCatalog.map((definition) => {
-                const source = sources.find(
-                  (item) => item.id === definition.id,
-                );
-                return (
-                  <div className="source-item" key={definition.id}>
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={source?.enabled ?? false}
-                        onChange={(event) =>
-                          updateSource(definition.id, {
-                            enabled: event.target.checked,
-                          })
-                        }
-                      />
-                      <strong>{definition.label}</strong>
-                    </label>
-                    <p className="muted">{definition.description}</p>
-                    <TagList
-                      items={[
-                        sourceAuthorityText(definition.authority),
-                        sourceCapabilityText(definition.capability),
-                      ]}
+              <div className="form-grid">
+                <Field label="关键词">
+                  <input
+                    className="input"
+                    value={preferences.keywords.join(", ")}
+                    onChange={(event) =>
+                      setPreferences({
+                        ...preferences,
+                        keywords: splitCsv(event.target.value),
+                      })
+                    }
+                    placeholder="agent, llm, workflow"
+                  />
+                </Field>
+                <Field label="Topics">
+                  <input
+                    className="input"
+                    value={preferences.topics.join(", ")}
+                    onChange={(event) =>
+                      setPreferences({
+                        ...preferences,
+                        topics: splitCsv(event.target.value),
+                      })
+                    }
+                    placeholder="ai, rag, automation"
+                  />
+                </Field>
+                <Field label="语言权重">
+                  <input
+                    className="input"
+                    value={formatLanguageWeights(preferences.languages)}
+                    onChange={(event) =>
+                      setPreferences({
+                        ...preferences,
+                        languages: parseLanguageWeights(event.target.value),
+                      })
+                    }
+                    placeholder="TypeScript:1, Python:0.8"
+                  />
+                </Field>
+                <Field label="排除关键词">
+                  <input
+                    className="input"
+                    value={preferences.excludeKeywords.join(", ")}
+                    onChange={(event) =>
+                      setPreferences({
+                        ...preferences,
+                        excludeKeywords: splitCsv(event.target.value),
+                      })
+                    }
+                    placeholder="crypto, gambling"
+                  />
+                </Field>
+                <Field label="最低 Stars">
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    value={preferences.minStars}
+                    onChange={(event) =>
+                      setPreferences({
+                        ...preferences,
+                        minStars: Number(event.target.value),
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="最近推送天数">
+                  <input
+                    className="input"
+                    type="number"
+                    min={1}
+                    value={preferences.pushedWithinDays}
+                    onChange={(event) =>
+                      setPreferences({
+                        ...preferences,
+                        pushedWithinDays: Number(event.target.value),
+                      })
+                    }
+                  />
+                </Field>
+                <label className="field checkbox-field">
+                  <span>仓库过滤</span>
+                  <span className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={preferences.excludeArchived}
+                      onChange={(event) =>
+                        setPreferences({
+                          ...preferences,
+                          excludeArchived: event.target.checked,
+                        })
+                      }
                     />
-                    <label className="field">
-                      <span>权重</span>
-                      <input
-                        className="input"
-                        type="number"
-                        min="0.1"
-                        max="3"
-                        step="0.01"
-                        value={source?.weight ?? definition.defaultWeight}
-                        onChange={(event) =>
-                          updateSource(definition.id, {
-                            weight: Number(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                  </div>
-                );
-              })}
+                    排除 archived
+                  </span>
+                  <span className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={preferences.excludeForks}
+                      onChange={(event) =>
+                        setPreferences({
+                          ...preferences,
+                          excludeForks: event.target.checked,
+                        })
+                      }
+                    />
+                    排除 fork
+                  </span>
+                </label>
+              </div>
+              <div className="panel-header compact-header">
+                <div className="panel-title">
+                  <h3>机会与运行策略</h3>
+                  <p>只保留商业判断、内存阈值和漏跑处理。</p>
+                </div>
+              </div>
+              <div className="form-grid">
+                <label className="field checkbox-field">
+                  <span>启用状态</span>
+                  <span className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      onChange={(event) => setEnabled(event.target.checked)}
+                    />
+                    参与持续扫描
+                  </span>
+                </label>
+                <Field label="业务偏好 / 机会 Brief">
+                  <textarea
+                    className="input textarea"
+                    maxLength={2000}
+                    value={opportunity.brief ?? ""}
+                    onChange={(event) =>
+                      setOpportunity({
+                        ...opportunity,
+                        brief: event.target.value,
+                      })
+                    }
+                    placeholder="描述目标客户、交付方式、偏好方向和需要排除的机会"
+                  />
+                </Field>
+                <Field label="最低机会分">
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={opportunity.minOpportunityScore}
+                    onChange={(event) =>
+                      setOpportunity({
+                        ...opportunity,
+                        minOpportunityScore: Number(event.target.value),
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="最低可用内存 MB">
+                  <input
+                    className="input"
+                    type="number"
+                    min={128}
+                    step={128}
+                    value={minAvailableMemoryMb}
+                    onChange={(event) =>
+                      setMinAvailableMemoryMb(Number(event.target.value))
+                    }
+                  />
+                </Field>
+                <Field label="漏跑策略">
+                  <select
+                    className="select"
+                    value={missedRunPolicy}
+                    onChange={(event) =>
+                      setMissedRunPolicy(
+                        event.target
+                          .value as DiscoveryProfile["config"]["schedule"]["missedRunPolicy"],
+                      )
+                    }
+                  >
+                    <option value="skip">跳过漏跑周期</option>
+                    <option value="run_once">恢复后补跑一次</option>
+                    <option value="resume">恢复未完成进度</option>
+                  </select>
+                </Field>
+                <div className="form-actions">
+                  <button
+                    className="button primary"
+                    type="button"
+                    onClick={() => void saveProfile()}
+                    disabled={
+                      isSavingProfile ||
+                      preferences.minStars < 0 ||
+                      preferences.pushedWithinDays < 1 ||
+                      minAvailableMemoryMb < 128 ||
+                      opportunity.minOpportunityScore < 0 ||
+                      opportunity.minOpportunityScore > 1
+                    }
+                  >
+                    {isSavingProfile ? (
+                      <RefreshCw className="spin" size={15} />
+                    ) : (
+                      <Save size={15} />
+                    )}
+                    {isSavingProfile ? "保存中" : "保存发现策略"}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -2697,8 +2252,10 @@ function JobsPanel({
         );
         await onRefresh();
       } else {
-        setMessage(body.error ?? "扫描任务操作失败。");
+        setMessage(readApiError(body, "扫描任务操作失败。"));
       }
+    } catch (error) {
+      setMessage(errorMessage(error, "扫描任务操作失败。"));
     } finally {
       setBusyJobId("");
     }
@@ -2714,8 +2271,22 @@ function JobsPanel({
         setMessage("扫描任务已归档。");
         await onRefresh();
       } else {
-        setMessage(body.error ?? "扫描任务归档失败。");
+        setMessage(readApiError(body, "扫描任务归档失败。"));
       }
+    } catch (error) {
+      setMessage(errorMessage(error, "扫描任务归档失败。"));
+    } finally {
+      setBusyJobId("");
+    }
+  }
+
+  async function manualRefresh() {
+    setBusyJobId("refresh");
+    try {
+      await onRefresh();
+      setMessage("扫描任务状态已刷新。");
+    } catch (error) {
+      setMessage(errorMessage(error, "扫描任务刷新失败。"));
     } finally {
       setBusyJobId("");
     }
@@ -2729,9 +2300,17 @@ function JobsPanel({
             <h2>队列深度</h2>
             <p>等待 worker 分阶段处理的数据库候选队列。</p>
           </div>
-          <button className="button" type="button" onClick={onRefresh}>
-            <RefreshCw size={15} />
-            刷新
+          <button
+            className="button"
+            type="button"
+            onClick={() => void manualRefresh()}
+            disabled={busyJobId === "refresh"}
+          >
+            <RefreshCw
+              className={busyJobId === "refresh" ? "spin" : undefined}
+              size={15}
+            />
+            {busyJobId === "refresh" ? "刷新中" : "刷新"}
           </button>
         </div>
         <SimpleStatsTable
@@ -2751,7 +2330,11 @@ function JobsPanel({
           </div>
         </div>
         <div className="table-wrap">
-          {message && <div className="notice">{message}</div>}
+          {message && (
+            <div className="notice" role="status">
+              {message}
+            </div>
+          )}
           <table className="repo-table">
             <thead>
               <tr>
@@ -2794,15 +2377,20 @@ function JobsPanel({
                             {job.statusReason ?? job.errorMessage}
                           </div>
                         )}
+                        {job.status === "exception" &&
+                          !job.statusReason &&
+                          !job.errorMessage && (
+                            <div className="muted">
+                              同类型 AI 模型均不可用，扫描已停止。
+                            </div>
+                          )}
                       </td>
                       <td>{job.stage}</td>
                       <td>{job.fetchedCount}</td>
                       <td>{job.newRepoCount}</td>
                       <td>{job.updatedRepoCount}</td>
                       <td>{job.unchangedRepoCount}</td>
-                      <td>
-                        {job.candidateCount} / {job.maxCandidates}
-                      </td>
+                      <td>{job.candidateCount}</td>
                       <td>{job.failedCandidateCount}</td>
                       <td>{job.processedCount}</td>
                       <td>{job.analyzedCount}</td>
@@ -2812,69 +2400,78 @@ function JobsPanel({
                             <button
                               className="button"
                               disabled={busyJobId === job.id}
-                              onClick={() => updateJob(job.id, "pause")}
+                              onClick={() => void updateJob(job.id, "pause")}
                               type="button"
                             >
-                              暂停
+                              {busyJobId === job.id ? "处理中" : "暂停"}
                             </button>
                           )}
                           {canResumeJob(job.status) && (
                             <button
                               className="button"
                               disabled={busyJobId === job.id}
-                              onClick={() => updateJob(job.id, "resume")}
+                              onClick={() => void updateJob(job.id, "resume")}
                               type="button"
                             >
-                              恢复
+                              {busyJobId === job.id
+                                ? "恢复中"
+                                : job.status === "exception"
+                                  ? "处理后恢复"
+                                  : "恢复"}
                             </button>
                           )}
                           {canCompleteJob(job.status) && (
                             <button
                               className="button"
                               disabled={busyJobId === job.id}
-                              onClick={() => updateJob(job.id, "complete")}
+                              onClick={() => void updateJob(job.id, "complete")}
                               type="button"
                             >
-                              完成
+                              {busyJobId === job.id ? "处理中" : "完成"}
                             </button>
                           )}
                           {canArchiveJob(job.status) && (
                             <button
                               className="button"
                               disabled={busyJobId === job.id}
-                              onClick={() => archiveJob(job.id)}
+                              onClick={() => void archiveJob(job.id)}
                               type="button"
                             >
-                              归档
+                              {busyJobId === job.id ? "归档中" : "归档"}
                             </button>
                           )}
                         </div>
                       </td>
                     </tr>
-                    {(job.errorResolution || job.status === "failed") &&
-                      (job.errorMessage || job.statusReason) && (
-                        <tr className="job-error-row">
-                          <td colSpan={12}>
-                            <div className="job-error" role="alert">
-                              <AlertTriangle size={17} aria-hidden="true" />
-                              <div>
-                                <strong>
-                                  {job.errorMessage ?? job.statusReason}
-                                </strong>
-                                {job.errorResolution && (
-                                  <p>
-                                    <span>处理建议：</span>
-                                    {job.errorResolution}
-                                  </p>
-                                )}
-                                {job.errorCode && (
-                                  <small>错误码：{job.errorCode}</small>
-                                )}
-                              </div>
+                    {(job.errorResolution ||
+                      job.status === "failed" ||
+                      job.status === "exception") && (
+                      <tr className="job-error-row">
+                        <td colSpan={12}>
+                          <div className="job-error" role="alert">
+                            <AlertTriangle size={17} aria-hidden="true" />
+                            <div>
+                              <strong>
+                                {job.errorMessage ?? job.statusReason}
+                                {job.status === "exception" &&
+                                  !job.errorMessage &&
+                                  !job.statusReason &&
+                                  "同类型 AI 模型均不可用，扫描已进入异常状态。"}
+                              </strong>
+                              {job.errorResolution && (
+                                <p>
+                                  <span>处理建议：</span>
+                                  {job.errorResolution}
+                                </p>
+                              )}
+                              {job.errorCode && (
+                                <small>错误码：{job.errorCode}</small>
+                              )}
                             </div>
-                          </td>
-                        </tr>
-                      )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
                   </Fragment>
                 ))
               )}
@@ -3128,12 +2725,10 @@ function GitHubPanel({
 
 function ProvidersPanel({
   providers,
-  profiles,
   onChanged,
   onDeleted,
 }: {
   providers: AiProvider[];
-  profiles: DiscoveryProfile[];
   onChanged: (provider: AiProvider) => void;
   onDeleted: (providerId: string) => void;
 }) {
@@ -3141,6 +2736,18 @@ function ProvidersPanel({
     AiProvider | "new" | null
   >(null);
   const [message, setMessage] = useState("");
+  const [busyAction, setBusyAction] = useState("");
+  const orderedProviders = useMemo(
+    () =>
+      [...providers].sort(
+        (left, right) =>
+          left.kind.localeCompare(right.kind) ||
+          (left.priority ?? 100) - (right.priority ?? 100) ||
+          left.createdAt.localeCompare(right.createdAt) ||
+          left.id.localeCompare(right.id),
+      ),
+    [providers],
+  );
 
   async function saveProvider(input: AiProviderFormValue) {
     const isEditing = input.id !== undefined;
@@ -3158,6 +2765,9 @@ function ProvidersPanel({
           apiKeyValue: input.apiKeyValue || undefined,
           model: input.model,
           dimensions: input.kind === "embedding" ? input.dimensions : undefined,
+          priority: input.priority,
+          reasoningEffort:
+            input.kind === "chat" ? input.reasoningEffort : undefined,
           enabled: input.enabled,
         }),
       },
@@ -3170,47 +2780,107 @@ function ProvidersPanel({
       return;
     }
 
-    throw new Error(body.error ?? (isEditing ? "修改失败。" : "创建失败。"));
+    throw new Error(
+      readApiError(body, isEditing ? "修改失败。" : "创建失败。"),
+    );
   }
 
   async function patchProvider(provider: AiProvider) {
-    const response = await fetch(`/api/ai-providers/${provider.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: !provider.enabled }),
-    });
-    const body = await response.json().catch(() => ({}));
-    if (response.ok) {
-      onChanged(body);
-      setMessage(body.enabled ? "AI 配置已启用。" : "AI 配置已停用。");
-    } else {
-      setMessage(body.error ?? "更新失败。");
+    setBusyAction(`${provider.id}:toggle`);
+    setMessage(
+      provider.enabled ? "正在停用 AI 配置..." : "正在启用 AI 配置...",
+    );
+    try {
+      const response = await fetch(`/api/ai-providers/${provider.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !provider.enabled }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (response.ok) {
+        onChanged(body);
+        setMessage(body.enabled ? "AI 配置已启用。" : "AI 配置已停用。");
+      } else {
+        setMessage(readApiError(body, "更新失败。"));
+      }
+    } catch (error) {
+      setMessage(errorMessage(error, "更新失败。"));
+    } finally {
+      setBusyAction("");
     }
   }
 
   async function deleteProvider(provider: AiProvider) {
-    const response = await fetch(`/api/ai-providers/${provider.id}`, {
-      method: "DELETE",
-    });
-    const body = await response.json().catch(() => ({}));
-    if (response.ok) {
-      onDeleted(provider.id);
-      setMessage("AI 配置已删除。");
-    } else {
-      setMessage(body.error ?? "删除失败。");
+    setBusyAction(`${provider.id}:delete`);
+    setMessage("正在删除 AI 配置...");
+    try {
+      const response = await fetch(`/api/ai-providers/${provider.id}`, {
+        method: "DELETE",
+      });
+      const body = await response.json().catch(() => ({}));
+      if (response.ok) {
+        onDeleted(provider.id);
+        setMessage("AI 配置已删除。历史分析记录会继续保留。");
+      } else {
+        setMessage(readApiError(body, "删除失败。"));
+      }
+    } catch (error) {
+      setMessage(errorMessage(error, "删除失败。"));
+    } finally {
+      setBusyAction("");
     }
   }
 
   async function testProvider(provider: AiProvider) {
-    const response = await fetch(`/api/ai-providers/${provider.id}/test`, {
-      method: "POST",
-    });
-    const body = await response.json().catch(() => ({}));
-    setMessage(
-      response.ok && body.ready
-        ? "连接测试通过。"
-        : `连接测试未通过：${body.checks?.reason ?? "配置不可用"}`,
-    );
+    setBusyAction(`${provider.id}:test`);
+    setMessage("正在检测模型连接...");
+    try {
+      const response = await fetch(`/api/ai-providers/${provider.id}/test`, {
+        method: "POST",
+      });
+      const body = await response.json().catch(() => ({}));
+      setMessage(
+        response.ok && body.ready
+          ? "连接测试通过。"
+          : `连接测试未通过：${body.checks?.reason ?? readApiError(body, "配置不可用")}`,
+      );
+    } catch (error) {
+      setMessage(errorMessage(error, "连接测试失败。"));
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function recoverProvider(provider: AiProvider) {
+    setBusyAction(`${provider.id}:recover`);
+    setMessage("正在执行轻量检测并尝试恢复...");
+    try {
+      const response = await fetch(`/api/ai-providers/${provider.id}/recover`, {
+        method: "POST",
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (body.provider?.id === provider.id) {
+          onChanged(body.provider);
+        }
+        const reason = readApiError(body, "检测未通过，配置仍不可用。");
+        setMessage(
+          body.recoverySuggestion
+            ? `${reason} 处理建议：${body.recoverySuggestion}`
+            : reason,
+        );
+        return;
+      }
+      const updatedProvider = body.provider ?? body;
+      if (updatedProvider?.id === provider.id) {
+        onChanged(updatedProvider);
+      }
+      setMessage(body.message ?? "检测通过，AI 配置已恢复可用。");
+    } catch (error) {
+      setMessage(errorMessage(error, "恢复检测失败。"));
+    } finally {
+      setBusyAction("");
+    }
   }
 
   return (
@@ -3219,10 +2889,7 @@ function ProvidersPanel({
         <div className="panel-header">
           <div className="panel-title">
             <h2>AI 配置</h2>
-            <p>
-              Chat 和 Embedding 分开配置；Base URL、模型和 API Key
-              在一个地方维护。
-            </p>
+            <p>同类型模型按优先级自动选择；数值越小，选择顺序越靠前。</p>
           </div>
           <button
             className="button primary"
@@ -3233,14 +2900,18 @@ function ProvidersPanel({
           </button>
         </div>
         <div className="list-panel">
-          {message && <div className="notice">{message}</div>}
+          {message && (
+            <div className="notice" role="status">
+              {message}
+            </div>
+          )}
         </div>
       </section>
       <section className="panel">
         <div className="panel-header">
           <div className="panel-title">
             <h2>AI 配置</h2>
-            <p>Chat 和 Embedding 分开配置；被发现配置引用时不能删除或停用。</p>
+            <p>不可用配置会显示阻断原因；处理后通过真实轻量检测恢复。</p>
           </div>
         </div>
         <div className="table-wrap">
@@ -3250,57 +2921,130 @@ function ProvidersPanel({
                 <th>名称</th>
                 <th>类型</th>
                 <th>模型</th>
+                <th>优先级</th>
+                <th>推理程度</th>
                 <th>Base URL</th>
                 <th>Key 环境变量</th>
                 <th>状态</th>
-                <th>使用情况</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody>
-              {providers.map((provider) => (
-                <tr key={provider.id}>
-                  <td>{provider.name}</td>
-                  <td>{provider.kind}</td>
-                  <td>{provider.model}</td>
-                  <td>{provider.baseUrl}</td>
-                  <td>{provider.apiKeyEnv}</td>
-                  <td>{provider.enabled ? "启用" : "停用"}</td>
-                  <td>{providerUsageText(provider, profiles)}</td>
-                  <td>
-                    <div className="action-row">
-                      <button
-                        className="button"
-                        onClick={() => setEditingProvider(provider)}
-                        type="button"
-                      >
-                        修改
-                      </button>
-                      <button
-                        className="button"
-                        onClick={() => patchProvider(provider)}
-                        type="button"
-                      >
-                        {provider.enabled ? "停用" : "启用"}
-                      </button>
-                      <button
-                        className="button"
-                        onClick={() => testProvider(provider)}
-                        type="button"
-                      >
-                        测试
-                      </button>
-                      <button
-                        className="button"
-                        onClick={() => deleteProvider(provider)}
-                        type="button"
-                      >
-                        删除
-                      </button>
-                    </div>
+              {orderedProviders.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="muted">
+                    暂无 AI 配置
                   </td>
                 </tr>
-              ))}
+              ) : (
+                orderedProviders.map((provider) => {
+                  const providerBusy = busyAction.startsWith(`${provider.id}:`);
+                  const action = busyAction.split(":")[1];
+                  return (
+                    <tr key={provider.id}>
+                      <td>{provider.name}</td>
+                      <td>{provider.kind}</td>
+                      <td>{provider.model}</td>
+                      <td>{provider.priority ?? 100}</td>
+                      <td>
+                        {provider.kind === "chat"
+                          ? reasoningEffortText(provider.reasoningEffort)
+                          : "-"}
+                      </td>
+                      <td>{provider.baseUrl}</td>
+                      <td>{provider.apiKeyEnv}</td>
+                      <td>
+                        <div className="tags">
+                          <span
+                            className={`status ${provider.enabled ? "tracked" : "hidden"}`}
+                          >
+                            {provider.enabled ? "已启用" : "已停用"}
+                          </span>
+                          <span
+                            className={`status ${providerAvailabilityTone(provider.availabilityStatus)}`}
+                          >
+                            {providerAvailabilityText(
+                              provider.availabilityStatus,
+                            )}
+                          </span>
+                        </div>
+                        {provider.unavailableReason && (
+                          <div className="muted">
+                            原因：{provider.unavailableReason}
+                          </div>
+                        )}
+                        {provider.recoverySuggestion && (
+                          <div className="muted">
+                            处理建议：{provider.recoverySuggestion}
+                          </div>
+                        )}
+                        {provider.cooldownUntil &&
+                          provider.availabilityStatus === "cooldown" && (
+                            <div className="muted">
+                              冷却至 {formatTime(provider.cooldownUntil)}
+                            </div>
+                          )}
+                      </td>
+                      <td>
+                        <div className="action-row wrap">
+                          <button
+                            className="button"
+                            onClick={() => setEditingProvider(provider)}
+                            type="button"
+                            disabled={providerBusy}
+                          >
+                            修改
+                          </button>
+                          <button
+                            className="button"
+                            onClick={() => patchProvider(provider)}
+                            type="button"
+                            disabled={providerBusy}
+                          >
+                            {action === "toggle"
+                              ? "处理中"
+                              : provider.enabled
+                                ? "停用"
+                                : "启用"}
+                          </button>
+                          <button
+                            className="button"
+                            onClick={() => testProvider(provider)}
+                            type="button"
+                            disabled={providerBusy}
+                          >
+                            {action === "test" ? "检测中" : "检测"}
+                          </button>
+                          {providerRequiresRecovery(provider) && (
+                            <button
+                              className="button primary"
+                              onClick={() => recoverProvider(provider)}
+                              type="button"
+                              disabled={providerBusy || !provider.enabled}
+                            >
+                              <RefreshCw
+                                className={
+                                  action === "recover" ? "spin" : undefined
+                                }
+                                size={15}
+                              />
+                              {action === "recover" ? "恢复中" : "检测并恢复"}
+                            </button>
+                          )}
+                          <button
+                            className="button"
+                            onClick={() => deleteProvider(provider)}
+                            type="button"
+                            disabled={providerBusy}
+                          >
+                            {action === "delete" ? "删除中" : "删除"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>
@@ -3325,6 +3069,8 @@ interface AiProviderFormValue {
   apiKeyValue: string;
   model: string;
   dimensions: number;
+  priority: number;
+  reasoningEffort: NonNullable<AiProvider["reasoningEffort"]>;
   enabled: boolean;
 }
 
@@ -3350,6 +3096,10 @@ function AiProviderDialog({
   const [apiKeyValue, setApiKeyValue] = useState("");
   const [model, setModel] = useState(provider?.model ?? "chat-model");
   const [dimensions, setDimensions] = useState(provider?.dimensions ?? 1536);
+  const [priority, setPriority] = useState(provider?.priority ?? 100);
+  const [reasoningEffort, setReasoningEffort] = useState<
+    NonNullable<AiProvider["reasoningEffort"]>
+  >(provider?.reasoningEffort ?? "default");
   const [enabled, setEnabled] = useState(provider?.enabled ?? true);
   const [message, setMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -3379,6 +3129,8 @@ function AiProviderDialog({
         apiKeyValue,
         model,
         dimensions,
+        priority,
+        reasoningEffort,
         enabled,
       });
     } catch (error) {
@@ -3407,7 +3159,11 @@ function AiProviderDialog({
           </button>
         </div>
         <div className="form-grid provider-dialog-grid">
-          {message && <div className="notice">{message}</div>}
+          {message && (
+            <div className="notice" role="status">
+              {message}
+            </div>
+          )}
           <Field label="类型">
             <select
               className="select"
@@ -3457,6 +3213,40 @@ function AiProviderDialog({
               onChange={(event) => setModel(event.target.value)}
             />
           </Field>
+          <Field label="优先级">
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={10000}
+              step={1}
+              value={priority}
+              onChange={(event) => setPriority(Number(event.target.value))}
+              required
+            />
+          </Field>
+          {kind === "chat" && (
+            <Field label="推理程度">
+              <select
+                className="select"
+                value={reasoningEffort}
+                onChange={(event) =>
+                  setReasoningEffort(
+                    event.target.value as NonNullable<
+                      AiProvider["reasoningEffort"]
+                    >,
+                  )
+                }
+              >
+                <option value="default">默认</option>
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+              </select>
+            </Field>
+          )}
           {kind === "embedding" && (
             <Field label="向量维度">
               <input
@@ -3486,8 +3276,9 @@ function AiProviderDialog({
             <button
               className="button primary"
               type="submit"
-              disabled={isSaving}
+              disabled={isSaving || priority < 1 || priority > 10000}
             >
+              {isSaving && <RefreshCw className="spin" size={15} />}
               {isSaving ? "保存中" : isEditing ? "保存修改" : "创建配置"}
             </button>
           </div>
@@ -3512,13 +3303,15 @@ function KnowledgePanel({
   const [minScore, setMinScore] = useState(0.8);
   const candidates = recommendations.filter(
     (item) =>
+      recommendationPreferenceStatus(item) === "liked" ||
+      recommendationIsTracked(item) ||
       [
-        "liked",
-        "tracked",
-        "to_validate",
+        "pending_validation",
         "validating",
+        "validated",
         "monetization_ready",
-      ].includes(item.status) || item.scores.final >= minScore,
+      ].includes(recommendationOpportunityStage(item)) ||
+      item.scores.final >= minScore,
   );
 
   async function runSync() {
@@ -3638,7 +3431,15 @@ function KnowledgePanel({
                   <tr key={item.id}>
                     <td>{item.repo.fullName}</td>
                     <td>{Math.round(item.scores.final * 100)}</td>
-                    <td>{item.status}</td>
+                    <td>
+                      {preferenceStatusText(
+                        recommendationPreferenceStatus(item),
+                      )}
+                      {" / "}
+                      {opportunityStageText(
+                        recommendationOpportunityStage(item),
+                      )}
+                    </td>
                     <td>
                       <a
                         className="repo-link"
@@ -3972,12 +3773,16 @@ function IconButton({
   onClick,
   active = false,
   tone,
+  disabled = false,
+  loading = false,
 }: {
   title: string;
   icon: React.ComponentType<{ size?: number }>;
   onClick: () => void;
   active?: boolean;
   tone?: "positive" | "danger";
+  disabled?: boolean;
+  loading?: boolean;
 }) {
   return (
     <button
@@ -3986,8 +3791,10 @@ function IconButton({
       aria-label={title}
       onClick={onClick}
       type="button"
+      disabled={disabled}
+      aria-busy={loading}
     >
-      <Icon size={15} />
+      {loading ? <RefreshCw className="spin" size={15} /> : <Icon size={15} />}
     </button>
   );
 }
@@ -4000,87 +3807,6 @@ function TagList({ items }: { items: string[] }) {
           {item}
         </span>
       ))}
-    </div>
-  );
-}
-
-function PreferencePreview({
-  preferences,
-  notes,
-}: {
-  preferences: DiscoveryProfile["config"]["preferences"];
-  notes: string[];
-}) {
-  return (
-    <div className="preview-grid">
-      <PreviewItem
-        label="关键词"
-        value={preferences.keywords.join(", ") || "-"}
-      />
-      <PreviewItem
-        label="Topics"
-        value={preferences.topics.join(", ") || "-"}
-      />
-      <PreviewItem
-        label="语言权重"
-        value={formatLanguageWeights(preferences.languages) || "-"}
-      />
-      <PreviewItem
-        label="排除关键词"
-        value={preferences.excludeKeywords.join(", ") || "-"}
-      />
-      <PreviewItem label="最低 Stars" value={String(preferences.minStars)} />
-      <PreviewItem
-        label="最近推送天数"
-        value={String(preferences.pushedWithinDays)}
-      />
-      <PreviewItem
-        label="过滤"
-        value={`${preferences.excludeArchived ? "排除 archived" : "允许 archived"}；${preferences.excludeForks ? "排除 fork" : "允许 fork"}`}
-      />
-      {notes.length > 0 && (
-        <PreviewItem label="说明" value={notes.join("；")} />
-      )}
-    </div>
-  );
-}
-
-function QueryPlanPreview({ plans }: { plans: GitHubSearchQueryPlan[] }) {
-  return (
-    <div className="query-preview">
-      <div className="preview-heading">
-        <strong>GitHub Search 查询计划</strong>
-        <span className="muted">
-          同一条 query 中多个普通关键词偏 AND；系统会拆成多条 query 提高召回。
-        </span>
-      </div>
-      <div className="query-list">
-        {plans.length === 0 ? (
-          <span className="muted">暂无查询计划</span>
-        ) : (
-          plans.slice(0, 12).map((plan, index) => (
-            <div
-              className="query-row"
-              key={`${plan.sourceId}-${plan.query}-${index}`}
-            >
-              <span>{plan.sourceLabel}</span>
-              <code>{plan.query}</code>
-              <small>
-                {plan.sort} / 权重 {plan.weight}
-              </small>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function PreviewItem({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="preview-item">
-      <span>{label}</span>
-      <strong>{value}</strong>
     </div>
   );
 }
@@ -4189,19 +3915,15 @@ function buildQualitySignalItems(recommendation: Recommendation) {
   return items;
 }
 
-type RecommendationStatusFilter = "visible" | "all" | Recommendation["status"];
+type RecommendationStatusFilter =
+  "visible" | "all" | "saved" | "hidden" | "tracked";
 
 type OpportunityFilter =
   | "all"
-  | "has_opportunity"
-  | "no_opportunity"
-  | "observe"
-  | "track"
-  | "validate"
-  | "build"
-  | "ignore";
+  | Recommendation["opportunityStatus"]
+  | Recommendation["opportunityStage"];
 type GroupFilter = "all" | "grouped" | "ungrouped";
-type PreferenceFilter = "all" | "liked" | "disliked" | "unrated";
+type PreferenceFilter = "all" | Recommendation["preferenceStatus"];
 type RecommendationSortKey = "rank" | "score" | "stars" | "semantic";
 type SortDirection = "asc" | "desc";
 
@@ -4223,16 +3945,9 @@ const recommendationStatusFilterOptions: Array<{
 }> = [
   { value: "visible", label: "可见项目" },
   { value: "all", label: "全部项目" },
-  { value: "new", label: "新发现" },
-  { value: "viewed", label: "已查看" },
-  { value: "liked", label: "已喜欢" },
-  { value: "disliked", label: "不喜欢" },
+  { value: "saved", label: "已收藏" },
   { value: "tracked", label: "重点跟踪" },
-  { value: "to_validate", label: "待验证" },
-  { value: "validating", label: "验证中" },
-  { value: "monetization_ready", label: "准备变现" },
   { value: "hidden", label: "已隐藏" },
-  { value: "abandoned", label: "已放弃" },
 ];
 
 const opportunityFilterOptions: Array<{
@@ -4240,13 +3955,15 @@ const opportunityFilterOptions: Array<{
   label: string;
 }> = [
   { value: "all", label: "全部机会" },
-  { value: "has_opportunity", label: "有机会" },
-  { value: "no_opportunity", label: "无机会" },
-  { value: "observe", label: "观察" },
-  { value: "track", label: "跟踪" },
-  { value: "validate", label: "待验证" },
-  { value: "build", label: "准备变现" },
-  { value: "ignore", label: "放弃" },
+  { value: "qualified", label: "符合机会条件" },
+  { value: "unassessed", label: "待评估" },
+  { value: "not_qualified", label: "不符合条件" },
+  { value: "observing", label: "观察中" },
+  { value: "pending_validation", label: "待验证" },
+  { value: "validating", label: "验证中" },
+  { value: "validated", label: "已验证" },
+  { value: "monetization_ready", label: "准备变现" },
+  { value: "abandoned", label: "已放弃" },
 ];
 
 const groupFilterOptions: Array<{ value: GroupFilter; label: string }> = [
@@ -4262,24 +3979,20 @@ const preferenceFilterOptions: Array<{
   { value: "all", label: "全部喜好" },
   { value: "liked", label: "已喜欢" },
   { value: "disliked", label: "不喜欢" },
-  { value: "unrated", label: "未表态" },
+  { value: "pending", label: "待定" },
 ];
 
 function recommendationMatchesOpportunity(
   recommendation: Recommendation,
   filter: OpportunityFilter,
 ) {
-  const action = recommendation.opportunity?.suggestedAction;
   if (filter === "all") {
     return true;
   }
-  if (filter === "has_opportunity") {
-    return Boolean(action);
-  }
-  if (filter === "no_opportunity") {
-    return !action;
-  }
-  return action === filter;
+  return (
+    recommendationOpportunityStatus(recommendation) === filter ||
+    recommendationOpportunityStage(recommendation) === filter
+  );
 }
 
 function recommendationMatchesGroup(
@@ -4307,9 +4020,15 @@ function recommendationMatchesStatus(
     return true;
   }
   if (filter === "visible") {
-    return recommendation.status !== "hidden";
+    return !recommendationIsHidden(recommendation);
   }
-  return recommendation.status === filter;
+  if (filter === "hidden") {
+    return recommendationIsHidden(recommendation);
+  }
+  if (filter === "saved") {
+    return recommendationIsSaved(recommendation);
+  }
+  return recommendationIsTracked(recommendation);
 }
 
 function recommendationMatchesPreference(
@@ -4319,12 +4038,7 @@ function recommendationMatchesPreference(
   if (filter === "all") {
     return true;
   }
-  if (filter === "unrated") {
-    return (
-      recommendation.status !== "liked" && recommendation.status !== "disliked"
-    );
-  }
-  return recommendation.status === filter;
+  return recommendationPreferenceStatus(recommendation) === filter;
 }
 
 function compareRecommendations(
@@ -4350,38 +4064,6 @@ function compareRecommendations(
       );
     case "rank":
       return direction * (left.rank - right.rank) || rankFallback;
-  }
-}
-
-function opportunityFeedbackAction(
-  recommendation: Recommendation,
-): { action: FeedbackAction; label: string } | null {
-  if (
-    recommendation.status === "hidden" ||
-    recommendation.status === "abandoned"
-  ) {
-    return null;
-  }
-  switch (recommendation.opportunity?.suggestedAction) {
-    case "validate":
-      return recommendation.status === "to_validate"
-        ? null
-        : { action: "to_validate", label: "待验证" };
-    case "build":
-      return recommendation.status === "monetization_ready"
-        ? null
-        : { action: "monetization_ready", label: "准备变现" };
-    case "track":
-      return recommendation.status === "tracked"
-        ? null
-        : { action: "track", label: "跟踪" };
-    case "ignore":
-      return { action: "abandon", label: "放弃" };
-    case "observe":
-    case undefined:
-      return recommendation.status === "liked"
-        ? null
-        : { action: "like", label: "喜欢观察" };
   }
 }
 
@@ -4488,26 +4170,194 @@ function buildOperationAlerts(
   return alerts.slice(0, 5);
 }
 
-function recommendationStatusText(status: Recommendation["status"]) {
-  switch (status) {
-    case "new":
-      return "新发现";
-    case "viewed":
-      return "已查看";
-    case "saved":
-      return "已收藏";
-    case "liked":
-      return "已喜欢";
-    case "disliked":
-      return "不喜欢";
-    case "hidden":
-      return "已隐藏";
-    case "tracked":
-      return "重点跟踪";
+function legacyStatusFromFeedbackAction(
+  action: FeedbackAction,
+  fallback: Recommendation["status"],
+): Recommendation["status"] {
+  switch (action) {
+    case "save":
+      return "saved";
+    case "unsave":
+      return fallback === "saved" ? "viewed" : fallback;
+    case "hide":
+      return "hidden";
+    case "restore":
+      return "viewed";
+    case "track":
+      return "tracked";
+    case "untrack":
+      return fallback === "tracked" ? "viewed" : fallback;
     case "to_validate":
+      return "to_validate";
+    case "validating":
+      return "validating";
+    case "mark_validated":
+      return "validating";
+    case "mark_qualified":
+    case "mark_not_qualified":
+    case "reset_qualification":
+      return fallback;
+    case "monetization_ready":
+      return "monetization_ready";
+    case "abandon":
+      return "abandoned";
+    case "reopen":
+      return fallback === "abandoned" ? "viewed" : fallback;
+    case "like":
+    case "set_liked":
+      return "liked";
+    case "dislike":
+    case "set_disliked":
+      return "disliked";
+    case "set_pending":
+      return fallback === "liked" || fallback === "disliked"
+        ? "viewed"
+        : fallback;
+  }
+}
+
+function applyRecommendationFeedback(
+  recommendation: Recommendation,
+  action: FeedbackAction,
+): Recommendation {
+  const now = new Date().toISOString();
+  const next: Recommendation = {
+    ...recommendation,
+    status: legacyStatusFromFeedbackAction(action, recommendation.status),
+  };
+  switch (action) {
+    case "like":
+    case "set_liked":
+      return { ...next, preferenceStatus: "liked" };
+    case "dislike":
+    case "set_disliked":
+      return { ...next, preferenceStatus: "disliked" };
+    case "set_pending":
+      return { ...next, preferenceStatus: "pending" };
+    case "save":
+      return { ...next, savedAt: now };
+    case "unsave":
+      return { ...next, savedAt: undefined };
+    case "hide":
+      return { ...next, hiddenAt: now };
+    case "restore":
+      return { ...next, hiddenAt: undefined };
+    case "track":
+      return { ...next, trackedAt: now };
+    case "untrack":
+      return { ...next, trackedAt: undefined };
+    case "to_validate":
+      return { ...next, opportunityStage: "pending_validation" };
+    case "validating":
+      return { ...next, opportunityStage: "validating" };
+    case "mark_validated":
+      return { ...next, opportunityStage: "validated" };
+    case "mark_qualified":
+      return { ...next, opportunityStatus: "qualified" };
+    case "mark_not_qualified":
+      return { ...next, opportunityStatus: "not_qualified" };
+    case "reset_qualification":
+      return { ...next, opportunityStatus: "unassessed" };
+    case "monetization_ready":
+      return { ...next, opportunityStage: "monetization_ready" };
+    case "abandon":
+      return { ...next, opportunityStage: "abandoned" };
+    case "reopen":
+      return { ...next, opportunityStage: "observing" };
+  }
+}
+
+function recommendationPreferenceStatus(recommendation: Recommendation) {
+  if (recommendation.preferenceStatus) return recommendation.preferenceStatus;
+  if (recommendation.status === "liked") return "liked";
+  if (recommendation.status === "disliked") return "disliked";
+  return "pending";
+}
+
+function recommendationOpportunityStatus(recommendation: Recommendation) {
+  if (recommendation.opportunityStatus) return recommendation.opportunityStatus;
+  return recommendation.opportunity ? "qualified" : "unassessed";
+}
+
+function recommendationOpportunityStage(recommendation: Recommendation) {
+  if (recommendation.opportunityStage) return recommendation.opportunityStage;
+  switch (recommendation.status) {
+    case "to_validate":
+      return "pending_validation";
+    case "validating":
+      return "validating";
+    case "monetization_ready":
+      return "monetization_ready";
+    case "abandoned":
+      return "abandoned";
+    default:
+      return "observing";
+  }
+}
+
+function recommendationIsSaved(recommendation: Recommendation) {
+  return Boolean(recommendation.savedAt) || recommendation.status === "saved";
+}
+
+function recommendationIsHidden(recommendation: Recommendation) {
+  return Boolean(recommendation.hiddenAt) || recommendation.status === "hidden";
+}
+
+function recommendationIsTracked(recommendation: Recommendation) {
+  return (
+    Boolean(recommendation.trackedAt) || recommendation.status === "tracked"
+  );
+}
+
+function recommendationCollectionStateText(recommendation: Recommendation) {
+  const states = [
+    recommendationIsSaved(recommendation) ? "已收藏" : "未收藏",
+    recommendationIsTracked(recommendation) ? "已跟踪" : "未跟踪",
+    recommendationIsHidden(recommendation) ? "已隐藏" : "展示中",
+  ];
+  return states.join("；");
+}
+
+function preferenceStatusText(status: Recommendation["preferenceStatus"]) {
+  return status === "liked"
+    ? "喜欢"
+    : status === "disliked"
+      ? "不喜欢"
+      : "待定";
+}
+
+function preferenceStatusTone(status: Recommendation["preferenceStatus"]) {
+  return status === "liked"
+    ? "tracked"
+    : status === "disliked"
+      ? "hidden"
+      : "new";
+}
+
+function opportunityStatusText(status: Recommendation["opportunityStatus"]) {
+  if (status === "qualified") return "符合条件";
+  if (status === "not_qualified") return "不符合条件";
+  return "待评估";
+}
+
+function opportunityStatusTone(status: Recommendation["opportunityStatus"]) {
+  return status === "qualified"
+    ? "tracked"
+    : status === "not_qualified"
+      ? "hidden"
+      : "new";
+}
+
+function opportunityStageText(status: Recommendation["opportunityStage"]) {
+  switch (status) {
+    case "observing":
+      return "观察中";
+    case "pending_validation":
       return "待验证";
     case "validating":
       return "验证中";
+    case "validated":
+      return "已验证";
     case "monetization_ready":
       return "准备变现";
     case "abandoned":
@@ -4515,52 +4365,17 @@ function recommendationStatusText(status: Recommendation["status"]) {
   }
 }
 
-function statusFromFeedbackAction(
-  action: FeedbackAction,
-  fallback: Recommendation["status"],
-): Recommendation["status"] {
-  switch (action) {
-    case "save":
-      return "saved";
-    case "hide":
-      return "hidden";
-    case "restore":
-      return "viewed";
-    case "track":
-      return "tracked";
-    case "to_validate":
-      return "to_validate";
-    case "validating":
-      return "validating";
-    case "monetization_ready":
-      return "monetization_ready";
-    case "abandon":
-      return "abandoned";
-    case "like":
-      return "liked";
-    case "dislike":
-      return "disliked";
-  }
-}
-
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
+function opportunityStageTone(status: Recommendation["opportunityStage"]) {
+  return status === "abandoned"
+    ? "hidden"
+    : status === "observing"
+      ? "new"
+      : "tracked";
 }
 
 function splitCsv(value: string) {
   return value
-    .split(",")
+    .split(/[,，]/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
@@ -4584,6 +4399,21 @@ function parseLanguageWeights(value: string) {
         ([language, weight]) => language && Number.isFinite(weight as number),
       ),
   ) as Record<string, number>;
+}
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
 }
 
 function SimpleStatsTable({
@@ -4752,6 +4582,7 @@ function canResumeJob(status: string) {
     "paused_by_memory",
     "paused_by_runtime",
     "retry_later",
+    "exception",
   ].includes(status);
 }
 
@@ -4765,11 +4596,78 @@ function canCompleteJob(status: string) {
 }
 
 function canArchiveJob(status: string) {
-  return ["completed", "failed"].includes(status);
+  return ["completed", "failed", "exception"].includes(status);
 }
 
-function providerName(providers: AiProvider[], id: string) {
-  return providers.find((provider) => provider.id === id)?.name ?? id;
+function missedRunPolicyText(
+  policy: DiscoveryProfile["config"]["schedule"]["missedRunPolicy"],
+) {
+  if (policy === "run_once") return "恢复后补跑一次";
+  if (policy === "resume") return "恢复未完成进度";
+  return "跳过漏跑周期";
+}
+
+function reasoningEffortText(value: AiProvider["reasoningEffort"]) {
+  return value && value !== "default" ? value : "默认";
+}
+
+function providerAvailabilityText(status?: AiProvider["availabilityStatus"]) {
+  switch (status) {
+    case "available":
+      return "可用";
+    case "cooldown":
+      return "冷却中";
+    case "blocked_auth":
+      return "认证阻断";
+    case "blocked_permission":
+      return "权限阻断";
+    case "invalid_config":
+      return "配置无效";
+    case "recovering":
+      return "恢复检测中";
+    default:
+      return "可用";
+  }
+}
+
+function providerAvailabilityTone(status?: AiProvider["availabilityStatus"]) {
+  return !status || status === "available"
+    ? "tracked"
+    : status === "cooldown" || status === "recovering"
+      ? "new"
+      : "hidden";
+}
+
+function providerRequiresRecovery(provider: AiProvider) {
+  return [
+    "blocked_auth",
+    "blocked_permission",
+    "invalid_config",
+    "cooldown",
+  ].includes(provider.availabilityStatus);
+}
+
+function readApiError(body: unknown, fallback: string) {
+  if (!body || typeof body !== "object") return fallback;
+  const candidate = body as {
+    error?: unknown;
+    errorMessage?: unknown;
+    message?: unknown;
+    details?: unknown;
+  };
+  for (const value of [
+    candidate.errorMessage,
+    candidate.error,
+    candidate.message,
+    candidate.details,
+  ]) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return fallback;
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
 }
 
 function formatTime(value: string) {
@@ -4791,92 +4689,8 @@ function formatTokenTotal(value: number, unknownJobCount: number) {
   return unknownJobCount > 0 ? `${known} / ${unknownJobCount} 未知` : known;
 }
 
-function providerUsageText(provider: AiProvider, profiles: DiscoveryProfile[]) {
-  const usedBy = profiles.filter(
-    (profile) =>
-      profile.config.ai.chatProviderId === provider.id ||
-      profile.config.ai.embeddingProviderId === provider.id,
-  );
-  return usedBy.length
-    ? usedBy.map((profile) => profile.name).join(", ")
-    : "未被使用";
-}
-
-function sourceAuthorityText(authority: string) {
-  switch (authority) {
-    case "github_official":
-      return "GitHub 官方";
-    case "third_party":
-      return "第三方权威";
-    case "derived":
-      return "自算信号";
-    default:
-      return authority;
-  }
-}
-
-function sourceCapabilityText(capability: string) {
-  switch (capability) {
-    case "implemented":
-      return "已接入扫描";
-    case "planned_adapter":
-      return "待接入 adapter，可保存";
-    case "quality_signal":
-      return "质量评分信号，可保存";
-    default:
-      return capability;
-  }
-}
-
 function sectionTitle(section: Section) {
   return sectionLabel(section);
-}
-
-function mergePreferenceState(
-  current: DiscoveryProfile["config"]["preferences"],
-  generated: GeneratedPreferences,
-  mode: "merge" | "replace",
-): DiscoveryProfile["config"]["preferences"] {
-  if (mode === "replace") {
-    return {
-      keywords: uniqueStrings(generated.keywords).slice(0, 10),
-      topics: uniqueStrings(generated.topics).slice(0, 10),
-      languages: limitLanguages(generated.languages),
-      excludeKeywords: uniqueStrings(generated.excludeKeywords).slice(0, 10),
-      minStars: generated.minStars,
-      pushedWithinDays: generated.pushedWithinDays,
-      excludeArchived: generated.excludeArchived,
-      excludeForks: generated.excludeForks,
-    };
-  }
-
-  return {
-    keywords: uniqueStrings([...current.keywords, ...generated.keywords]).slice(
-      0,
-      10,
-    ),
-    topics: uniqueStrings([...current.topics, ...generated.topics]).slice(
-      0,
-      10,
-    ),
-    languages: limitLanguages({ ...current.languages, ...generated.languages }),
-    excludeKeywords: uniqueStrings([
-      ...current.excludeKeywords,
-      ...generated.excludeKeywords,
-    ]).slice(0, 10),
-    minStars: generated.minStars || current.minStars,
-    pushedWithinDays: generated.pushedWithinDays || current.pushedWithinDays,
-    excludeArchived: generated.excludeArchived,
-    excludeForks: generated.excludeForks,
-  };
-}
-
-function uniqueStrings(values: string[]) {
-  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
-}
-
-function limitLanguages(values: Record<string, number>) {
-  return Object.fromEntries(Object.entries(values).slice(0, 6));
 }
 
 function sectionSubtitle(section: Section) {

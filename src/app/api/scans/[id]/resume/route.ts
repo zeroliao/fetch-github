@@ -5,6 +5,7 @@ import {
   getAppSettings,
   getScanJob,
   requeueRunningCandidates,
+  resolveAiProvider,
   updateScanJob,
 } from "@/server/store";
 
@@ -31,6 +32,23 @@ export async function POST(
   if (existing.status === "completed") {
     return NextResponse.json(existing);
   }
+  if (existing.status === "exception") {
+    const requiredKind =
+      existing.stage === "embed" || existing.stage === "rank"
+        ? "embedding"
+        : "chat";
+    if (!(await resolveAiProvider(requiredKind))) {
+      return NextResponse.json(
+        {
+          error:
+            requiredKind === "chat"
+              ? "没有可用的 Chat/LLM 模型。请先检测并恢复模型，再恢复扫描。"
+              : "没有可用的 Embedding 模型。请先检测并恢复模型，再恢复扫描。",
+        },
+        { status: 409 },
+      );
+    }
+  }
 
   await requeueRunningCandidates(id);
   await updateScanJob(id, {
@@ -43,11 +61,7 @@ export async function POST(
     finishedAt: undefined,
   });
 
-  const job = await resumeScanJob({
-    jobId: id,
-    maxPages: 1,
-    maxProfileBatches: 1,
-  });
+  const job = await resumeScanJob({ jobId: id });
 
   return NextResponse.json(job ?? existing);
 }

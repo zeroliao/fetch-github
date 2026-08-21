@@ -1,13 +1,51 @@
-import type { OpportunityAnalysis, OpportunityProfile, RepoSummary } from "./types";
+import type {
+  OpportunityAnalysis,
+  OpportunityProfile,
+  RepoSummary,
+} from "./types";
 import { clampScore } from "./scoring";
 
 export const defaultOpportunityProfile: OpportunityProfile = {
-  goals: ["SaaS", "私有化部署服务", "AI Agent 工具", "二次开发/集成服务", "内容/课程/咨询"],
-  targetCustomers: ["开发者", "中小企业", "企业研发团队", "内容创作者", "AI 工具用户"],
-  monetizationChannels: ["订阅制 SaaS", "托管版", "私有化部署", "插件/模板", "咨询与实施", "课程/内容"],
-  preferredAdvantages: ["可中文化", "可托管", "可私有化", "可集成现有工作流", "低成本交付", "开发者愿意付费"],
-  excludeSignals: ["纯学术实验", "加密货币/博彩", "版权风险高", "过度依赖闭源平台", "长期不维护"],
-  minOpportunityScore: 0.55
+  brief:
+    "寻找能够面向开发者或企业交付的 SaaS、托管版、私有化部署、AI Agent、集成服务或内容产品机会，优先考虑可中文化、可集成和低成本交付的项目。",
+  goals: [
+    "SaaS",
+    "私有化部署服务",
+    "AI Agent 工具",
+    "二次开发/集成服务",
+    "内容/课程/咨询",
+  ],
+  targetCustomers: [
+    "开发者",
+    "中小企业",
+    "企业研发团队",
+    "内容创作者",
+    "AI 工具用户",
+  ],
+  monetizationChannels: [
+    "订阅制 SaaS",
+    "托管版",
+    "私有化部署",
+    "插件/模板",
+    "咨询与实施",
+    "课程/内容",
+  ],
+  preferredAdvantages: [
+    "可中文化",
+    "可托管",
+    "可私有化",
+    "可集成现有工作流",
+    "低成本交付",
+    "开发者愿意付费",
+  ],
+  excludeSignals: [
+    "纯学术实验",
+    "加密货币/博彩",
+    "版权风险高",
+    "过度依赖闭源平台",
+    "长期不维护",
+  ],
+  minOpportunityScore: 0.55,
 };
 
 const monetizationKeywords = [
@@ -32,62 +70,115 @@ const monetizationKeywords = [
   "monitoring",
   "analytics",
   "knowledge",
-  "search"
+  "search",
 ];
 
 const difficultKeywords = ["research", "paper", "benchmark", "dataset", "demo"];
 
 export function normalizeOpportunityProfile(
-  value: Partial<OpportunityProfile> | undefined
+  value: Partial<OpportunityProfile> | undefined,
 ): OpportunityProfile {
   return {
+    brief: normalizeBrief(value?.brief, value),
     goals: nonEmptyList(value?.goals, defaultOpportunityProfile.goals),
-    targetCustomers: nonEmptyList(value?.targetCustomers, defaultOpportunityProfile.targetCustomers),
-    monetizationChannels: nonEmptyList(value?.monetizationChannels, defaultOpportunityProfile.monetizationChannels),
-    preferredAdvantages: nonEmptyList(value?.preferredAdvantages, defaultOpportunityProfile.preferredAdvantages),
-    excludeSignals: nonEmptyList(value?.excludeSignals, defaultOpportunityProfile.excludeSignals),
-    minOpportunityScore: clampScore(Number(value?.minOpportunityScore ?? defaultOpportunityProfile.minOpportunityScore))
+    targetCustomers: nonEmptyList(
+      value?.targetCustomers,
+      defaultOpportunityProfile.targetCustomers,
+    ),
+    monetizationChannels: nonEmptyList(
+      value?.monetizationChannels,
+      defaultOpportunityProfile.monetizationChannels,
+    ),
+    preferredAdvantages: nonEmptyList(
+      value?.preferredAdvantages,
+      defaultOpportunityProfile.preferredAdvantages,
+    ),
+    excludeSignals: nonEmptyList(
+      value?.excludeSignals,
+      defaultOpportunityProfile.excludeSignals,
+    ),
+    minOpportunityScore: clampScore(
+      Number(
+        value?.minOpportunityScore ??
+          defaultOpportunityProfile.minOpportunityScore,
+      ),
+    ),
   };
+}
+
+function normalizeBrief(
+  brief: string | undefined,
+  value: Partial<OpportunityProfile> | undefined,
+) {
+  const normalized = brief?.trim();
+  if (normalized) {
+    return normalized;
+  }
+
+  const legacy = [
+    ...(value?.goals ?? []),
+    ...(value?.targetCustomers ?? []),
+    ...(value?.preferredAdvantages ?? []),
+  ]
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return legacy.length ? legacy.join("；") : defaultOpportunityProfile.brief;
 }
 
 export function scoreOpportunitySignals(
   repo: RepoSummary,
   profile: OpportunityProfile,
-  technicalScore: number
+  technicalScore: number,
 ) {
-  const text = `${repo.fullName} ${repo.description} ${repo.topics.join(" ")} ${repo.primaryLanguage}`.toLowerCase();
-  const monetizationHits = monetizationKeywords.filter((keyword) => text.includes(keyword)).length;
-  const preferredHits = profile.preferredAdvantages.filter((item) =>
-    text.includes(toSearchToken(item))
+  const text =
+    `${repo.fullName} ${repo.description} ${repo.topics.join(" ")} ${repo.primaryLanguage}`.toLowerCase();
+  const monetizationHits = monetizationKeywords.filter((keyword) =>
+    text.includes(keyword),
   ).length;
-  const difficultHits = difficultKeywords.filter((keyword) => text.includes(keyword)).length;
+  const preferredHits = profile.preferredAdvantages.filter((item) =>
+    text.includes(toSearchToken(item)),
+  ).length;
+  const difficultHits = difficultKeywords.filter((keyword) =>
+    text.includes(keyword),
+  ).length;
   const starScore = Math.min(1, Math.log10(repo.stars + 1) / 5);
   const forkScore = Math.min(1, Math.log10(repo.forks + 1) / 4);
   const freshnessScore = freshness(repo.pushedAt);
 
-  const monetizationScore = clampScore(monetizationHits * 0.08 + preferredHits * 0.06 + starScore * 0.25);
-  const growthSignal = clampScore(freshnessScore * 0.45 + starScore * 0.35 + forkScore * 0.2);
+  const monetizationScore = clampScore(
+    monetizationHits * 0.08 + preferredHits * 0.06 + starScore * 0.25,
+  );
+  const growthSignal = clampScore(
+    freshnessScore * 0.45 + starScore * 0.35 + forkScore * 0.2,
+  );
   const executionFit = clampScore(
     (repo.primaryLanguage === "TypeScript" ? 0.18 : 0) +
       (repo.primaryLanguage === "Python" ? 0.14 : 0) +
       (text.includes("self-hosted") ? 0.16 : 0) +
-      (text.includes("api") || text.includes("sdk") || text.includes("cli") ? 0.14 : 0) +
-      Math.max(0, 0.25 - difficultHits * 0.08)
+      (text.includes("api") || text.includes("sdk") || text.includes("cli")
+        ? 0.14
+        : 0) +
+      Math.max(0, 0.25 - difficultHits * 0.08),
   );
   const differentiationSpace = clampScore(
     (text.includes("open source") || text.includes("open-source") ? 0.18 : 0) +
       (text.includes("self-hosted") ? 0.12 : 0) +
       (text.includes("workflow") || text.includes("automation") ? 0.12 : 0) +
-      (text.includes("chinese") || /中文|国内|小红书|抖音|微信/.test(repo.description) ? 0.16 : 0) +
-      0.18
+      (text.includes("chinese") ||
+      /中文|国内|小红书|抖音|微信/.test(repo.description)
+        ? 0.16
+        : 0) +
+      0.18,
   );
-  const technicalQuality = clampScore(technicalScore * 0.65 + starScore * 0.25 + freshnessScore * 0.1);
+  const technicalQuality = clampScore(
+    technicalScore * 0.65 + starScore * 0.25 + freshnessScore * 0.1,
+  );
   const opportunityScore = clampScore(
     monetizationScore * 0.28 +
       growthSignal * 0.18 +
       executionFit * 0.2 +
       differentiationSpace * 0.19 +
-      technicalQuality * 0.15
+      technicalQuality * 0.15,
   );
 
   return {
@@ -96,14 +187,14 @@ export function scoreOpportunitySignals(
     growthSignal,
     executionFit,
     differentiationSpace,
-    technicalQuality
+    technicalQuality,
   };
 }
 
 export function buildHeuristicOpportunityAnalysis(
   repo: RepoSummary,
   profile: OpportunityProfile,
-  scores: ReturnType<typeof scoreOpportunitySignals>
+  scores: ReturnType<typeof scoreOpportunitySignals>,
 ): OpportunityAnalysis {
   const type = inferOpportunityType(repo);
   const targetCustomers = profile.targetCustomers.slice(0, 3);
@@ -122,18 +213,22 @@ export function buildHeuristicOpportunityAnalysis(
     validationSteps: [
       "确认目标用户是否已经在 issue、讨论区或同类产品中表达强需求。",
       "用 1 个垂直场景包装最小可售卖方案，验证是否有人愿意付费。",
-      "评估中文化、托管版、私有化部署或集成服务的差异化空间。"
+      "评估中文化、托管版、私有化部署或集成服务的差异化空间。",
     ],
     suggestedAction: suggestAction(scores.opportunityScore),
     evidence: [
       `${repo.primaryLanguage} 技术栈，当前约 ${repo.stars.toLocaleString("zh-CN")} 个 stars。`,
-      repo.pushedAt ? `最近推送：${new Date(repo.pushedAt).toLocaleDateString("zh-CN")}。` : "",
-      `${type} 方向可结合 ${monetizationPaths.slice(0, 2).join("、")} 做商业验证。`
-    ].filter(Boolean)
+      repo.pushedAt
+        ? `最近推送：${new Date(repo.pushedAt).toLocaleDateString("zh-CN")}。`
+        : "",
+      `${type} 方向可结合 ${monetizationPaths.slice(0, 2).join("、")} 做商业验证。`,
+    ].filter(Boolean),
   };
 }
 
-export function opportunityActionText(action: OpportunityAnalysis["suggestedAction"]) {
+export function opportunityActionText(
+  action: OpportunityAnalysis["suggestedAction"],
+) {
   switch (action) {
     case "build":
       return "立项验证";
@@ -149,22 +244,56 @@ export function opportunityActionText(action: OpportunityAnalysis["suggestedActi
 }
 
 function inferOpportunityType(repo: RepoSummary) {
-  const text = `${repo.fullName} ${repo.description} ${repo.topics.join(" ")}`.toLowerCase();
-  if (text.includes("mcp") || text.includes("plugin") || text.includes("extension")) return "插件/扩展机会";
-  if (text.includes("self-hosted") || text.includes("deploy")) return "私有化部署机会";
-  if (text.includes("api") || text.includes("sdk") || text.includes("integration")) return "集成/API 机会";
-  if (text.includes("agent") || text.includes("workflow") || text.includes("automation")) return "Agent 自动化机会";
-  if (text.includes("course") || text.includes("tutorial") || text.includes("awesome")) return "内容/课程机会";
+  const text =
+    `${repo.fullName} ${repo.description} ${repo.topics.join(" ")}`.toLowerCase();
+  if (
+    text.includes("mcp") ||
+    text.includes("plugin") ||
+    text.includes("extension")
+  )
+    return "插件/扩展机会";
+  if (text.includes("self-hosted") || text.includes("deploy"))
+    return "私有化部署机会";
+  if (
+    text.includes("api") ||
+    text.includes("sdk") ||
+    text.includes("integration")
+  )
+    return "集成/API 机会";
+  if (
+    text.includes("agent") ||
+    text.includes("workflow") ||
+    text.includes("automation")
+  )
+    return "Agent 自动化机会";
+  if (
+    text.includes("course") ||
+    text.includes("tutorial") ||
+    text.includes("awesome")
+  )
+    return "内容/课程机会";
   return "SaaS/工具机会";
 }
 
-function inferMonetizationPaths(repo: RepoSummary, profile: OpportunityProfile) {
-  const text = `${repo.fullName} ${repo.description} ${repo.topics.join(" ")}`.toLowerCase();
+function inferMonetizationPaths(
+  repo: RepoSummary,
+  profile: OpportunityProfile,
+) {
+  const text =
+    `${repo.fullName} ${repo.description} ${repo.topics.join(" ")}`.toLowerCase();
   const paths = [];
-  if (text.includes("self-hosted") || text.includes("deploy")) paths.push("私有化部署");
-  if (text.includes("api") || text.includes("sdk") || text.includes("mcp")) paths.push("插件/API 集成");
-  if (text.includes("workflow") || text.includes("automation") || text.includes("agent")) paths.push("自动化方案服务");
-  if (text.includes("dashboard") || text.includes("platform")) paths.push("托管版 SaaS");
+  if (text.includes("self-hosted") || text.includes("deploy"))
+    paths.push("私有化部署");
+  if (text.includes("api") || text.includes("sdk") || text.includes("mcp"))
+    paths.push("插件/API 集成");
+  if (
+    text.includes("workflow") ||
+    text.includes("automation") ||
+    text.includes("agent")
+  )
+    paths.push("自动化方案服务");
+  if (text.includes("dashboard") || text.includes("platform"))
+    paths.push("托管版 SaaS");
   paths.push(...profile.monetizationChannels.slice(0, 3));
   return [...new Set(paths)].slice(0, 5);
 }

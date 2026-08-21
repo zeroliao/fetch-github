@@ -2,6 +2,21 @@ import os from "node:os";
 import type { DiscoveryProfile, JobStage, ResourceEvent } from "@/lib/types";
 import { recordResourceEvent } from "./store";
 
+const DEFAULT_MIN_AVAILABLE_MEMORY_MB = 512;
+
+const STAGE_MEMORY_BUDGET: Record<
+  JobStage,
+  { estimatedMbPerItem: number; maxBatchSize: number }
+> = {
+  collect: { estimatedMbPerItem: 32, maxBatchSize: 4 },
+  profile: { estimatedMbPerItem: 24, maxBatchSize: 64 },
+  document: { estimatedMbPerItem: 64, maxBatchSize: 16 },
+  embed: { estimatedMbPerItem: 96, maxBatchSize: 8 },
+  llm: { estimatedMbPerItem: 128, maxBatchSize: 4 },
+  rank: { estimatedMbPerItem: 32, maxBatchSize: 32 },
+  sync: { estimatedMbPerItem: 48, maxBatchSize: 16 },
+};
+
 export interface ResourceDecision {
   status: ResourceEvent["status"];
   batchSize: number;
@@ -14,17 +29,16 @@ export interface ResourceDecision {
 
 export function evaluateResourcePolicy(
   profile: DiscoveryProfile,
-  stage: JobStage
+  stage: JobStage,
 ): ResourceDecision {
   const memoryUsage = process.memoryUsage();
   const totalMb = bytesToMb(os.totalmem());
   const availableMb = bytesToMb(os.freemem());
   const rssMb = bytesToMb(memoryUsage.rss);
   const heapUsedMb = bytesToMb(memoryUsage.heapUsed);
-  const configuredBatch = profile.config.resourcePolicy.execution.batchSize;
-  const { memory, execution, mode } = profile.config.resourcePolicy;
+  const minAvailableMb = resolveMinAvailableMemoryMb(profile);
 
-  if (execution.pauseOnPressure && availableMb <= memory.criticalAvailableMb) {
+  if (availableMb <= minAvailableMb) {
     return {
       status: "paused_by_memory",
       batchSize: 0,
@@ -32,52 +46,55 @@ export function evaluateResourcePolicy(
       rssMb,
       heapUsedMb,
       totalMb,
-      reason: `可用内存 ${availableMb}MB 低于 critical ${memory.criticalAvailableMb}MB，暂停 ${stage} 阶段。`
+      reason: `可用内存 ${availableMb}MB 不高于最低要求 ${minAvailableMb}MB，暂停 ${stage} 阶段；内存恢复后将自动继续。`,
     };
   }
 
-  if (availableMb <= memory.minAvailableMb) {
-    return {
-      status: "throttled",
-      batchSize: Math.max(1, Math.floor(configuredBatch / 4)),
-      availableMb,
-      rssMb,
-      heapUsedMb,
-      totalMb,
-      reason: `可用内存 ${availableMb}MB 低于 min ${memory.minAvailableMb}MB，降低批量处理速度。`
-    };
-  }
-
-  if (availableMb <= memory.targetAvailableMb || mode === "complete_low_memory") {
-    return {
-      status: availableMb <= memory.targetAvailableMb ? "throttled" : "running",
-      batchSize: Math.max(1, Math.floor(configuredBatch / 2)),
-      availableMb,
-      rssMb,
-      heapUsedMb,
-      totalMb,
-      reason:
-        availableMb <= memory.targetAvailableMb
-          ? `可用内存 ${availableMb}MB 低于 target ${memory.targetAvailableMb}MB，使用小批量。`
-          : "complete_low_memory 模式使用小批量。"
-    };
-  }
+  const batchSize = calculateDynamicBatchSize(
+    availableMb,
+    minAvailableMb,
+    stage,
+  );
+  const maxBatchSize = STAGE_MEMORY_BUDGET[stage].maxBatchSize;
+  const throttled = batchSize < maxBatchSize;
 
   return {
-    status: "running",
-    batchSize: configuredBatch,
+    status: throttled ? "throttled" : "running",
+    batchSize,
     availableMb,
     rssMb,
     heapUsedMb,
     totalMb,
-    reason: "资源状态正常。"
+    reason: throttled
+      ? `当前可用内存 ${availableMb}MB，${stage} 阶段动态批量为 ${batchSize}。`
+      : `当前可用内存 ${availableMb}MB，${stage} 阶段按最大内部批量 ${batchSize} 运行。`,
   };
+}
+
+export function calculateDynamicBatchSize(
+  availableMb: number,
+  minAvailableMb: number,
+  stage: JobStage,
+) {
+  if (availableMb <= minAvailableMb) {
+    return 0;
+  }
+
+  const budget = STAGE_MEMORY_BUDGET[stage];
+  const headroomMb = availableMb - minAvailableMb;
+  return Math.max(
+    1,
+    Math.min(
+      budget.maxBatchSize,
+      Math.floor(headroomMb / budget.estimatedMbPerItem),
+    ),
+  );
 }
 
 export async function recordResourceDecision(
   jobId: string,
   stage: JobStage,
-  decision: ResourceDecision
+  decision: ResourceDecision,
 ) {
   return recordResourceEvent({
     jobId,
@@ -88,8 +105,22 @@ export async function recordResourceDecision(
     heapUsedMb: decision.heapUsedMb,
     totalMb: decision.totalMb,
     batchSize: decision.batchSize,
-    reason: decision.reason
+    reason: decision.reason,
   });
+}
+
+function resolveMinAvailableMemoryMb(profile: DiscoveryProfile) {
+  const configured = profile.config.resourcePolicy.minAvailableMemoryMb;
+  if (configured && Number.isFinite(configured) && configured > 0) {
+    return Math.round(configured);
+  }
+
+  const legacy = profile.config.resourcePolicy.memory?.minAvailableMb;
+  if (legacy && Number.isFinite(legacy) && legacy > 0) {
+    return Math.round(legacy);
+  }
+
+  return DEFAULT_MIN_AVAILABLE_MEMORY_MB;
 }
 
 function bytesToMb(value: number) {

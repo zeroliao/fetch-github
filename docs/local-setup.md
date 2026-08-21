@@ -25,6 +25,8 @@ Base URL
 模型
 API key 环境变量名
 API Key
+优先级：数值越小越先使用
+推理程度：仅 chat，可选 default/minimal/low/medium/high/xhigh
 向量维度：仅 embedding 需要
 ```
 
@@ -60,6 +62,7 @@ http://localhost:3020
 
 ```powershell
 pnpm typecheck
+pnpm test
 pnpm build
 pnpm worker:dev
 ```
@@ -70,12 +73,15 @@ pnpm worker:dev
 - `发现配置` 可以用自然语言生成发现条件。系统会先把中文需求解析为关键词、Topics、语言权重、排除词、最低 stars 和活跃时间，再由代码生成合法 GitHub Search 查询。
 - 同一条 GitHub Search query 中多个普通关键词通常会缩小召回范围；系统默认把多个关键词拆成多条 query，提高候选召回，再通过规则分、上下文分、LLM 分和反馈分排序。
 - `我的 GitHub` 可以点击 `同步 GitHub`，同步 owned/starred repositories；私有仓库默认不参与推荐上下文。
-- `发现配置` 可以启用/停用权威扫描源，并调整来源权重；当前已接入扫描的是 GitHub Search、Topics、高 Star 和近期活跃查询。
+- `发现配置` 保留核心偏好、机会 Brief、最低机会分、最低可用内存和漏跑策略；扫描不再受候选数量、运行分钟或各阶段 Top K 截断。
+- worker 按实时可用内存动态调整批量，并在内存恢复后自动继续；启用的发现配置会按内部固定周期持续产生扫描任务。
 - AI 配置集中在页面里完成，密钥值只保存在本地 `.env.local`。
 - 登录后可以点击右上角锁形按钮修改管理员密码；新密码会更新 `.env.local` 中的 `ADMIN_PASSWORD_HASH`。
-- Chat 模型和 Embedding 模型分开配置，但都在同一个 `AI 模型配置` 页面管理。
-- 发现配置会显式绑定一个 Chat provider 和一个 Embedding provider；被发现配置使用中的 provider 不能删除或停用。
-- 如果删除 AI 配置时报“正在被发现配置使用”，先到 `发现配置` 页面把 Chat/Embedding 绑定切换到其他已启用 provider，再删除。
+- Chat 模型和 Embedding 模型分开配置，但都在同一个 `AI 模型配置` 页面管理；同类型模型按优先级数值从小到大自动选择。
+- 删除 AI 配置使用软删除，历史 Embedding/LLM 数据仍保留，发现配置无需解绑具体 Provider。
+- `blocked_auth`、`blocked_permission` 或 `invalid_config` 表示需要人工修复。更新 API Key、权限、Base URL、模型名或参数后，点击“检测并恢复”；只有真实调用成功才会恢复为 `available`。
+- `cooldown` 表示限流、网络、超时或服务端故障的临时冷却，冷却到期后系统自动重试。
+- 连续 3 次模型 JSON 解析或 Schema 校验失败会在当前扫描任务内轮换下一个同类型模型；全部耗尽时扫描进入 `exception`，恢复模型后再到扫描任务页手动恢复。
 - `知识库同步` 可以点击 `同步 L4`，系统会生成派生知识内容 hash，并写入 `knowledge_syncs` 状态。
 - 知识库目标选择 `local-derived-index` 时只记录 fetchGithub 派生索引状态。
 - 知识库目标选择 `ai-knowledge-base` 时会写入 `AI_KNOWLEDGE_BASE_DIR/derived/fetchGithub`；未配置目录会记录为失败，不影响 fetchGithub 源数据。

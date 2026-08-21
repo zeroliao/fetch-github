@@ -6,7 +6,7 @@ import type {
   KnowledgeSync,
   Recommendation,
   ScanJob,
-  UserGitHubRepo
+  UserGitHubRepo,
 } from "./types";
 import { defaultDiscoverySources } from "./discoverySources";
 import { defaultOpportunityProfile } from "./opportunity";
@@ -23,14 +23,16 @@ export const seedProviders: AiProvider[] = [
     baseUrl: "https://api.example.com/v1",
     apiKeyEnv: "CHAT_API_KEY",
     model: "chat-model",
+    priority: 100,
     enabled: false,
+    availabilityStatus: "available",
     rateLimit: {
       requestsPerMinute: 30,
-      tokensPerMinute: 60000
+      tokensPerMinute: 60000,
     },
     timeoutSeconds: 60,
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
   },
   {
     id: "default_embedding",
@@ -41,15 +43,17 @@ export const seedProviders: AiProvider[] = [
     apiKeyEnv: "EMBEDDING_API_KEY",
     model: "embedding-model",
     dimensions: 1536,
+    priority: 100,
     enabled: false,
+    availabilityStatus: "available",
     rateLimit: {
       requestsPerMinute: 120,
-      tokensPerMinute: 300000
+      tokensPerMinute: 300000,
     },
     timeoutSeconds: 30,
     createdAt: now,
-    updatedAt: now
-  }
+    updatedAt: now,
+  },
 ];
 
 export const seedProfiles: DiscoveryProfile[] = [
@@ -59,60 +63,34 @@ export const seedProfiles: DiscoveryProfile[] = [
     enabled: true,
     config: {
       schedule: {
-        type: "cron",
-        cron: "0 9 * * *",
-        timezone: "Asia/Shanghai",
-        startAt: "2026-06-08 09:00:00",
-        maxRuntimeMinutes: 120,
-        missedRunPolicy: "skip"
+        missedRunPolicy: "skip",
       },
       limits: {
-        sourceLimitPerQuery: 100,
-        maxCandidates: 5000,
-        ruleFilterTopK: 1000,
-        detailFetchTopK: 300,
-        embeddingTopK: 1000,
-        llmAnalyzeTopK: 100,
         semanticFitThreshold: 0.42,
-        finalReportTopK: 30
       },
       preferences: {
         keywords: ["agent", "llm", "rag", "workflow"],
         topics: ["ai", "developer-tools", "automation"],
         languages: {
           TypeScript: 1.2,
-          Python: 1.1
+          Python: 1.1,
         },
         excludeKeywords: ["crypto", "gambling"],
         minStars: 100,
         pushedWithinDays: 180,
         excludeArchived: true,
-        excludeForks: true
+        excludeForks: true,
       },
       opportunity: defaultOpportunityProfile,
       sources: defaultDiscoverySources(),
       resourcePolicy: {
-        mode: "complete_low_memory",
-        memory: {
-          targetAvailableMb: 1024,
-          minAvailableMb: 512,
-          criticalAvailableMb: 256
-        },
-        execution: {
-          batchSize: 10,
-          maxConcurrency: 1,
-          checkpointEveryItems: 10,
-          pauseOnPressure: true
-        }
+        minAvailableMemoryMb: 512,
       },
-      ai: {
-        chatProviderId: "default_chat",
-        embeddingProviderId: "default_embedding"
-      }
+      ai: {},
     },
     createdAt: now,
-    updatedAt: now
-  }
+    updatedAt: now,
+  },
 ];
 
 export const seedGithubRepos: UserGitHubRepo[] = [
@@ -126,8 +104,8 @@ export const seedGithubRepos: UserGitHubRepo[] = [
     visibility: "public",
     readmeSummary: "用于扫描 GitHub 项目并生成个性化推荐的系统。",
     selectedForContext: true,
-    lastSyncedAt: now
-  }
+    lastSyncedAt: now,
+  },
 ];
 
 export const seedGithubAccounts: GithubAccount[] = [
@@ -136,8 +114,8 @@ export const seedGithubAccounts: GithubAccount[] = [
     username: "your-name",
     tokenRef: "GITHUB_TOKEN",
     connectedAt: now,
-    lastSyncedAt: now
-  }
+    lastSyncedAt: now,
+  },
 ];
 
 export const seedKnowledgeSyncs: KnowledgeSync[] = [];
@@ -163,7 +141,7 @@ export const seedRecommendations: Recommendation[] = [
       pushedAt: "2026-06-06T10:00:00.000Z",
       updatedAt: "2026-06-06T10:00:00.000Z",
       archived: false,
-      fork: false
+      fork: false,
     },
     scores: {
       rule: 0.86,
@@ -177,9 +155,10 @@ export const seedRecommendations: Recommendation[] = [
       differentiation: 0.72,
       technicalQuality: 0.84,
       final: 0.86,
-      scoreVersion: "opportunity-radar-v1"
+      scoreVersion: "opportunity-radar-v1",
     },
-    summary: "这是一个 TypeScript AI SDK，适合作为 fetchGithub 构建模型接入层、推荐解释和前端交互时的参考项目。",
+    summary:
+      "这是一个 TypeScript AI SDK，适合作为 fetchGithub 构建模型接入层、推荐解释和前端交互时的参考项目。",
     opportunity: {
       type: "集成/API 机会",
       score: 0.82,
@@ -190,14 +169,17 @@ export const seedRecommendations: Recommendation[] = [
       technicalQuality: 0.84,
       targetCustomers: ["开发者", "企业研发团队", "AI 工具用户"],
       monetizationPaths: ["插件/API 集成", "托管版 SaaS", "咨询与实施"],
-      validationSteps: ["验证中文开发者对统一模型接入层的付费意愿。", "包装一个小型托管 Demo。"],
+      validationSteps: [
+        "验证中文开发者对统一模型接入层的付费意愿。",
+        "包装一个小型托管 Demo。",
+      ],
       suggestedAction: "validate",
-      evidence: ["生态信号强，适合观察 AI SDK 商业化形态。"]
+      evidence: ["生态信号强，适合观察 AI SDK 商业化形态。"],
     },
     reasons: [
       "符合 TypeScript 和 AI 开发工具方向的偏好。",
       "可以参考它的模型 provider 接入方式和前端交互模式。",
-      "生态信号强，维护活跃度较高。"
+      "生态信号强，维护活跃度较高。",
     ],
     risks: ["生态覆盖面较大，MVP 阶段接入时需要控制范围。"],
     matchedPreferences: ["ai", "developer-tools", "TypeScript"],
@@ -206,11 +188,14 @@ export const seedRecommendations: Recommendation[] = [
       {
         fullName: "your-name/fetchGithub",
         reason: "可作为 Chat provider 接入和 AI 结果展示的参考。",
-        score: 0.82
-      }
+        score: 0.82,
+      },
     ],
+    preferenceStatus: "pending",
+    opportunityStatus: "qualified",
+    opportunityStage: "observing",
     status: "new",
-    createdAt: now
+    createdAt: now,
   },
   {
     id: "rec-langchain",
@@ -232,7 +217,7 @@ export const seedRecommendations: Recommendation[] = [
       pushedAt: "2026-06-05T18:00:00.000Z",
       updatedAt: "2026-06-05T18:00:00.000Z",
       archived: false,
-      fork: false
+      fork: false,
     },
     scores: {
       rule: 0.78,
@@ -246,9 +231,10 @@ export const seedRecommendations: Recommendation[] = [
       differentiation: 0.65,
       technicalQuality: 0.78,
       final: 0.77,
-      scoreVersion: "opportunity-radar-v1"
+      scoreVersion: "opportunity-radar-v1",
     },
-    summary: "这是一个覆盖面很广的 LLM 应用框架，适合用来理解 Agent、RAG 和 AI 工作流生态。",
+    summary:
+      "这是一个覆盖面很广的 LLM 应用框架，适合用来理解 Agent、RAG 和 AI 工作流生态。",
     opportunity: {
       type: "Agent 自动化机会",
       score: 0.74,
@@ -259,14 +245,17 @@ export const seedRecommendations: Recommendation[] = [
       technicalQuality: 0.78,
       targetCustomers: ["企业研发团队", "AI 工具用户", "开发者"],
       monetizationPaths: ["自动化方案服务", "私有化部署", "课程/内容"],
-      validationSteps: ["选择一个垂直 Agent 场景做需求访谈。", "评估中文化模板和交付服务空间。"],
+      validationSteps: [
+        "选择一个垂直 Agent 场景做需求访谈。",
+        "评估中文化模板和交付服务空间。",
+      ],
       suggestedAction: "track",
-      evidence: ["生态规模大，可作为市场信号和竞品参考。"]
+      evidence: ["生态规模大，可作为市场信号和竞品参考。"],
     },
     reasons: [
       "在 LLM、Agent 和 RAG 主题上匹配度较高。",
       "流行度高，生态相关性强。",
-      "适合作为 AI 工作流项目推荐时的对照样本。"
+      "适合作为 AI 工作流项目推荐时的对照样本。",
     ],
     risks: ["issue 数量较高，可能意味着使用和维护复杂度也较高。"],
     matchedPreferences: ["llm", "rag", "agents", "Python"],
@@ -275,12 +264,15 @@ export const seedRecommendations: Recommendation[] = [
       {
         fullName: "your-name/fetchGithub",
         reason: "有助于判断 fetchGithub 发现的 AI 工作流项目类型。",
-        score: 0.7
-      }
+        score: 0.7,
+      },
     ],
+    preferenceStatus: "pending",
+    opportunityStatus: "qualified",
+    opportunityStage: "observing",
     status: "new",
-    createdAt: now
-  }
+    createdAt: now,
+  },
 ];
 
 export const seedJobs: ScanJob[] = [
@@ -290,7 +282,7 @@ export const seedJobs: ScanJob[] = [
     type: "first_scan",
     status: "throttled",
     stage: "profile",
-    maxCandidates: 5000,
+    maxCandidates: 0,
     fetchedCount: 340,
     processedCount: 210,
     analyzedCount: 24,
@@ -300,8 +292,8 @@ export const seedJobs: ScanJob[] = [
     candidateCount: 210,
     failedCandidateCount: 0,
     startedAt: now,
-    createdAt: now
-  }
+    createdAt: now,
+  },
 ];
 
 export const seedSnapshot: DashboardSnapshot = {
@@ -323,7 +315,7 @@ export const seedSnapshot: DashboardSnapshot = {
       totalJobs: 0,
       unknownJobCount: 0,
       totalTokens: 0,
-      estimatedCostUsd: 0
-    }
-  }
+      estimatedCostUsd: 0,
+    },
+  },
 };

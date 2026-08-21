@@ -1,4 +1,13 @@
 export type ProviderKind = "chat" | "embedding";
+export type ProviderAvailabilityStatus =
+  | "available"
+  | "cooldown"
+  | "blocked_auth"
+  | "blocked_permission"
+  | "invalid_config"
+  | "recovering";
+export type ReasoningEffort =
+  "default" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export type JobStatus =
   | "pending"
   | "running"
@@ -8,7 +17,8 @@ export type JobStatus =
   | "paused_by_runtime"
   | "retry_later"
   | "completed"
-  | "failed";
+  | "failed"
+  | "exception";
 
 export type JobStage =
   "collect" | "profile" | "document" | "embed" | "llm" | "rank" | "sync";
@@ -24,21 +34,44 @@ export type ScanFailureCode =
   | "ai_rate_limit"
   | "ai_timeout"
   | "ai_network"
+  | "ai_models_exhausted"
   | "database_unavailable"
   | "unknown";
 
 export type FeedbackAction =
   | "save"
+  | "unsave"
   | "hide"
   | "restore"
   | "like"
   | "dislike"
+  | "set_pending"
+  | "set_liked"
+  | "set_disliked"
   | "track"
+  | "untrack"
   | "to_validate"
   | "validating"
+  | "mark_validated"
+  | "mark_qualified"
+  | "mark_not_qualified"
+  | "reset_qualification"
   | "monetization_ready"
-  | "abandon";
+  | "abandon"
+  | "reopen";
 export type RepoDataLevel = "L0" | "L1" | "L2" | "L3" | "L4";
+export type RepoProcessingStatus =
+  "pending" | "processing" | "processed" | "skipped" | "failed" | "exception";
+export type PreferenceStatus = "pending" | "liked" | "disliked";
+export type OpportunityQualification =
+  "unassessed" | "qualified" | "not_qualified";
+export type OpportunityStage =
+  | "observing"
+  | "pending_validation"
+  | "validating"
+  | "validated"
+  | "monetization_ready"
+  | "abandoned";
 export type DiscoverySourceId =
   | "github_search_preferences"
   | "github_topics"
@@ -66,7 +99,18 @@ export interface AiProvider {
   apiKeyEnv: string;
   model: string;
   dimensions?: number;
+  priority: number;
+  reasoningEffort?: ReasoningEffort;
   enabled: boolean;
+  availabilityStatus: ProviderAvailabilityStatus;
+  unavailableCode?: string;
+  unavailableReason?: string;
+  recoverySuggestion?: string;
+  unavailableAt?: string;
+  lastCheckedAt?: string;
+  recoveredAt?: string;
+  cooldownUntil?: string;
+  archivedAt?: string;
   rateLimit?: {
     requestsPerMinute?: number;
     tokensPerMinute?: number;
@@ -87,23 +131,23 @@ export interface DiscoveryProfile {
 
 export interface DiscoveryProfileConfig {
   schedule: {
-    type: "cron" | "interval";
+    type?: "cron" | "interval";
     cron?: string;
     intervalHours?: number;
-    timezone: string;
+    timezone?: string;
     startAt?: string;
-    maxRuntimeMinutes: number;
+    maxRuntimeMinutes?: number;
     missedRunPolicy: "skip" | "run_once" | "resume";
   };
   limits: {
-    sourceLimitPerQuery: number;
-    maxCandidates: number;
-    ruleFilterTopK: number;
-    detailFetchTopK: number;
-    embeddingTopK: number;
-    llmAnalyzeTopK: number;
+    sourceLimitPerQuery?: number;
+    maxCandidates?: number;
+    ruleFilterTopK?: number;
+    detailFetchTopK?: number;
+    embeddingTopK?: number;
+    llmAnalyzeTopK?: number;
     semanticFitThreshold?: number;
-    finalReportTopK: number;
+    finalReportTopK?: number;
   };
   preferences: {
     keywords: string[];
@@ -118,26 +162,28 @@ export interface DiscoveryProfileConfig {
   opportunity?: OpportunityProfile;
   sources?: DiscoverySourceConfig[];
   resourcePolicy: {
-    mode: "complete_low_memory" | "balanced" | "fast";
-    memory: {
-      targetAvailableMb: number;
-      minAvailableMb: number;
-      criticalAvailableMb: number;
+    minAvailableMemoryMb?: number;
+    mode?: "complete_low_memory" | "balanced" | "fast";
+    memory?: {
+      targetAvailableMb?: number;
+      minAvailableMb?: number;
+      criticalAvailableMb?: number;
     };
-    execution: {
-      batchSize: number;
-      maxConcurrency: number;
-      checkpointEveryItems: number;
-      pauseOnPressure: boolean;
+    execution?: {
+      batchSize?: number;
+      maxConcurrency?: number;
+      checkpointEveryItems?: number;
+      pauseOnPressure?: boolean;
     };
   };
   ai: {
-    chatProviderId: string;
-    embeddingProviderId: string;
+    chatProviderId?: string;
+    embeddingProviderId?: string;
   };
 }
 
 export interface OpportunityProfile {
+  brief?: string;
   goals: string[];
   targetCustomers: string[];
   monetizationChannels: string[];
@@ -215,6 +261,13 @@ export interface Recommendation {
     };
   };
   cluster?: RecommendationCluster;
+  preferenceStatus: PreferenceStatus;
+  opportunityStatus: OpportunityQualification;
+  opportunityStage: OpportunityStage;
+  viewedAt?: string;
+  savedAt?: string;
+  hiddenAt?: string;
+  trackedAt?: string;
   status:
     | "new"
     | "viewed"
@@ -277,6 +330,19 @@ export interface ScanJob {
   errorResolution?: string;
   archivedAt?: string;
   createdAt: string;
+}
+
+export interface RepoProcessing {
+  canonicalUrl: string;
+  repoId?: string;
+  status: RepoProcessingStatus;
+  jobId?: string;
+  skipReasonCode?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  claimedAt?: string;
+  processedAt?: string;
+  updatedAt: string;
 }
 
 export interface ScanCheckpoint {

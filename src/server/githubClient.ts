@@ -51,6 +51,31 @@ export interface SearchRepositoriesResult {
   repos: RepoSummary[];
 }
 
+export const GITHUB_SEARCH_MAX_RESULTS = 1_000;
+export const GITHUB_SEARCH_MAX_PAGE_SIZE = 100;
+
+export function isGitHubSearchPageComplete(input: {
+  page: number;
+  perPage: number;
+  returnedCount: number;
+  totalCount: number;
+}) {
+  const pageSize = Math.min(
+    GITHUB_SEARCH_MAX_PAGE_SIZE,
+    Math.max(1, Math.trunc(input.perPage)),
+  );
+  const reachableCount = Math.min(
+    GITHUB_SEARCH_MAX_RESULTS,
+    Math.max(0, Math.trunc(input.totalCount)),
+  );
+
+  return (
+    input.returnedCount < pageSize ||
+    input.page * pageSize >= reachableCount ||
+    input.page * pageSize >= GITHUB_SEARCH_MAX_RESULTS
+  );
+}
+
 export interface GitHubUserProfile {
   login: string;
   id: number;
@@ -58,11 +83,14 @@ export interface GitHubUserProfile {
 }
 
 export async function searchRepositories(
-  options: SearchRepositoriesOptions
+  options: SearchRepositoriesOptions,
 ): Promise<SearchRepositoriesResult> {
   const url = new URL("https://api.github.com/search/repositories");
   url.searchParams.set("q", options.query);
-  url.searchParams.set("per_page", String(Math.min(options.perPage, 100)));
+  url.searchParams.set(
+    "per_page",
+    String(Math.min(options.perPage, GITHUB_SEARCH_MAX_PAGE_SIZE)),
+  );
   url.searchParams.set("page", String(options.page));
   url.searchParams.set("sort", options.sort ?? "stars");
   url.searchParams.set("order", options.order ?? "desc");
@@ -72,7 +100,7 @@ export async function searchRepositories(
   if (!response.ok) {
     const body = await response.text();
     throw new Error(
-      `GitHub search failed: ${response.status} ${response.statusText} ${body}`
+      `GitHub search failed: ${response.status} ${response.statusText} ${body}`,
     );
   }
 
@@ -81,32 +109,36 @@ export async function searchRepositories(
   return {
     totalCount: data.total_count,
     incompleteResults: data.incomplete_results,
-    repos: data.items.map(mapGitHubRepo)
+    repos: data.items.map(mapGitHubRepo),
   };
 }
 
 export async function fetchRepositoryReadme(repo: RepoSummary) {
   const response = await fetchGitHub(
-    `https://api.github.com/repos/${repo.owner}/${repo.name}/readme`
+    `https://api.github.com/repos/${repo.owner}/${repo.name}/readme`,
   );
 
   if (response.status === 404) {
     return {
       content: "",
-      sourceUrl: `${repo.htmlUrl}#readme`
+      sourceUrl: `${repo.htmlUrl}#readme`,
     };
   }
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`GitHub README failed: ${response.status} ${response.statusText} ${body}`);
+    throw new Error(
+      `GitHub README failed: ${response.status} ${response.statusText} ${body}`,
+    );
   }
 
   const data = (await response.json()) as GitHubReadmeResponse;
   let content = "";
 
   if (data.content && data.encoding === "base64") {
-    content = Buffer.from(data.content.replace(/\s/g, ""), "base64").toString("utf8");
+    content = Buffer.from(data.content.replace(/\s/g, ""), "base64").toString(
+      "utf8",
+    );
   } else if (data.download_url) {
     const raw = await fetchGitHub(data.download_url);
     if (raw.ok) {
@@ -116,15 +148,17 @@ export async function fetchRepositoryReadme(repo: RepoSummary) {
 
   return {
     content,
-    sourceUrl: data.html_url ?? `${repo.htmlUrl}#readme`
+    sourceUrl: data.html_url ?? `${repo.htmlUrl}#readme`,
   };
 }
 
 export async function fetchRepositoryDetails(
   owner: string,
-  name: string
+  name: string,
 ): Promise<RepoSummary | null> {
-  const response = await fetchGitHub(`https://api.github.com/repos/${owner}/${name}`);
+  const response = await fetchGitHub(
+    `https://api.github.com/repos/${owner}/${name}`,
+  );
 
   if (response.status === 404) {
     return null;
@@ -133,7 +167,7 @@ export async function fetchRepositoryDetails(
   if (!response.ok) {
     const body = await response.text();
     throw new Error(
-      `GitHub repository lookup failed: ${response.status} ${response.statusText} ${body}`
+      `GitHub repository lookup failed: ${response.status} ${response.statusText} ${body}`,
     );
   }
 
@@ -145,14 +179,16 @@ export async function getGitHubUserProfile(): Promise<GitHubUserProfile> {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`GitHub user lookup failed: ${response.status} ${response.statusText} ${body}`);
+    throw new Error(
+      `GitHub user lookup failed: ${response.status} ${response.statusText} ${body}`,
+    );
   }
 
   const data = (await response.json()) as GitHubUserProfile;
   return {
     login: data.login,
     id: data.id,
-    name: data.name ?? null
+    name: data.name ?? null,
   };
 }
 
@@ -170,7 +206,9 @@ export async function listAuthenticatedRepositories(kind: "owned" | "starred") {
     const response = await fetchGitHub(url);
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`GitHub ${kind} repository list failed: ${response.status} ${response.statusText} ${body}`);
+      throw new Error(
+        `GitHub ${kind} repository list failed: ${response.status} ${response.statusText} ${body}`,
+      );
     }
 
     const data = (await response.json()) as GitHubRepoItem[];
@@ -190,7 +228,7 @@ export async function listAuthenticatedRepositories(kind: "owned" | "starred") {
 function buildGitHubHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
-    "User-Agent": "fetchGithub"
+    "User-Agent": "fetchGithub",
   };
 
   if (process.env.GITHUB_TOKEN) {
@@ -213,7 +251,7 @@ async function fetchGitHub(input: string | URL, init: RequestInit = {}) {
     return await fetch(input, {
       ...init,
       headers,
-      signal: controller.signal
+      signal: controller.signal,
     });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
@@ -243,6 +281,6 @@ function mapGitHubRepo(repo: GitHubRepoItem): RepoSummary {
     updatedAt: repo.updated_at,
     archived: repo.archived,
     fork: repo.fork,
-    private: repo.private
+    private: repo.private,
   };
 }

@@ -1,34 +1,40 @@
 # 功能闭环审计
 
-更新时间：2026-06-10
+更新时间：2026-08-21
 
 ## 审计结论
 
-当前项目已经具备可运行的发现工作台闭环：配置、扫描、推荐、反馈、AI 配置、GitHub 上下文同步、知识库派生同步、长任务恢复、漏跑策略、历史任务归档和运行观测均可操作并持久化。生产环境已部署到 `github.zero007.chat`。后续优化主要集中在 FastGPT 等更多外部知识库 adapter、成本价格配置 UI 和更完整的端到端测试。
+当前代码已经具备发现工作台闭环：配置、持续扫描、推荐、反馈、AI Provider 管理、GitHub 上下文、知识库派生同步、任务恢复和运行观测均有实现。本轮完成了配置简化、URL 终态去重、内存驱动执行、Provider 优先级/轮换/恢复，以及推荐状态拆轴。生产部署和真实数据库迁移不由本次代码验证结论覆盖。
 
 ## 已修复的闭环问题
 
 ### AI 配置
 
-- `AI 模型配置` 支持创建、启用、停用、删除、测试。
+- `AI 模型配置` 支持创建、启用、停用、软删除、测试和“检测并恢复”。
 - Chat 和 Embedding provider 分开配置。
-- 发现配置只能绑定已启用且类型正确的 provider。
-- 正在被发现配置使用的 provider 不能删除，也不能停用。
+- 同类型 provider 按 `priority ASC` 自动选择，发现配置不再绑定具体模型。
+- Chat provider 支持 `reasoningEffort`；非默认推理程度会发送 `reasoning_effort` 且不发送 `temperature`。
+- Provider 列表显示可用状态、不可用原因、处理建议和冷却截止时间。
+- `blocked_auth`、`blocked_permission`、`invalid_config` 由用户修复后通过真实轻量调用恢复；`cooldown` 到期后自动重新参与选择。
+- 删除改为 `enabled=false` + `archived_at` 软删除，历史 AI 结果外键不再导致删除失败。
 - API Key 值只写入 `.env.local`，数据库只保存 `apiKeyEnv`。
 - 创建表单成功后会重置，失败会显示错误。
 
 ### 发现配置
 
 - 发现配置支持创建和编辑。
-- 可编辑项包括启用状态、扫描周期、开始时间、数量限制、偏好、排除规则、资源策略和 AI 绑定。
+- 可编辑项收敛为启用状态、核心发现偏好、机会 Brief、最低机会分、最低可用内存和漏跑策略。
 - 保存后通过 `PATCH /api/profiles/[id]` 持久化。
-- AI provider 删除前可以通过发现配置页面解除绑定。
+- 旧运行时间、候选数量、各阶段 Top K 和 Provider ID 字段只保留历史数据兼容，扫描器不再消费。
 
 ### 扫描与推荐
 
 - `立即扫描` 会基于当前发现配置生成 GitHub Search 查询。
 - 发现配置支持权威来源启停和权重：GitHub Search、Topics、高 Star、近期活跃已接入扫描；GitHub Trending、Explore、OSS Insight、GH Archive、OpenSSF、ecosyste.ms 已作为来源配置/质量信号预留。
-- 扫描前校验发现配置是否存在、是否启用、AI 绑定是否有效。
+- 扫描前按 Provider 类型检查是否至少有一个当前可用模型。
+- GitHub Search 使用内部每页 100 条并持续分页到结果结束或 GitHub 1000 条硬边界，不提供用户侧数量上限。
+- 仓库处理以规范化 GitHub URL 为唯一键；`processed` 和 `skipped` 永久跳过，`failed` 和 `exception` 可被后续任务重新处理。
+- 只有 LLM 判断匹配且机会分达到阈值的项目才写入推荐；推荐数量不设上限，默认按综合分降序。
 - 扫描后刷新任务、队列和推荐列表。
 - 已完成或失败的历史扫描任务支持归档，默认任务列表不再显示已归档记录，但数据库保留审计数据。
 - GitHub 限流或 token 错误会显示更明确的提示。
@@ -36,8 +42,10 @@
 
 ### 反馈
 
-- 支持 `save`、`hide`、`like`、`dislike`、`track`。
-- `save`、`hide`、`track` 会更新推荐状态。
+- 喜好独立为 `pending`、`liked`、`disliked`，并提供“待定”操作。
+- 机会资格独立为 `unassessed`、`qualified`、`not_qualified`。
+- 机会阶段独立为 `observing`、`pending_validation`、`validating`、`validated`、`monetization_ready`、`abandoned`。
+- `save`、`hide`、`track` 使用独立时间字段，不再互相覆盖喜好或机会状态。
 - 隐藏项目可以通过 `显示隐藏项目` 查看，不会进入不可恢复的视觉状态。
 
 ### 我的 GitHub
@@ -86,9 +94,9 @@
 
 - GitHub Search 分页按 checkpoint 写入 `scan_checkpoints`。
 - 候选仓库进入 `candidate_queue`，worker 分阶段推进。
-- 支持 pause/resume、runtime pause、memory pressure pause。
+- 支持 pause/resume 和 memory pressure pause；不再按运行分钟停止。
 - worker 启动时会恢复 stale `running` 候选，并自动继续 `retry_later`、`throttled`、`paused_by_memory`、`paused_by_runtime` 任务。
-- `ResourceGovernor` 会根据可用内存调整 batch size，并写入 `resource_events`。
+- `ResourceGovernor` 只暴露最低可用内存配置，并根据实时余量和阶段内部预算动态计算 batch size。
 
 ### README、Embedding 和 LLM 分析
 
@@ -97,6 +105,9 @@
 - LLM 阶段调用独立 chat provider，结构化结果写入 `llm_results`。
 - LLM 结果会参与 recommendation 摘要、原因、风险和匹配偏好。
 - GitHub、Embedding 和 Chat API 请求均设置超时，避免第三方服务长时间挂起导致 worker 卡死。
+- 连续 3 次 JSON 解析或 Schema 校验失败后，当前任务会排除该 Provider 并轮换下一个同类型模型。
+- 401/403、API Key 缺失、429、网络、超时、5xx 和参数不兼容分别进入 blocked/cooldown 策略，不计入解析失败次数。
+- 同类型 Provider 全部耗尽时，任务进入 `exception`，worker 停止该任务；修复模型并“检测并恢复”后可手动恢复任务。
 
 ### 偏好学习
 
@@ -119,7 +130,7 @@
 
 ### 调度与运行观测
 
-- 调度按发现配置的 `timezone` 计算。
+- 调度器使用内部固定 60 秒唤醒周期，不再暴露 cron、开始时间或最大运行分钟。
 - 漏跑策略支持 `skip`、`run_once`、`resume`，避免服务恢复后瞬间创建大量扫描任务。
 - `paused_by_user` 会被视为 active job，避免手动暂停后被调度器重复启动。
 - 运行观测页面展示 `resource_events`、队列状态、`llm_jobs` token 用量和估算成本。
@@ -134,10 +145,10 @@
 
 - `pnpm typecheck`
 - `pnpm test`
-- `pnpm db:init`
 - `pnpm build`
-- worker bootstrap 和 queue stats 输出
-- 线上执行 `pnpm db:init` 并重启 `fetchgithub-web.service`、`fetchgithub-worker.service`。
-- `https://github.zero007.chat/api/scans` 和 `https://github.zero007.chat/api/dashboard` 可正常返回。
-- Playwright 打开 `http://localhost:3020`，验证推荐、发现配置、我的 GitHub、知识库同步页面。
-- Playwright 点击 `同步 L4`，确认写入同步记录。
+- `git diff --check`
+
+## 本轮未验证
+
+- `pnpm db:init`：本机 PostgreSQL `127.0.0.1:5433` 未启动，连接返回 `ECONNREFUSED`。
+- Playwright 截图验收：浏览器工具临时下载未成功；仍需在真实桌面和移动 viewport 上复核布局与交互。

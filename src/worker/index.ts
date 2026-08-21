@@ -6,7 +6,7 @@ import {
   getQueueStats,
   listProfiles,
   listScanJobs,
-  requeueStaleRunningCandidates
+  requeueStaleRunningCandidates,
 } from "@/server/store";
 
 async function main() {
@@ -33,7 +33,9 @@ async function main() {
 
       const scheduled = await scheduleDueScanJobs();
       if (scheduled.length) {
-        console.log(`scheduled_jobs=${scheduled.map((job) => job.id).join(",")}`);
+        console.log(
+          `scheduled_jobs=${scheduled.map((job) => job.id).join(",")}`,
+        );
       }
 
       try {
@@ -45,19 +47,16 @@ async function main() {
         console.error("github_auto_sync_error", error);
       }
 
-      const job = await runNextScanJob({
-        maxPages: 3,
-        maxProfileBatches: 3
-      });
+      const job = await runNextScanJob();
 
       if (job) {
         console.log(
-          `job=${job.id} status=${job.status} stage=${job.stage} fetched=${job.fetchedCount}/${job.maxCandidates} processed=${job.processedCount} analyzed=${job.analyzedCount}`
+          `job=${job.id} status=${job.status} stage=${job.stage} fetched=${job.fetchedCount} processed=${job.processedCount} analyzed=${job.analyzedCount}`,
         );
         if (job.statusReason || job.errorMessage) {
           console.log(`reason=${job.statusReason ?? job.errorMessage}`);
         }
-        if (["retry_later", "throttled", "paused_by_memory"].includes(job.status)) {
+        if (["retry_later", "paused_by_memory"].includes(job.status)) {
           await delay(10_000);
         }
         continue;

@@ -8,7 +8,7 @@ const patchSchema = providerSchema.partial().omit({ kind: true, type: true });
 
 export async function PATCH(
   request: Request,
-  context: { params: Promise<{ id: string }> }
+  context: { params: Promise<{ id: string }> },
 ) {
   const auth = await requireAuth();
   if (auth.response) return auth.response;
@@ -17,7 +17,10 @@ export async function PATCH(
   const parsed = patchSchema.safeParse(await request.json());
 
   if (!parsed.success) {
-    return NextResponse.json({ errors: parsed.error.flatten() }, { status: 400 });
+    return NextResponse.json(
+      { errors: parsed.error.flatten() },
+      { status: 400 },
+    );
   }
 
   const { apiKeyValue, ...providerPatch } = parsed.data;
@@ -25,7 +28,8 @@ export async function PATCH(
     try {
       await writeLocalEnvValue(providerPatch.apiKeyEnv, apiKeyValue);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "API Key 写入失败。";
+      const message =
+        error instanceof Error ? error.message : "API Key 写入失败。";
       return NextResponse.json({ error: message }, { status: 400 });
     }
   }
@@ -43,16 +47,31 @@ export async function PATCH(
 
 export async function DELETE(
   _request: Request,
-  context: { params: Promise<{ id: string }> }
+  context: { params: Promise<{ id: string }> },
 ) {
   const auth = await requireAuth();
   if (auth.response) return auth.response;
 
   const { id } = await context.params;
-  const result = await deleteAiProvider(id);
+  let result: Awaited<ReturnType<typeof deleteAiProvider>>;
+  try {
+    result = await deleteAiProvider(id);
+  } catch (error) {
+    console.error("ai_provider_delete_failed", {
+      providerId: id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return NextResponse.json(
+      { error: "AI 配置删除失败，请稍后重试。" },
+      { status: 500 },
+    );
+  }
 
   if (!result.deleted) {
-    return NextResponse.json({ error: result.reason }, { status: 409 });
+    return NextResponse.json(
+      { error: result.reason ?? "AI 配置删除失败。" },
+      { status: 409 },
+    );
   }
 
   return NextResponse.json({ deleted: true });
