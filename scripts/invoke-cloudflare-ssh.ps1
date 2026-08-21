@@ -90,6 +90,7 @@ function Test-CloudflareAccessFailure {
 
 $sshPath = (Get-Command 'ssh.exe' -ErrorAction Stop).Source
 $cloudflaredPath = (Get-Command 'cloudflared.exe' -ErrorAction Stop).Source
+$accessLoginUrl = $AccessUrl.TrimEnd('/') + '/cdn-cgi/access/login'
 
 $firstAttempt = Invoke-SshAttempt `
     -SshExecutable $sshPath `
@@ -118,10 +119,10 @@ Write-Host 'Complete the login in the browser; SSH will be retried automatically
 # Make the Access application visible even when cloudflared cannot discover a
 # default browser in the current PowerShell host.
 try {
-    Start-Process -FilePath $AccessUrl | Out-Null
+    Start-Process -FilePath $accessLoginUrl | Out-Null
 } catch {
     Write-Host 'The default browser could not be started automatically.'
-    Write-Host ("Open this URL manually: " + $AccessUrl)
+    Write-Host ("Open this URL manually: " + $accessLoginUrl)
 }
 
 $previousErrorActionPreference = $ErrorActionPreference
