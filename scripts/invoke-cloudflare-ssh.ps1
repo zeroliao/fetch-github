@@ -115,8 +115,24 @@ if (-not (Test-CloudflareAccessFailure -Text $firstAttempt.Output)) {
 Write-Host 'Cloudflare Access may have expired. Opening the browser for re-authorization.'
 Write-Host 'Complete the login in the browser; SSH will be retried automatically.'
 
-& $cloudflaredPath access login $AccessUrl --quiet --auto-close *> $null
-$loginExitCode = $LASTEXITCODE
+# Make the Access application visible even when cloudflared cannot discover a
+# default browser in the current PowerShell host.
+try {
+    Start-Process -FilePath $AccessUrl | Out-Null
+} catch {
+    Write-Host 'The default browser could not be started automatically.'
+    Write-Host ("Open this URL manually: " + $AccessUrl)
+}
+
+$previousErrorActionPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = 'Continue'
+    # cloudflared may emit a JWT even with --quiet; discard every output stream.
+    & $cloudflaredPath access login $AccessUrl --quiet --auto-close *> $null
+    $loginExitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
 if ($loginExitCode -ne 0) {
     Write-Error "Cloudflare Access re-authorization failed (exit code: $loginExitCode)."
     exit $loginExitCode
