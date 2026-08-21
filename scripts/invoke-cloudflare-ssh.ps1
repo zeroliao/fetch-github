@@ -90,7 +90,6 @@ function Test-CloudflareAccessFailure {
 
 $sshPath = (Get-Command 'ssh.exe' -ErrorAction Stop).Source
 $cloudflaredPath = (Get-Command 'cloudflared.exe' -ErrorAction Stop).Source
-$accessLoginUrl = $AccessUrl.TrimEnd('/') + '/cdn-cgi/access/login'
 
 $firstAttempt = Invoke-SshAttempt `
     -SshExecutable $sshPath `
@@ -116,23 +115,19 @@ if (-not (Test-CloudflareAccessFailure -Text $firstAttempt.Output)) {
 Write-Host 'Cloudflare Access may have expired. Opening the browser for re-authorization.'
 Write-Host 'Complete the login in the browser; SSH will be retried automatically.'
 
-# Make the Access application visible even when cloudflared cannot discover a
-# default browser in the current PowerShell host.
-try {
-    Start-Process -FilePath $accessLoginUrl | Out-Null
-} catch {
-    Write-Host 'The default browser could not be started automatically.'
-    Write-Host ("Open this URL manually: " + $accessLoginUrl)
-}
-
 $previousErrorActionPreference = $ErrorActionPreference
 try {
     $ErrorActionPreference = 'Continue'
-    # cloudflared may emit a JWT even with --quiet; discard every output stream.
-    & $cloudflaredPath access login $AccessUrl --quiet --auto-close *> $null
+    # cloudflared may emit a JWT even with --quiet; capture it, then redact it.
+    $loginOutput = @(& $cloudflaredPath access login $AccessUrl --quiet --auto-close 2>&1)
     $loginExitCode = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $previousErrorActionPreference
+}
+
+$safeLoginOutput = Protect-CommandOutput -Text (($loginOutput | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine)
+if (-not [string]::IsNullOrWhiteSpace($safeLoginOutput)) {
+    Write-Host $safeLoginOutput
 }
 if ($loginExitCode -ne 0) {
     Write-Error "Cloudflare Access re-authorization failed (exit code: $loginExitCode)."
