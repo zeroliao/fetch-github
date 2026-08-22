@@ -73,7 +73,7 @@ const sections = sectionDefinitions.map((section) => ({
 }));
 
 const navigationGroups: Array<{ label: string; items: Section[] }> = [
-  { label: "发现", items: ["recommendations", "profiles", "jobs"] },
+  { label: "发现", items: ["recommendations", "profiles"] },
   { label: "数据与同步", items: ["github", "knowledge"] },
   { label: "系统", items: ["providers", "operations"] },
 ];
@@ -361,8 +361,7 @@ export function DashboardClient({
           </div>
           <div className="toolbar-actions">
             {(activeSection === "recommendations" ||
-              activeSection === "profiles" ||
-              activeSection === "jobs") && (
+              activeSection === "profiles") && (
               <select
                 className="select profile-select"
                 aria-label="当前发现配置"
@@ -376,8 +375,7 @@ export function DashboardClient({
                 ))}
               </select>
             )}
-            {(activeSection === "recommendations" ||
-              activeSection === "jobs") && (
+            {activeSection === "recommendations" && (
               <button
                 className="button primary"
                 disabled={
@@ -433,21 +431,6 @@ export function DashboardClient({
             }
           />
         )}
-        {activeSection === "jobs" && (
-          <JobsPanel
-            jobs={jobs}
-            queueStats={queueStats}
-            onRefresh={refreshJobsAndQueue}
-            onJobUpdated={(job) =>
-              setJobs((current) =>
-                current.map((item) => (item.id === job.id ? job : item)),
-              )
-            }
-            onJobArchived={(jobId) =>
-              setJobs((current) => current.filter((item) => item.id !== jobId))
-            }
-          />
-        )}
         {activeSection === "github" && (
           <GitHubPanel
             settings={settings}
@@ -493,11 +476,27 @@ export function DashboardClient({
           />
         )}
         {activeSection === "operations" && (
-          <OperationsPanel
-            operations={operations}
-            queueStats={queueStats}
-            onRefresh={refreshJobsAndQueue}
-          />
+          <div className="stack">
+            <JobsPanel
+              jobs={jobs}
+              onRefresh={refreshJobsAndQueue}
+              onJobUpdated={(job) =>
+                setJobs((current) =>
+                  current.map((item) => (item.id === job.id ? job : item)),
+                )
+              }
+              onJobArchived={(jobId) =>
+                setJobs((current) =>
+                  current.filter((item) => item.id !== jobId),
+                )
+              }
+            />
+            <OperationsPanel
+              operations={operations}
+              queueStats={queueStats}
+              onRefresh={refreshJobsAndQueue}
+            />
+          </div>
         )}
       </main>
 
@@ -2201,13 +2200,11 @@ function ProfilesPanel({
 
 function JobsPanel({
   jobs,
-  queueStats,
   onRefresh,
   onJobUpdated,
   onJobArchived,
 }: {
   jobs: ScanJob[];
-  queueStats: DashboardSnapshot["queueStats"];
   onRefresh: () => Promise<void>;
   onJobUpdated: (job: ScanJob) => void;
   onJobArchived: (jobId: string) => void;
@@ -2297,8 +2294,10 @@ function JobsPanel({
       <section className="panel">
         <div className="panel-header">
           <div className="panel-title">
-            <h2>队列深度</h2>
-            <p>等待 worker 分阶段处理的数据库候选队列。</p>
+            <h2>扫描周期与恢复</h2>
+            <p>
+              扫描周期是内部执行记录，仅在需要查看进度、处理异常或恢复时使用。
+            </p>
           </div>
           <button
             className="button"
@@ -2312,22 +2311,6 @@ function JobsPanel({
             />
             {busyJobId === "refresh" ? "刷新中" : "刷新"}
           </button>
-        </div>
-        <SimpleStatsTable
-          rows={queueStats.map((stat) => [
-            stat.stage,
-            stat.status,
-            String(stat.count),
-          ])}
-          emptyText="暂无候选队列"
-        />
-      </section>
-      <section className="panel">
-        <div className="panel-header">
-          <div className="panel-title">
-            <h2>扫描任务</h2>
-            <p>支持 checkpoint、恢复和低内存分阶段队列。</p>
-          </div>
         </div>
         <div className="table-wrap">
           {message && (
@@ -2940,9 +2923,19 @@ function ProvidersPanel({
                   const action = busyAction.split(":")[1];
                   return (
                     <tr key={provider.id}>
-                      <td className="provider-name-cell">{provider.name}</td>
+                      <td
+                        className="provider-name-cell provider-truncated-cell"
+                        title={provider.name}
+                      >
+                        {provider.name}
+                      </td>
                       <td className="provider-kind-cell">{provider.kind}</td>
-                      <td className="provider-model-cell">{provider.model}</td>
+                      <td
+                        className="provider-model-cell provider-truncated-cell"
+                        title={provider.model}
+                      >
+                        {provider.model}
+                      </td>
                       <td className="provider-priority-cell">
                         {provider.priority ?? 100}
                       </td>

@@ -91,7 +91,7 @@ pnpm worker:dev
 - 删除 AI 配置使用软删除，历史 Embedding/LLM 数据仍保留，发现配置无需解绑具体 Provider。
 - `blocked_auth`、`blocked_permission` 或 `invalid_config` 表示需要人工修复。更新 API Key、权限、Base URL、模型名或参数后，点击“检测并恢复”；只有真实调用成功才会恢复为 `available`。
 - `cooldown` 表示限流、网络、超时或服务端故障的临时冷却，冷却到期后系统自动重试。
-- 连续 3 次模型 JSON 解析或 Schema 校验失败会在当前扫描任务内轮换下一个同类型模型；全部耗尽时扫描进入 `exception`，恢复模型后再到扫描任务页手动恢复。
+- 连续 3 次模型 JSON 解析或 Schema 校验失败会在当前扫描周期内轮换下一个同类型模型；全部耗尽时扫描进入 `exception`，恢复模型后再到“系统运行”中的“扫描周期与恢复”模块手动恢复。
 - `知识库同步` 可以点击 `同步 L4`，系统会生成派生知识内容 hash，并写入 `knowledge_syncs` 状态。
 - 知识库目标选择 `local-derived-index` 时只记录 fetchGithub 派生索引状态。
 - 知识库目标选择 `ai-knowledge-base` 时会写入 `AI_KNOWLEDGE_BASE_DIR/derived/fetchGithub`；未配置目录会记录为失败，不影响 fetchGithub 源数据。

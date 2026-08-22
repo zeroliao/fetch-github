@@ -297,9 +297,9 @@ POST   /api/knowledge-syncs/run
 - Opportunity brief and minimum score.
 - Minimum available memory.
 
-### Scan Jobs
+### System Operations
 
-- Job table.
+- Scan-cycle history and recovery controls.
 - Stage progress.
 - Checkpoints.
 - Memory/resource events.

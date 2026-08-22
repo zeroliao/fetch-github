@@ -76,7 +76,7 @@ When package, build, or test configuration is added, update this table with comm
 ## UI Expectations
 
 - Build a working discovery dashboard, not a marketing landing page.
-- Main MVP pages: `Recommendations`, `Repo Detail Drawer`, `Profiles`, `Scan Jobs`, `My GitHub`, `AI Providers`, and optional `Knowledge Sync`.
+- Main MVP pages: `Recommendations`, `Repo Detail Drawer`, `Profiles`, `My GitHub`, `AI Providers`, `System Operations` (including scan-cycle recovery and history), and optional `Knowledge Sync`.
 - Repository names and GitHub action buttons must open the repository `html_url` in a new tab with `rel="noopener noreferrer"`.
 - Prefer dense, tool-focused tables for recommendation lists; use drawers or panels for detailed summaries and reasons.
 

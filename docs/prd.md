@@ -9,7 +9,7 @@ The system must support large first scans without exhausting memory. It may trad
 ## Goals
 
 - Discover useful GitHub repositories from high-star projects, popular topics, recent activity, and fast-growing projects.
-- Support configurable scan profiles with preferences, schedules, start times, candidate limits, and resource policies.
+- Support configurable scan profiles with discovery preferences, missed-run policy, opportunity criteria, and a minimum available-memory floor.
 - Associate recommendations with the user's own GitHub repositories and starred repositories.
 - Use third-party AI API services for semantic understanding, structured analysis, and recommendation explanations.
 - Configure chat/LLM models and embedding models separately.
@@ -38,19 +38,19 @@ The system must support large first scans without exhausting memory. It may trad
 The user creates a profile with:
 
 - Name and enabled status.
-- Scan schedule, timezone, start time, and max runtime.
+- Missed-run policy: `skip`, `run_once`, or `resume`. The worker uses an internal fixed wake-up interval; timezone, start time, and max runtime are not user-facing controls.
 - GitHub query preferences: keywords, topics, languages, minimum stars, updated/pushed recency, excluded keywords.
 - Discovery sources: GitHub Search preference queries, GitHub Topics, high-star search, recent-activity search, and optional authority signals such as GitHub Trending, GitHub Explore, OSS Insight, GH Archive, OpenSSF Scorecard, and ecosyste.ms.
-- Candidate limits: source query limit, max candidates, rule-filter top K, detail-fetch top K, LLM/embedding top K, final report top K.
-- Resource policy: complete low-memory mode, batch size, concurrency, memory thresholds.
-- AI providers: one chat provider and one embedding provider.
+- The worker streams and persists candidates without user-configured candidate or stage Top K limits.
+- Resource policy: the user-facing setting is the minimum available-memory floor; batch size and concurrency are derived from current resource pressure.
+- AI providers: chat and embedding providers are configured separately and selected automatically by kind and ascending priority.
 
 ### 2. Scan GitHub Projects
 
 The system can scan:
 
 - Manually through a "Scan now" action.
-- On a configured schedule.
+- Continuously through the internal scheduler, which creates resumable scan cycles at a fixed wake-up interval.
 - As a first scan with checkpointed batch processing.
 - As an incremental scheduled scan after baseline snapshots exist.
 - From enabled discovery sources. Implemented source adapters use GitHub Search API queries; planned adapters may use GitHub Trending/Explore, OSS Insight, GH Archive, OpenSSF Scorecard, and ecosyste.ms as authority or quality signals.
@@ -159,7 +159,7 @@ MVP pages:
 - `Recommendations`
 - `Repo Detail Drawer`
 - `Profiles`
-- `Scan Jobs`
+- `System Operations`, including scan-cycle recovery and history
 - `My GitHub`
 - `AI Providers`
 - `Knowledge Sync` optional

@@ -613,7 +613,7 @@ fetchGithub L4 repository
 
 Only content hash changes should trigger resync.
 
-MVP implementation writes a `local-derived-index` sync record and content hash to `knowledge_syncs`. A real FastGPT or `../ai-knowledge-base` adapter remains optional and must not replace `fetchGithub` as the source of truth.
+The MVP writes a `local-derived-index` sync record and content hash to `knowledge_syncs`. When `AI_KNOWLEDGE_BASE_DIR` is configured, the implemented local adapter also writes derived Markdown under `derived/fetchGithub`; FastGPT remains optional. Neither target replaces `fetchGithub` as the source of truth.
 
 ## Observability
 
@@ -633,4 +633,4 @@ Track:
 - AI providers use OpenAI-compatible third-party APIs with separate chat and embedding provider records.
 - UI is implemented with Next.js client components, project CSS, and `lucide-react` icons.
 - Production deployment currently runs web and worker systemd services behind `github.zero007.chat`.
-- FastGPT / `../ai-knowledge-base` write adapter, cost dashboard, richer context-match audit table, and automated API tests remain future work.
+- The local `ai-knowledge-base` write adapter and cost dashboard are implemented. FastGPT integration, a richer context-match audit table, cache-hit reporting, and broader automated API tests remain future work.

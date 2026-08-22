@@ -420,6 +420,12 @@ button {
   text-overflow: ellipsis;
 }
 
+.provider-table .provider-truncated-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .provider-table .provider-status-cell {
   white-space: normal;
   vertical-align: top;
@@ -436,7 +442,7 @@ button {
 .provider-table .provider-actions-cell .action-row {
   align-items: flex-start;
   gap: 8px;
-  min-width: 360px;
+  min-width: 0;
 }
 
 .module-scroll {
