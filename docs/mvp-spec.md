@@ -51,7 +51,7 @@ Required fields:
 - `name`
 - `kind`: `chat` or `embedding`
 - `base_url`
-- `api_key_env`
+- `api_key_env` (derived from the provider name)
 - `model`
 - `priority`
 - `reasoning_effort` for chat providers
@@ -65,6 +65,8 @@ Acceptance:
 - Chat provider cannot be selected as an embedding provider.
 - Embedding provider cannot be selected as a chat provider.
 - API key value is not stored, only `api_key_env`.
+- The provider name is the single user-facing name for the model and its API key environment variable.
+- Provider names must be unique after normalization; the deployment starts from a clean provider store, so no legacy migration is required.
 - Test connection action verifies provider availability without printing secrets.
 - Provider selection is automatic by kind and ascending priority.
 - The list shows availability status, sanitized unavailable reason, recovery guidance, and cooldown deadline.

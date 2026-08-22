@@ -247,7 +247,7 @@ ai_providers
 - kind              # chat | embedding
 - type              # openai_compatible | custom
 - base_url
-- api_key_env
+- api_key_env                 # unique provider-scoped env var name
 - model
 - dimensions
 - priority
@@ -549,7 +549,7 @@ ai:
       kind: chat
       type: openai_compatible
       base_url: https://api.example.com/v1
-      api_key_env: CHAT_API_KEY
+      api_key_env: OPENAI_GPT_5
       model: chat-model
       priority: 10
       reasoning_effort: low
@@ -557,13 +557,13 @@ ai:
       kind: embedding
       type: openai_compatible
       base_url: https://api.example.com/v1
-      api_key_env: EMBEDDING_API_KEY
+      api_key_env: OPENAI_EMBEDDING
       model: embedding-model
       dimensions: 1536
       priority: 10
 ```
 
-The API key value must never be stored in the database. Store only the environment variable name.
+The API key value must never be stored in the database. The provider name is normalized into the single API key environment variable name, and names must be unique. Renaming a provider requires entering its API key again because the environment variable name changes.
 
 Provider records also store priority, reasoning effort, availability, sanitized failure reason, recovery guidance, and cooldown state. A lower priority value is selected first. The API key value can be written to `.env.local` through the UI, but the database only stores the environment variable name.
 

@@ -2761,7 +2761,6 @@ function ProvidersPanel({
           kind: input.kind,
           type: "openai_compatible",
           baseUrl: input.baseUrl,
-          apiKeyEnv: input.apiKeyEnv,
           apiKeyValue: input.apiKeyValue || undefined,
           model: input.model,
           dimensions: input.kind === "embedding" ? input.dimensions : undefined,
@@ -2889,7 +2888,7 @@ function ProvidersPanel({
         <div className="panel-header">
           <div className="panel-title">
             <h2>AI 配置</h2>
-            <p>同类型模型按优先级自动选择；数值越小，选择顺序越靠前。</p>
+            <p>同类型模型按优先级自动选择；不可用配置会显示阻断原因。</p>
           </div>
           <button
             className="button primary"
@@ -2899,23 +2898,23 @@ function ProvidersPanel({
             新增 AI 配置
           </button>
         </div>
-        <div className="list-panel">
-          {message && (
-            <div className="notice" role="status">
-              {message}
-            </div>
-          )}
-        </div>
-      </section>
-      <section className="panel">
-        <div className="panel-header">
-          <div className="panel-title">
-            <h2>AI 配置</h2>
-            <p>不可用配置会显示阻断原因；处理后通过真实轻量检测恢复。</p>
+        {message && (
+          <div className="notice provider-notice" role="status">
+            {message}
           </div>
-        </div>
-        <div className="table-wrap">
-          <table className="repo-table">
+        )}
+        <div className="table-wrap provider-table-wrap">
+          <table className="repo-table provider-table">
+            <colgroup>
+              <col className="provider-col-name" />
+              <col className="provider-col-kind" />
+              <col className="provider-col-model" />
+              <col className="provider-col-priority" />
+              <col className="provider-col-reasoning" />
+              <col className="provider-col-url" />
+              <col className="provider-col-status" />
+              <col className="provider-col-actions" />
+            </colgroup>
             <thead>
               <tr>
                 <th>名称</th>
@@ -2924,7 +2923,6 @@ function ProvidersPanel({
                 <th>优先级</th>
                 <th>推理程度</th>
                 <th>Base URL</th>
-                <th>Key 环境变量</th>
                 <th>状态</th>
                 <th>操作</th>
               </tr>
@@ -2932,7 +2930,7 @@ function ProvidersPanel({
             <tbody>
               {orderedProviders.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="muted">
+                  <td colSpan={8} className="muted">
                     暂无 AI 配置
                   </td>
                 </tr>
@@ -2942,18 +2940,24 @@ function ProvidersPanel({
                   const action = busyAction.split(":")[1];
                   return (
                     <tr key={provider.id}>
-                      <td>{provider.name}</td>
-                      <td>{provider.kind}</td>
-                      <td>{provider.model}</td>
-                      <td>{provider.priority ?? 100}</td>
-                      <td>
+                      <td className="provider-name-cell">{provider.name}</td>
+                      <td className="provider-kind-cell">{provider.kind}</td>
+                      <td className="provider-model-cell">{provider.model}</td>
+                      <td className="provider-priority-cell">
+                        {provider.priority ?? 100}
+                      </td>
+                      <td className="provider-reasoning-cell">
                         {provider.kind === "chat"
                           ? reasoningEffortText(provider.reasoningEffort)
                           : "-"}
                       </td>
-                      <td>{provider.baseUrl}</td>
-                      <td>{provider.apiKeyEnv}</td>
-                      <td>
+                      <td
+                        className="provider-url-cell"
+                        title={provider.baseUrl}
+                      >
+                        {provider.baseUrl}
+                      </td>
+                      <td className="provider-status-cell">
                         <div className="tags">
                           <span
                             className={`status ${provider.enabled ? "tracked" : "hidden"}`}
@@ -2985,7 +2989,7 @@ function ProvidersPanel({
                             </div>
                           )}
                       </td>
-                      <td>
+                      <td className="provider-actions-cell">
                         <div className="action-row wrap">
                           <button
                             className="button"
@@ -3065,7 +3069,6 @@ interface AiProviderFormValue {
   name: string;
   kind: "chat" | "embedding";
   baseUrl: string;
-  apiKeyEnv: string;
   apiKeyValue: string;
   model: string;
   dimensions: number;
@@ -3086,12 +3089,9 @@ function AiProviderDialog({
   const [kind, setKind] = useState<"chat" | "embedding">(
     provider?.kind ?? "chat",
   );
-  const [name, setName] = useState(provider?.name ?? "新建 Chat 配置");
+  const [name, setName] = useState(provider?.name ?? "OPENAI_CHAT");
   const [baseUrl, setBaseUrl] = useState(
     provider?.baseUrl ?? "https://api.example.com/v1",
-  );
-  const [apiKeyEnv, setApiKeyEnv] = useState(
-    provider?.apiKeyEnv ?? "CHAT_API_KEY",
   );
   const [apiKeyValue, setApiKeyValue] = useState("");
   const [model, setModel] = useState(provider?.model ?? "chat-model");
@@ -3108,8 +3108,7 @@ function AiProviderDialog({
   function switchKind(nextKind: "chat" | "embedding") {
     setKind(nextKind);
     if (!isEditing) {
-      setName(nextKind === "chat" ? "新建 Chat 配置" : "新建 Embedding 配置");
-      setApiKeyEnv(nextKind === "chat" ? "CHAT_API_KEY" : "EMBEDDING_API_KEY");
+      setName(nextKind === "chat" ? "OPENAI_CHAT" : "EMBEDDING_MODEL");
       setModel(nextKind === "chat" ? "chat-model" : "embedding-model");
       setDimensions(nextKind === "embedding" ? 4096 : 1536);
     }
@@ -3125,7 +3124,6 @@ function AiProviderDialog({
         name,
         kind,
         baseUrl,
-        apiKeyEnv,
         apiKeyValue,
         model,
         dimensions,
@@ -3191,13 +3189,6 @@ function AiProviderDialog({
               onChange={(event) => setBaseUrl(event.target.value)}
             />
           </Field>
-          <Field label="API key 环境变量名">
-            <input
-              className="input"
-              value={apiKeyEnv}
-              onChange={(event) => setApiKeyEnv(event.target.value)}
-            />
-          </Field>
           <Field label={isEditing ? "新 API Key（可不填）" : "API Key"}>
             <input
               className="input"
@@ -3206,6 +3197,10 @@ function AiProviderDialog({
               onChange={(event) => setApiKeyValue(event.target.value)}
             />
           </Field>
+          <p className="field-hint">
+            模型名称同时作为 API Key 名称；名称变化时需要重新填写该模型的 API
+            Key。名称需包含英文字母、数字或下划线。
+          </p>
           <Field label="模型">
             <input
               className="input"

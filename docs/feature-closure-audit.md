@@ -17,7 +17,7 @@
 - Provider 列表显示可用状态、不可用原因、处理建议和冷却截止时间。
 - `blocked_auth`、`blocked_permission`、`invalid_config` 由用户修复后通过真实轻量调用恢复；`cooldown` 到期后自动重新参与选择。
 - 删除改为 `enabled=false` + `archived_at` 软删除，历史 AI 结果外键不再导致删除失败。
-- API Key 值只写入 `.env.local`，数据库只保存 `apiKeyEnv`。
+- API Key 值只写入 `.env.local`，数据库只保存 `apiKeyEnv`；`apiKeyEnv` 由 Provider 名称规范化得到，不再单独配置。
 - 创建表单成功后会重置，失败会显示错误。
 
 ### 发现配置

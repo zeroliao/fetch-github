@@ -87,6 +87,47 @@ test("default reasoning mode omits reasoning_effort and keeps temperature", asyn
   assert.equal(requestBody?.temperature, 0);
 });
 
+test("each provider resolves the API key from its own env name", async () => {
+  const firstEnv = "FETCH_GITHUB_FIRST_PROVIDER_KEY";
+  const secondEnv = "FETCH_GITHUB_SECOND_PROVIDER_KEY";
+  const previousFirst = process.env[firstEnv];
+  const previousSecond = process.env[secondEnv];
+  process.env[firstEnv] = "first-secret";
+  process.env[secondEnv] = "second-secret";
+  const authorizationHeaders: string[] = [];
+  globalThis.fetch = async (_input, init) => {
+    authorizationHeaders.push(
+      String(
+        init?.headers instanceof Headers
+          ? init.headers.get("authorization")
+          : (init?.headers as Record<string, string>)?.Authorization,
+      ),
+    );
+    return successfulChatResponse();
+  };
+
+  try {
+    await callChatJson({
+      provider: provider({ apiKeyEnv: firstEnv }),
+      messages: [{ role: "user", content: "return JSON" }],
+    });
+    await callChatJson({
+      provider: provider({ apiKeyEnv: secondEnv }),
+      messages: [{ role: "user", content: "return JSON" }],
+    });
+  } finally {
+    if (previousFirst === undefined) delete process.env[firstEnv];
+    else process.env[firstEnv] = previousFirst;
+    if (previousSecond === undefined) delete process.env[secondEnv];
+    else process.env[secondEnv] = previousSecond;
+  }
+
+  assert.deepEqual(authorizationHeaders, [
+    "Bearer first-secret",
+    "Bearer second-secret",
+  ]);
+});
+
 test("HTTP failures expose typed retry metadata without exposing credentials", async () => {
   const secret = "sk-live-super-secret-value";
   process.env[API_KEY_ENV] = secret;

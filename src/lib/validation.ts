@@ -19,7 +19,7 @@ export const providerSchema = z.object({
   kind: z.enum(["chat", "embedding"]),
   type: z.enum(["openai_compatible", "custom"]).default("openai_compatible"),
   baseUrl: z.string().url(),
-  apiKeyEnv: z.string().min(1),
+  apiKeyEnv: z.string().min(1).optional(),
   model: z.string().min(1),
   apiKeyValue: z.string().optional(),
   dimensions: z.number().int().positive().optional(),

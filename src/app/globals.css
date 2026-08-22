@@ -372,6 +372,73 @@ button {
   overflow-x: auto;
 }
 
+.provider-notice {
+  margin: 0 18px 14px;
+}
+
+.provider-table {
+  min-width: 1580px;
+  table-layout: fixed;
+}
+
+.provider-table th,
+.provider-table td {
+  white-space: nowrap;
+}
+
+.provider-table th {
+  height: 52px;
+}
+
+.provider-table .provider-col-name {
+  width: 150px;
+}
+.provider-table .provider-col-kind {
+  width: 86px;
+}
+.provider-table .provider-col-model {
+  width: 190px;
+}
+.provider-table .provider-col-priority {
+  width: 86px;
+}
+.provider-table .provider-col-reasoning {
+  width: 112px;
+}
+.provider-table .provider-col-url {
+  width: 260px;
+}
+.provider-table .provider-col-status {
+  width: 300px;
+}
+.provider-table .provider-col-actions {
+  width: 396px;
+}
+
+.provider-table .provider-url-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.provider-table .provider-status-cell {
+  white-space: normal;
+  vertical-align: top;
+}
+
+.provider-table .provider-status-cell .tags {
+  align-items: center;
+}
+
+.provider-table .provider-actions-cell {
+  vertical-align: top;
+}
+
+.provider-table .provider-actions-cell .action-row {
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 360px;
+}
+
 .module-scroll {
   max-height: 360px;
   overflow: auto;
@@ -1037,6 +1104,44 @@ button {
 
   .preview-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .provider-table-wrap {
+    overflow-x: auto;
+  }
+
+  .provider-table-wrap .provider-table {
+    min-width: 1580px;
+  }
+
+  .provider-table-wrap .provider-table thead {
+    display: table-header-group;
+  }
+
+  .provider-table-wrap .provider-table,
+  .provider-table-wrap .provider-table tbody,
+  .provider-table-wrap .provider-table tr,
+  .provider-table-wrap .provider-table td {
+    display: table-cell;
+    width: auto;
+  }
+
+  .provider-table-wrap .provider-table {
+    display: table;
+  }
+
+  .provider-table-wrap .provider-table tbody {
+    display: table-row-group;
+  }
+
+  .provider-table-wrap .provider-table tr {
+    display: table-row;
+  }
+
+  .provider-table-wrap .provider-table td {
+    white-space: nowrap;
   }
 }
 

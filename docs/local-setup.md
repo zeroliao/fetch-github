@@ -22,15 +22,14 @@ AI 模型在页面 `AI 模型配置` 中统一填写：
 ```text
 类型：chat 或 embedding
 Base URL
-模型
-API key 环境变量名
+模型名称（同时作为 API Key 名称）
 API Key
 优先级：数值越小越先使用
 推理程度：仅 chat，可选 default/minimal/low/medium/high/xhigh
 向量维度：仅 embedding 需要
 ```
 
-系统会把 API Key 明文写入本地 `.env.local`，数据库只保存环境变量名、Base URL 和模型名。
+系统直接使用模型名称规范化后的值作为 API Key 环境变量名，并把 API Key 明文写入本地 `.env.local`；数据库只保存环境变量名、Base URL 和模型名。模型名称必须唯一，名称变化时必须同时重新填写 API Key。
 
 不要提交 `.env.local`。
 
@@ -86,6 +85,7 @@ pnpm worker:dev
 - `发现配置` 保留核心偏好、机会 Brief、最低机会分、最低可用内存和漏跑策略；扫描不再受候选数量、运行分钟或各阶段 Top K 截断。
 - worker 按实时可用内存动态调整批量，并在内存恢复后自动继续；启用的发现配置会按内部固定周期持续产生扫描任务。
 - AI 配置集中在页面里完成，密钥值只保存在本地 `.env.local`。
+- 每个模型使用由自身名称确定的独立 API Key 环境变量；模型轮换时按当前 Provider 读取对应 Key，不会沿用上一个模型的 Key。
 - 登录后可以点击右上角锁形按钮修改管理员密码；新密码会更新 `.env.local` 中的 `ADMIN_PASSWORD_HASH`。
 - Chat 模型和 Embedding 模型分开配置，但都在同一个 `AI 模型配置` 页面管理；同类型模型按优先级数值从小到大自动选择。
 - 删除 AI 配置使用软删除，历史 Embedding/LLM 数据仍保留，发现配置无需解绑具体 Provider。
