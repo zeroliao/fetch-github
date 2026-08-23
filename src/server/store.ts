@@ -563,6 +563,34 @@ export async function listAiProviderGroups(): Promise<AiProviderGroup[]> {
   return groupLocalProviders((await loadState()).aiProviders);
 }
 
+export async function listArchivedAiProviderGroups(): Promise<
+  AiProviderGroup[]
+> {
+  if (await isDatabaseAvailable())
+    return postgresStore.listArchivedAiProviderGroups();
+  const state = await loadState();
+  const groups = new Map<string, AiProviderGroup>();
+  for (const provider of state.aiProviders.filter((item) => item.archivedAt)) {
+    const id = provider.providerGroupId ?? `legacy-${provider.id}`;
+    const current = groups.get(id);
+    if (current) current.models.push(provider);
+    else
+      groups.set(id, {
+        id,
+        name: provider.name,
+        type: provider.type,
+        baseUrl: provider.baseUrl,
+        apiKeyEnv: provider.apiKeyEnv,
+        proxyUrlEnv: provider.proxyUrlEnv,
+        enabled: false,
+        models: [provider],
+        createdAt: provider.createdAt,
+        updatedAt: provider.updatedAt,
+      });
+  }
+  return [...groups.values()];
+}
+
 export async function createAiProviderGroup(
   input: Parameters<typeof postgresStore.createAiProviderGroup>[0],
 ) {
@@ -656,6 +684,107 @@ export async function updateAiProviderGroup(
   };
 }
 
+type AiProviderModelInput = Pick<
+  AiProvider,
+  | "kind"
+  | "model"
+  | "dimensions"
+  | "priority"
+  | "reasoningEffort"
+  | "enabled"
+  | "timeoutSeconds"
+  | "cooldownSeconds"
+  | "cooldownOn"
+> & { id?: string };
+
+function modelInput(provider: AiProvider): AiProviderModelInput {
+  return {
+    id: provider.id,
+    kind: provider.kind,
+    model: provider.model,
+    dimensions: provider.dimensions,
+    priority: provider.priority,
+    reasoningEffort: provider.reasoningEffort,
+    enabled: provider.enabled,
+    timeoutSeconds: provider.timeoutSeconds,
+    cooldownSeconds: provider.cooldownSeconds,
+    cooldownOn: provider.cooldownOn,
+  };
+}
+
+async function updateGroupModels(
+  group: AiProviderGroup,
+  models: AiProviderModelInput[],
+) {
+  return updateAiProviderGroup(group.id, {
+    name: group.name,
+    type: group.type,
+    baseUrl: group.baseUrl,
+    apiKeyEnv: group.apiKeyEnv,
+    proxyUrlEnv: group.proxyUrlEnv,
+    enabled: group.enabled,
+    models,
+  });
+}
+
+export async function createAiProviderModel(
+  groupId: string,
+  input: AiProviderModelInput,
+) {
+  const group = (await listAiProviderGroups()).find(
+    (item) => item.id === groupId,
+  );
+  if (!group) return undefined;
+  const modelId = input.id ?? crypto.randomUUID();
+  const updated = await updateGroupModels(group, [
+    ...group.models.map(modelInput),
+    { ...input, id: modelId },
+  ]);
+  return updated?.models.find((model) => model.id === modelId);
+}
+
+export async function updateAiProviderModel(
+  groupId: string,
+  modelId: string,
+  input: AiProviderModelInput,
+) {
+  const group = (await listAiProviderGroups()).find(
+    (item) => item.id === groupId,
+  );
+  if (!group || !group.models.some((model) => model.id === modelId))
+    return undefined;
+  const updated = await updateGroupModels(
+    group,
+    group.models.map((model) =>
+      model.id === modelId ? { ...input, id: modelId } : modelInput(model),
+    ),
+  );
+  return updated?.models.find((model) => model.id === modelId);
+}
+
+export async function deleteAiProviderModel(groupId: string, modelId: string) {
+  const group = (await listAiProviderGroups()).find(
+    (item) => item.id === groupId,
+  );
+  if (!group) return { deleted: false, reason: "Provider not found" };
+  if (!group.models.some((model) => model.id === modelId)) {
+    return { deleted: false, reason: "Model not found" };
+  }
+  if (group.models.length <= 1) {
+    return {
+      deleted: false,
+      reason: "至少保留一个模型；如需移除 Provider，请删除 Provider。",
+    };
+  }
+  const updated = await updateGroupModels(
+    group,
+    group.models.filter((model) => model.id !== modelId).map(modelInput),
+  );
+  return updated
+    ? { deleted: true }
+    : { deleted: false, reason: "Model not found" };
+}
+
 export async function deleteAiProviderGroup(id: string) {
   if (await isDatabaseAvailable())
     return postgresStore.deleteAiProviderGroup(id);
@@ -673,6 +802,34 @@ export async function deleteAiProviderGroup(id: string) {
   });
   await saveState(state);
   return deleted;
+}
+
+export async function restoreAiProviderGroup(id: string) {
+  if (await isDatabaseAvailable())
+    return postgresStore.restoreAiProviderGroup(id);
+  const state = await loadState();
+  let restored = false;
+  const now = new Date().toISOString();
+  state.aiProviders = state.aiProviders.map((provider) => {
+    if (
+      (provider.providerGroupId ?? `legacy-${provider.id}`) !== id ||
+      !provider.archivedAt
+    ) {
+      return provider;
+    }
+    restored = true;
+    return {
+      ...provider,
+      archivedAt: undefined,
+      enabled: true,
+      groupEnabled: true,
+      updatedAt: now,
+    };
+  });
+  await saveState(state);
+  return restored
+    ? (await listAiProviderGroups()).find((group) => group.id === id)
+    : undefined;
 }
 
 export async function createAiProvider(

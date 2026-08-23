@@ -4,7 +4,10 @@ import {
   callChatJson,
   callEmbedding,
 } from "./aiClient";
-import { parseRepoAnalysisResult } from "./llmAnalysis";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
 export async function probeAiProvider(provider: AiProvider) {
   const apiKeyPresent = Boolean(process.env[provider.apiKeyEnv]);
@@ -23,24 +26,19 @@ export async function probeAiProvider(provider: AiProvider) {
       messages: [
         {
           role: "system",
-          content:
-            "Return only valid JSON matching the repository analysis schema.",
+          content: 'Return only this JSON object: {"ok":true}.',
         },
         {
           role: "user",
-          content: JSON.stringify({
-            task: "Analyze this repository briefly.",
-            repo: {
-              name: "example/tool",
-              description: "Developer workflow automation tool.",
-            },
-            output:
-              "Return JSON keys: summary,categories,target_users,core_features,maturity,is_match,match_score,confidence,matched_preferences,risks,recommendation_reason,opportunity. Arrays may be empty; opportunity must include all required numeric fields and suggestedAction.",
-          }),
+          content: "Return the probe object now. Do not analyze a repository.",
         },
       ],
     });
-    parseRepoAnalysisResult(result);
+    if (!isRecord(result) || result.ok !== true) {
+      throw new AiProviderOutputSchemaError(
+        "expected JSON object with ok=true",
+      );
+    }
   } else {
     const inputs = ["example/tool: developer workflow automation tool"];
     const vectors = await callEmbedding(provider, inputs);

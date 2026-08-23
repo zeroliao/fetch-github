@@ -218,7 +218,7 @@ test("chat JSON extraction accepts a provider prefix and markdown fence", async 
   );
 });
 
-test("provider probe validates the production repository-analysis schema", async () => {
+test("provider probe validates minimal structured chat output", async () => {
   process.env[API_KEY_ENV] = "test-secret";
   let requestBody: Record<string, unknown> | undefined;
   globalThis.fetch = async (_input, init) => {
@@ -226,15 +226,23 @@ test("provider probe validates the production repository-analysis schema", async
     return successfulChatResponse('{"ok":true}');
   };
 
+  const result = await probeAiProvider(provider());
+  assert.equal(result.ready, true);
+
+  const messages = requestBody?.messages as Array<Record<string, unknown>>;
+  assert.match(String(messages?.[0]?.content), /ok/);
+  assert.deepEqual(requestBody?.response_format, { type: "json_object" });
+});
+
+test("provider probe rejects non-probe structured chat output", async () => {
+  process.env[API_KEY_ENV] = "test-secret";
+  globalThis.fetch = async () => successfulChatResponse('{"ok":false}');
+
   await assert.rejects(probeAiProvider(provider()), (error: unknown) => {
     assert.ok(error instanceof AiProviderOutputSchemaError);
     assert.equal(error.code, "output_schema");
     return true;
   });
-
-  const messages = requestBody?.messages as Array<Record<string, unknown>>;
-  assert.match(String(messages?.[1]?.content), /opportunity/);
-  assert.deepEqual(requestBody?.response_format, { type: "json_object" });
 });
 
 test("embedding provider probe validates batch cardinality", async () => {

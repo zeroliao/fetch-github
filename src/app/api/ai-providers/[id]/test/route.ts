@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAuth } from "@/server/auth";
 import { probeAiProvider } from "@/server/aiProviderProbe";
 import { classifyAiProviderFailure } from "@/server/aiProviderPolicy";
-import { getAiProvider } from "@/server/store";
+import { getAiProvider, updateAiProviderAvailability } from "@/server/store";
 
 export async function POST(
   _request: Request,
@@ -18,8 +18,19 @@ export async function POST(
     return NextResponse.json({ error: "AI 配置不存在。" }, { status: 404 });
   }
 
-  const test = await probeAiProvider(provider).catch((error) => {
+  let checkedProvider = provider;
+  const test = await probeAiProvider(provider).catch(async (error) => {
     const failure = classifyAiProviderFailure(error, provider);
+    checkedProvider =
+      (await updateAiProviderAvailability(provider.id, {
+        status: failure.targetAvailabilityStatus ?? "error",
+        code: failure.code,
+        reason: failure.reason,
+        recoverySuggestion: failure.recoverySuggestion,
+        cooldownUntil: failure.cooldownSeconds
+          ? new Date(Date.now() + failure.cooldownSeconds * 1000).toISOString()
+          : undefined,
+      })) ?? provider;
     return {
       ready: false,
       checked: true,
@@ -28,11 +39,19 @@ export async function POST(
     };
   });
 
+  const updatedProvider = test.ready
+    ? await updateAiProviderAvailability(provider.id, {
+        status: "available",
+        recovered: true,
+      })
+    : checkedProvider;
+
   return NextResponse.json({
     providerId: provider.id,
     kind: provider.kind,
     model: provider.model,
     ready: test.ready,
+    provider: updatedProvider ?? provider,
     checks: {
       enabled: provider.enabled,
       apiKeyEnv: provider.apiKeyEnv,

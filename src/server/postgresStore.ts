@@ -688,7 +688,57 @@ export async function getAiProvider(
 
 export async function listAiProviderGroups(): Promise<AiProviderGroup[]> {
   const providers = await listAiProviders();
-  return groupProviders(providers);
+  const groups = groupProviders(providers);
+  const result = await getPool().query(
+    `select id, name, type, base_url, api_key_env, proxy_url_env, enabled, created_at, updated_at
+     from ai_provider_groups where archived_at is null`,
+  );
+  const existing = new Set(groups.map((group) => group.id));
+  for (const row of result.rows) {
+    if (existing.has(String(row.id))) continue;
+    groups.push({
+      id: String(row.id),
+      name: row.name,
+      type: row.type,
+      baseUrl: row.base_url,
+      apiKeyEnv: row.api_key_env,
+      proxyUrlEnv: row.proxy_url_env ?? undefined,
+      enabled: Boolean(row.enabled),
+      models: [],
+      createdAt: toIso(row.created_at),
+      updatedAt: toIso(row.updated_at),
+    });
+  }
+  return groups.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export async function listArchivedAiProviderGroups(): Promise<
+  AiProviderGroup[]
+> {
+  const result = await getPool().query(
+    `select id, name, type, base_url, api_key_env, proxy_url_env, enabled, created_at, updated_at
+     from ai_provider_groups where archived_at is not null order by updated_at desc`,
+  );
+  const groups: AiProviderGroup[] = [];
+  for (const row of result.rows) {
+    const models = await getPool().query(
+      `select ${PROVIDER_SELECT_FIELDS} from ai_providers where provider_group_id=$1 order by priority asc, created_at asc`,
+      [row.id],
+    );
+    groups.push({
+      id: String(row.id),
+      name: row.name,
+      type: row.type,
+      baseUrl: row.base_url,
+      apiKeyEnv: row.api_key_env,
+      proxyUrlEnv: row.proxy_url_env ?? undefined,
+      enabled: false,
+      models: models.rows.map(mapProviderRow),
+      createdAt: toIso(row.created_at),
+      updatedAt: toIso(row.updated_at),
+    });
+  }
+  return groups;
 }
 
 export async function createAiProviderGroup(
@@ -880,6 +930,34 @@ export async function deleteAiProviderGroup(id: string) {
   } finally {
     client.release();
   }
+}
+
+export async function restoreAiProviderGroup(id: string) {
+  const client = await getPool().connect();
+  try {
+    await client.query("begin");
+    const group = await client.query(
+      `update ai_provider_groups set archived_at=null, enabled=true, updated_at=now()
+       where id=$1 and archived_at is not null returning id`,
+      [id],
+    );
+    if (!group.rows[0]) {
+      await client.query("rollback");
+      return undefined;
+    }
+    await client.query(
+      `update ai_providers set archived_at=null, enabled=true, updated_at=now()
+       where provider_group_id=$1`,
+      [id],
+    );
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+  return (await listAiProviderGroups()).find((group) => group.id === id);
 }
 
 export async function updateAiProvider(

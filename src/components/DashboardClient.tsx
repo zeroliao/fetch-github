@@ -3,6 +3,7 @@
 import {
   Activity,
   AlertTriangle,
+  Archive,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
@@ -19,7 +20,9 @@ import {
   GitBranch,
   LogOut,
   LockKeyhole,
+  Pencil,
   Play,
+  Plus,
   RefreshCw,
   Save,
   Search,
@@ -28,6 +31,7 @@ import {
   Star,
   ThumbsDown,
   ThumbsUp,
+  Trash2,
   ClipboardCheck,
   X,
 } from "lucide-react";
@@ -74,6 +78,22 @@ const sections = sectionDefinitions.map((section) => ({
   ...section,
   icon: sectionIcons[section.id],
 }));
+
+const AI_PROVIDER_FAILURE_OPTIONS: Array<{
+  value: AiProviderFailureCode;
+  label: string;
+}> = [
+  { value: "output_parse", label: "输出解析" },
+  { value: "output_schema", label: "结构化校验" },
+  { value: "auth", label: "认证" },
+  { value: "permission", label: "权限" },
+  { value: "rate_limit", label: "限流" },
+  { value: "timeout", label: "超时" },
+  { value: "server", label: "服务端" },
+  { value: "network", label: "网络" },
+  { value: "invalid_config", label: "配置无效" },
+  { value: "unknown", label: "未知" },
+];
 
 const navigationGroups: Array<{ label: string; items: Section[] }> = [
   { label: "发现", items: ["recommendations", "profiles"] },
@@ -453,7 +473,7 @@ export function DashboardClient({
           />
         )}
         {activeSection === "providers" && (
-          <ProvidersPanel
+          <ProvidersPanelV2
             providers={providers}
             onChanged={(provider) =>
               setProviders((current) => {
@@ -2975,21 +2995,60 @@ function ProvidersPanel({
                       className="provider-group-row"
                     >
                       <td colSpan={8}>
-                        <strong>{group.name}</strong>
-                        <span className="muted">
-                          {" "}
-                          · {group.baseUrl}
-                          {group.proxyUrlEnv
-                            ? ` · 代理 ${group.proxyUrlEnv}`
-                            : ""}{" "}
-                          · {group.enabled ? "已启用" : "已停用"}
-                        </span>
+                        <div className="provider-group-heading">
+                          <div>
+                            <strong>{group.name}</strong>
+                            <span className="muted">
+                              {" "}
+                              · {group.baseUrl}
+                              {group.proxyUrlEnv
+                                ? ` · 代理 ${group.proxyUrlEnv}`
+                                : ""}{" "}
+                              · {group.enabled ? "已启用" : "已停用"}
+                            </span>
+                          </div>
+                          <div className="action-row wrap provider-group-actions">
+                            <button
+                              className="button"
+                              type="button"
+                              onClick={() => setEditingProvider(group)}
+                              disabled={busyAction.startsWith(`${group.id}:`)}
+                            >
+                              修改 Provider
+                            </button>
+                            <button
+                              className="button"
+                              type="button"
+                              onClick={() => patchProvider(group.models[0])}
+                              disabled={busyAction.startsWith(`${group.id}:`)}
+                            >
+                              {busyAction === `${group.id}:toggle`
+                                ? "处理中"
+                                : group.enabled
+                                  ? "停用 Provider"
+                                  : "启用 Provider"}
+                            </button>
+                            <button
+                              className="button"
+                              type="button"
+                              onClick={() => deleteProvider(group.models[0])}
+                              disabled={busyAction.startsWith(`${group.id}:`)}
+                            >
+                              {busyAction === `${group.id}:delete`
+                                ? "删除中"
+                                : "删除 Provider"}
+                            </button>
+                          </div>
+                        </div>
                       </td>
                     </tr>,
                     ...group.models.map((provider) => {
                       const groupBusy = busyAction.startsWith(`${group.id}:`);
-                      const providerBusy = groupBusy;
-                      const action = busyAction.split(":")[1];
+                      const providerBusy =
+                        groupBusy || busyAction.startsWith(`${provider.id}:`);
+                      const action = busyAction.startsWith(`${provider.id}:`)
+                        ? busyAction.split(":")[1]
+                        : undefined;
                       return (
                         <tr key={provider.id}>
                           <td
@@ -3061,19 +3120,7 @@ function ProvidersPanel({
                                 type="button"
                                 disabled={providerBusy}
                               >
-                                修改
-                              </button>
-                              <button
-                                className="button"
-                                onClick={() => patchProvider(provider)}
-                                type="button"
-                                disabled={providerBusy}
-                              >
-                                {action === "toggle"
-                                  ? "处理中"
-                                  : provider.enabled
-                                    ? "停用"
-                                    : "启用"}
+                                修改模型
                               </button>
                               <button
                                 className="button"
@@ -3081,7 +3128,7 @@ function ProvidersPanel({
                                 type="button"
                                 disabled={providerBusy}
                               >
-                                {action === "test" ? "检测中" : "检测"}
+                                {action === "test" ? "检测中" : "检测模型"}
                               </button>
                               {providerRequiresRecovery(provider) && (
                                 <button
@@ -3338,133 +3385,191 @@ function AiProviderDialog({
               </button>
             </div>
             {models.map((model, index) => (
-              <div className="provider-model-row" key={model.id ?? index}>
-                <select
-                  className="select"
-                  value={model.kind}
-                  onChange={(event) =>
-                    setModels((current) =>
-                      current.map((item, itemIndex) =>
-                        itemIndex === index
-                          ? {
-                              ...item,
-                              kind: event.target.value as "chat" | "embedding",
-                            }
-                          : item,
-                      ),
-                    )
-                  }
-                >
-                  <option value="chat">chat</option>
-                  <option value="embedding">embedding</option>
-                </select>
-                <input
-                  className="input"
-                  value={model.model}
-                  onChange={(event) =>
-                    setModels((current) =>
-                      current.map((item, itemIndex) =>
-                        itemIndex === index
-                          ? { ...item, model: event.target.value }
-                          : item,
-                      ),
-                    )
-                  }
-                />
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={10000}
-                  value={model.priority}
-                  onChange={(event) =>
-                    setModels((current) =>
-                      current.map((item, itemIndex) =>
-                        itemIndex === index
-                          ? { ...item, priority: Number(event.target.value) }
-                          : item,
-                      ),
-                    )
-                  }
-                />
-                {model.kind === "chat" ? (
+              <Fragment key={model.id ?? index}>
+                <div className="provider-model-row">
                   <select
                     className="select"
-                    value={model.reasoningEffort ?? "none"}
+                    value={model.kind}
                     onChange={(event) =>
                       setModels((current) =>
                         current.map((item, itemIndex) =>
                           itemIndex === index
                             ? {
                                 ...item,
-                                reasoningEffort: event.target
-                                  .value as NonNullable<
-                                  AiProvider["reasoningEffort"]
-                                >,
+                                kind: event.target.value as
+                                  "chat" | "embedding",
                               }
                             : item,
                         ),
                       )
                     }
                   >
-                    <option value="none">不使用</option>
-                    <option value="default">默认</option>
-                    <option value="minimal">minimal</option>
-                    <option value="low">low</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high</option>
-                    <option value="xhigh">xhigh</option>
+                    <option value="chat">chat</option>
+                    <option value="embedding">embedding</option>
                   </select>
-                ) : (
+                  <input
+                    className="input"
+                    value={model.model}
+                    onChange={(event) =>
+                      setModels((current) =>
+                        current.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, model: event.target.value }
+                            : item,
+                        ),
+                      )
+                    }
+                  />
                   <input
                     className="input"
                     type="number"
                     min={1}
-                    placeholder="dimensions"
-                    value={model.dimensions ?? ""}
+                    max={10000}
+                    value={model.priority}
                     onChange={(event) =>
                       setModels((current) =>
                         current.map((item, itemIndex) =>
                           itemIndex === index
-                            ? {
-                                ...item,
-                                dimensions: Number(event.target.value),
-                              }
+                            ? { ...item, priority: Number(event.target.value) }
                             : item,
                         ),
                       )
                     }
                   />
-                )}
-                <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={model.enabled}
-                    onChange={(event) =>
+                  {model.kind === "chat" ? (
+                    <select
+                      className="select"
+                      value={model.reasoningEffort ?? "none"}
+                      onChange={(event) =>
+                        setModels((current) =>
+                          current.map((item, itemIndex) =>
+                            itemIndex === index
+                              ? {
+                                  ...item,
+                                  reasoningEffort: event.target
+                                    .value as NonNullable<
+                                    AiProvider["reasoningEffort"]
+                                  >,
+                                }
+                              : item,
+                          ),
+                        )
+                      }
+                    >
+                      <option value="none">不使用</option>
+                      <option value="default">默认</option>
+                      <option value="minimal">minimal</option>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                      <option value="xhigh">xhigh</option>
+                    </select>
+                  ) : (
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      placeholder="dimensions"
+                      value={model.dimensions ?? ""}
+                      onChange={(event) =>
+                        setModels((current) =>
+                          current.map((item, itemIndex) =>
+                            itemIndex === index
+                              ? {
+                                  ...item,
+                                  dimensions: Number(event.target.value),
+                                }
+                              : item,
+                          ),
+                        )
+                      }
+                    />
+                  )}
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={model.enabled}
+                      onChange={(event) =>
+                        setModels((current) =>
+                          current.map((item, itemIndex) =>
+                            itemIndex === index
+                              ? { ...item, enabled: event.target.checked }
+                              : item,
+                          ),
+                        )
+                      }
+                    />
+                    启用
+                  </label>
+                  <button
+                    className="button"
+                    type="button"
+                    disabled={models.length <= 1}
+                    onClick={() =>
                       setModels((current) =>
-                        current.map((item, itemIndex) =>
-                          itemIndex === index
-                            ? { ...item, enabled: event.target.checked }
-                            : item,
+                        current.filter(
+                          (_item, itemIndex) => itemIndex !== index,
                         ),
                       )
                     }
-                  />
-                  启用
-                </label>
-                <button
-                  className="button"
-                  type="button"
-                  disabled={models.length <= 1}
-                  onClick={() =>
-                    setModels((current) =>
-                      current.filter((_item, itemIndex) => itemIndex !== index),
-                    )
-                  }
-                >
-                  删除
-                </button>
-              </div>
+                  >
+                    删除
+                  </button>
+                </div>
+                <div className="provider-model-policy">
+                  <label className="field-inline">
+                    <span>异常冷却时长（秒）</span>
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      max={86400}
+                      value={model.cooldownSeconds}
+                      onChange={(event) =>
+                        setModels((current) =>
+                          current.map((item, itemIndex) =>
+                            itemIndex === index
+                              ? {
+                                  ...item,
+                                  cooldownSeconds: Number(event.target.value),
+                                }
+                              : item,
+                          ),
+                        )
+                      }
+                    />
+                  </label>
+                  <fieldset className="provider-cooldown-options">
+                    <legend>触发冷却的异常</legend>
+                    <div className="checkbox-grid">
+                      {AI_PROVIDER_FAILURE_OPTIONS.map((option) => (
+                        <label className="checkbox-row" key={option.value}>
+                          <input
+                            type="checkbox"
+                            checked={model.cooldownOn.includes(option.value)}
+                            onChange={(event) =>
+                              setModels((current) =>
+                                current.map((item, itemIndex) => {
+                                  if (itemIndex !== index) return item;
+                                  const next = new Set(item.cooldownOn);
+                                  if (event.target.checked)
+                                    next.add(option.value);
+                                  else next.delete(option.value);
+                                  return {
+                                    ...item,
+                                    cooldownOn: [...next],
+                                  };
+                                }),
+                              )
+                            }
+                          />
+                          {option.label}
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                </div>
+              </Fragment>
             ))}
           </div>
           <p className="field-hint">
@@ -3504,6 +3609,1079 @@ function AiProviderDialog({
       </form>
     </div>
   );
+}
+
+type ProviderConnectionDraft = {
+  id?: string;
+  name: string;
+  type: "openai_compatible" | "custom";
+  baseUrl: string;
+  apiKeyValue: string;
+  proxyUrlEnv: string;
+  enabled: boolean;
+};
+
+type ProviderModelDraft = {
+  id?: string;
+  kind: "chat" | "embedding";
+  model: string;
+  dimensions?: number;
+  priority: number;
+  reasoningEffort?: NonNullable<AiProvider["reasoningEffort"]>;
+  enabled: boolean;
+  timeoutSeconds?: number;
+  cooldownSeconds: number;
+  cooldownOn: AiProviderFailureCode[];
+};
+
+function ProvidersPanelV2({
+  providers,
+  onChanged,
+  onDeleted,
+}: {
+  providers: AiProvider[];
+  onChanged: (provider: AiProvider) => void;
+  onDeleted: (providerId: string) => void;
+}) {
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [connectionEditor, setConnectionEditor] = useState<
+    AiProviderGroup | "new" | null
+  >(null);
+  const [modelEditor, setModelEditor] = useState<{
+    group: AiProviderGroup;
+    model?: AiProvider;
+  } | null>(null);
+  const [draftGroups, setDraftGroups] = useState<AiProviderGroup[]>([]);
+  const [confirm, setConfirm] = useState<{
+    kind: "provider" | "model";
+    group: AiProviderGroup;
+    model?: AiProvider;
+  } | null>(null);
+  const [confirmText, setConfirmText] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+  const [archivedGroups, setArchivedGroups] = useState<AiProviderGroup[]>([]);
+  const [query, setQuery] = useState("");
+  const [kindFilter, setKindFilter] = useState<"all" | "chat" | "embedding">(
+    "all",
+  );
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [busyAction, setBusyAction] = useState("");
+  const [message, setMessage] = useState("");
+
+  const liveGroups = useMemo(() => {
+    const groups = new Map<string, AiProviderGroup>();
+    for (const provider of providers) {
+      const id = provider.providerGroupId ?? `legacy-${provider.id}`;
+      const current = groups.get(id);
+      if (current) current.models.push(provider);
+      else {
+        groups.set(id, {
+          id,
+          name: provider.name,
+          type: provider.type,
+          baseUrl: provider.baseUrl,
+          apiKeyEnv: provider.apiKeyEnv,
+          proxyUrlEnv: provider.proxyUrlEnv,
+          enabled: provider.groupEnabled !== false,
+          models: [provider],
+          createdAt: provider.createdAt,
+          updatedAt: provider.updatedAt,
+        });
+      }
+    }
+    return [...groups.values()].map((group) => ({
+      ...group,
+      enabled: group.models.some((model) => model.groupEnabled !== false),
+      models: [...group.models].sort(
+        (a, b) => a.priority - b.priority || a.model.localeCompare(b.model),
+      ),
+    }));
+  }, [providers]);
+
+  const groups = useMemo(() => {
+    const merged = new Map(liveGroups.map((group) => [group.id, group]));
+    for (const draft of draftGroups)
+      if (!merged.has(draft.id)) merged.set(draft.id, draft);
+    const search = query.trim().toLowerCase();
+    return [...merged.values()]
+      .map((group) => ({
+        ...group,
+        models: group.models.filter((model) => {
+          const matchesSearch =
+            !search ||
+            `${group.name} ${model.model}`.toLowerCase().includes(search);
+          const matchesKind = kindFilter === "all" || model.kind === kindFilter;
+          const matchesStatus =
+            statusFilter === "all" || modelStatusKey(model) === statusFilter;
+          return matchesSearch && matchesKind && matchesStatus;
+        }),
+      }))
+      .filter(
+        (group) =>
+          group.models.length > 0 ||
+          (!search && kindFilter === "all" && statusFilter === "all"),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [draftGroups, kindFilter, liveGroups, query, statusFilter]);
+
+  const selectedGroup =
+    groups.find((group) => group.id === selectedGroupId) ?? null;
+
+  function openConfirm(value: {
+    kind: "provider" | "model";
+    group: AiProviderGroup;
+    model?: AiProvider;
+  }) {
+    setConfirm(value);
+    setConfirmText("");
+  }
+
+  async function loadArchived() {
+    const response = await fetch("/api/ai-providers/groups/archived");
+    const body = await response.json().catch(() => []);
+    if (response.ok) setArchivedGroups(body);
+    setShowArchived(true);
+  }
+
+  async function restoreGroup(group: AiProviderGroup) {
+    const response = await fetch(
+      `/api/ai-providers/groups/${group.id}/restore`,
+      { method: "POST" },
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage(readApiError(body, "Provider 恢复失败。"));
+      return;
+    }
+    body.models?.forEach(onChanged);
+    setArchivedGroups((current) =>
+      current.filter((item) => item.id !== group.id),
+    );
+    setMessage("Provider 已恢复。 ");
+  }
+
+  function updateGroupModels(group: AiProviderGroup) {
+    group.models.forEach(onChanged);
+    setDraftGroups((current) => current.filter((item) => item.id !== group.id));
+  }
+
+  async function saveConnection(input: ProviderConnectionDraft) {
+    const editing = Boolean(input.id);
+    const response = await fetch(
+      editing
+        ? `/api/ai-providers/groups/${input.id}`
+        : "/api/ai-providers/groups",
+      {
+        method: editing ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...input,
+          proxyUrlEnv: input.proxyUrlEnv || undefined,
+          models: [],
+        }),
+      },
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok)
+      throw new Error(readApiError(body, "Provider 保存失败。"));
+    if (body.models?.length) updateGroupModels(body);
+    else
+      setDraftGroups((current) => [
+        ...current.filter((item) => item.id !== body.id),
+        body,
+      ]);
+    setConnectionEditor(null);
+    setSelectedGroupId(body.id);
+    setMessage(
+      editing ? "Provider 连接配置已保存。" : "Provider 已创建，请添加模型。 ",
+    );
+  }
+
+  async function saveModel(group: AiProviderGroup, input: ProviderModelDraft) {
+    const editing = Boolean(input.id);
+    const url = editing
+      ? `/api/ai-providers/groups/${group.id}/models/${input.id}`
+      : `/api/ai-providers/groups/${group.id}/models`;
+    const response = await fetch(url, {
+      method: editing ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(readApiError(body, "模型保存失败。"));
+    onChanged(body);
+    setDraftGroups((current) =>
+      current.map((item) =>
+        item.id !== group.id
+          ? item
+          : {
+              ...item,
+              models: [
+                ...item.models.filter((model) => model.id !== body.id),
+                body,
+              ],
+            },
+      ),
+    );
+    setModelEditor(null);
+    setMessage(editing ? "模型已保存。" : "模型已添加。 ");
+  }
+
+  async function toggleProvider(group: AiProviderGroup) {
+    setBusyAction(`${group.id}:toggle`);
+    try {
+      const response = await fetch(`/api/ai-providers/groups/${group.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: group.name,
+          type: group.type,
+          baseUrl: group.baseUrl,
+          proxyUrlEnv: group.proxyUrlEnv,
+          enabled: !group.enabled,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok)
+        throw new Error(readApiError(body, "Provider 状态更新失败。"));
+      updateGroupModels(body);
+      setMessage(body.enabled ? "Provider 已启用。" : "Provider 已停用。 ");
+    } catch (error) {
+      setMessage(errorMessage(error, "Provider 状态更新失败。"));
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function testModel(model: AiProvider, recover = false) {
+    setBusyAction(`${model.id}:${recover ? "recover" : "test"}`);
+    try {
+      const response = await fetch(
+        `/api/ai-providers/${model.id}/${recover ? "recover" : "test"}`,
+        { method: "POST" },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (body.provider?.id === model.id) onChanged(body.provider);
+      const ok =
+        response.ok &&
+        (body.ready || body.provider?.availabilityStatus === "available");
+      setMessage(
+        ok
+          ? `${model.model} 检测通过。`
+          : `${model.model} 检测失败：${body.checks?.reason ?? body.error ?? "配置不可用"}`,
+      );
+    } catch (error) {
+      setMessage(errorMessage(error, "模型检测失败。"));
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function testAll(group: AiProviderGroup) {
+    setBusyAction(`${group.id}:all`);
+    let passed = 0;
+    try {
+      const enabledModels = group.models.filter((item) => item.enabled);
+      if (enabledModels.length === 0) {
+        setMessage("Provider 没有启用模型，无法开始批量检测。 ");
+        return;
+      }
+      for (const model of enabledModels) {
+        const response = await fetch(`/api/ai-providers/${model.id}/test`, {
+          method: "POST",
+        });
+        const body = await response.json().catch(() => ({}));
+        if (body.provider?.id === model.id) onChanged(body.provider);
+        if (response.ok && body.ready) passed += 1;
+      }
+      setMessage(
+        `Provider 检测完成：${passed}/${enabledModels.length} 个模型通过。`,
+      );
+    } catch (error) {
+      setMessage(errorMessage(error, "Provider 批量检测失败。"));
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function confirmDelete() {
+    if (!confirm) return;
+    setBusyAction(
+      `${confirm.kind}:${confirm.kind === "provider" ? confirm.group.id : confirm.model?.id}`,
+    );
+    try {
+      const url =
+        confirm.kind === "provider"
+          ? `/api/ai-providers/groups/${confirm.group.id}`
+          : `/api/ai-providers/groups/${confirm.group.id}/models/${confirm.model?.id}`;
+      if (confirm.kind === "provider" && confirmText !== confirm.group.name) {
+        throw new Error(
+          `请输入 Provider 名称“${confirm.group.name}”确认删除。`,
+        );
+      }
+      const response = await fetch(url, {
+        method: "DELETE",
+        headers:
+          confirm.kind === "provider"
+            ? { "x-provider-confirmation": confirmText }
+            : undefined,
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(readApiError(body, "删除失败。"));
+      if (confirm.kind === "provider")
+        confirm.group.models.forEach((model) => onDeleted(model.id));
+      else if (confirm.model) onDeleted(confirm.model.id);
+      setDraftGroups((current) =>
+        current.filter((item) => item.id !== confirm.group.id),
+      );
+      setSelectedGroupId(null);
+      setMessage(
+        confirm.kind === "provider" ? "Provider 已归档。" : "模型已归档。 ",
+      );
+      setConfirm(null);
+    } catch (error) {
+      setMessage(errorMessage(error, "删除失败。"));
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  return (
+    <div className="stack provider-manager">
+      <section className="panel">
+        <div className="panel-header provider-list-header">
+          <div className="panel-title">
+            <h2>Provider 管理</h2>
+            <p>Provider 管理连接配置，模型负责独立调度、检测和故障策略。</p>
+          </div>
+          <div className="action-row">
+            <button className="button" type="button" onClick={loadArchived}>
+              查看归档
+            </button>
+            <button
+              className="button primary"
+              type="button"
+              onClick={() => setConnectionEditor("new")}
+            >
+              <Plus size={15} /> 新增 Provider
+            </button>
+          </div>
+        </div>
+        <div className="provider-filters">
+          <input
+            className="input"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索 Provider 或模型"
+          />
+          <select
+            className="select"
+            value={kindFilter}
+            onChange={(event) =>
+              setKindFilter(event.target.value as typeof kindFilter)
+            }
+          >
+            <option value="all">全部类型</option>
+            <option value="chat">Chat</option>
+            <option value="embedding">Embedding</option>
+          </select>
+          <select
+            className="select"
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+          >
+            <option value="all">全部状态</option>
+            <option value="available">可用</option>
+            <option value="cooldown">冷却中</option>
+            <option value="error">异常</option>
+            <option value="disabled">已停用</option>
+          </select>
+        </div>
+        {message && (
+          <div className="notice provider-notice" role="status">
+            {message}
+          </div>
+        )}
+        <div className="provider-group-list">
+          {groups.length === 0 ? (
+            <div className="empty-state">
+              <strong>暂无 Provider</strong>
+              <span>先创建连接配置，再添加模型。</span>
+            </div>
+          ) : (
+            groups.map((group) => {
+              const expanded = selectedGroupId === group.id;
+              return (
+                <section
+                  className={`provider-group-card ${expanded ? "is-selected" : ""}`}
+                  key={group.id}
+                >
+                  <div className="provider-card-header">
+                    <button
+                      className="provider-card-main"
+                      type="button"
+                      onClick={() =>
+                        setSelectedGroupId(expanded ? null : group.id)
+                      }
+                    >
+                      <span className="provider-card-chevron">
+                        {expanded ? "−" : "+"}
+                      </span>
+                      <span>
+                        <strong>{group.name}</strong>
+                        <small>
+                          {group.baseUrl}
+                          {group.proxyUrlEnv
+                            ? ` · 代理 ${group.proxyUrlEnv}`
+                            : ""}
+                        </small>
+                      </span>
+                    </button>
+                    <div className="provider-card-summary">
+                      <span
+                        className={`status ${group.enabled ? "tracked" : "hidden"}`}
+                      >
+                        {group.enabled ? "启用" : "停用"}
+                      </span>
+                      <span>{group.models.length} 个模型</span>
+                      <span>{groupStatusText(group)}</span>
+                    </div>
+                    <div className="action-row provider-card-actions">
+                      <button
+                        className="button"
+                        type="button"
+                        onClick={() => setConnectionEditor(group)}
+                        title="编辑连接配置"
+                      >
+                        <Pencil size={14} /> 编辑连接
+                      </button>
+                      <button
+                        className="button"
+                        type="button"
+                        onClick={() => testAll(group)}
+                        disabled={busyAction !== ""}
+                        title="检测全部启用模型"
+                      >
+                        <RefreshCw size={14} /> 检测全部
+                      </button>
+                      <button
+                        className="button"
+                        type="button"
+                        onClick={() => openConfirm({ kind: "provider", group })}
+                        title="归档 Provider"
+                      >
+                        <Archive size={14} /> 归档 Provider
+                      </button>
+                    </div>
+                  </div>
+                  {expanded && (
+                    <div className="provider-detail-panel">
+                      <div className="provider-detail-toolbar">
+                        <div>
+                          <strong>模型</strong>
+                          <span className="muted">
+                            优先级只在当前 Provider 内生效
+                          </span>
+                        </div>
+                        <div className="action-row">
+                          <button
+                            className="button"
+                            type="button"
+                            onClick={() => toggleProvider(group)}
+                            disabled={busyAction !== ""}
+                          >
+                            {group.enabled ? "停用 Provider" : "启用 Provider"}
+                          </button>
+                          <button
+                            className="button primary"
+                            type="button"
+                            onClick={() => setModelEditor({ group })}
+                          >
+                            <Plus size={14} /> 新增模型
+                          </button>
+                        </div>
+                      </div>
+                      {group.models.length === 0 ? (
+                        <div className="empty-state compact">
+                          <span>还没有模型</span>
+                          <button
+                            className="button primary"
+                            type="button"
+                            onClick={() => setModelEditor({ group })}
+                          >
+                            添加第一个模型
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="provider-model-list">
+                          {group.models.map((model) => {
+                            const action = busyAction.startsWith(`${model.id}:`)
+                              ? busyAction.split(":")[1]
+                              : "";
+                            return (
+                              <div
+                                className="provider-model-card"
+                                key={model.id}
+                              >
+                                <div className="provider-model-identity">
+                                  <strong>{model.model}</strong>
+                                  <span>
+                                    {model.kind === "chat"
+                                      ? "Chat"
+                                      : "Embedding"}{" "}
+                                    · 优先级 {model.priority}
+                                  </span>
+                                </div>
+                                <div className="provider-model-meta">
+                                  <span
+                                    className={`status ${model.enabled ? "tracked" : "hidden"}`}
+                                  >
+                                    {model.enabled ? "启用" : "停用"}
+                                  </span>
+                                  <span
+                                    className={`status ${providerAvailabilityTone(model.availabilityStatus)}`}
+                                  >
+                                    {providerAvailabilityText(
+                                      model.availabilityStatus,
+                                    )}
+                                  </span>
+                                  {model.kind === "chat" && (
+                                    <span>
+                                      推理：
+                                      {reasoningEffortText(
+                                        model.reasoningEffort,
+                                      )}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="action-row provider-model-actions">
+                                  <button
+                                    className="button"
+                                    type="button"
+                                    onClick={() => testModel(model)}
+                                    disabled={busyAction !== ""}
+                                  >
+                                    {action === "test" ? "检测中" : "检测模型"}
+                                  </button>
+                                  {providerRequiresRecovery(model) && (
+                                    <button
+                                      className="button primary"
+                                      type="button"
+                                      onClick={() => testModel(model, true)}
+                                      disabled={busyAction !== ""}
+                                    >
+                                      {action === "recover"
+                                        ? "恢复中"
+                                        : "检测并恢复"}
+                                    </button>
+                                  )}
+                                  <button
+                                    className="button"
+                                    type="button"
+                                    onClick={() =>
+                                      setModelEditor({ group, model })
+                                    }
+                                    disabled={busyAction !== ""}
+                                  >
+                                    修改模型
+                                  </button>
+                                  <button
+                                    className="button icon"
+                                    type="button"
+                                    onClick={() =>
+                                      openConfirm({
+                                        kind: "model",
+                                        group,
+                                        model,
+                                      })
+                                    }
+                                    title="删除模型"
+                                    aria-label={`删除模型 ${model.model}`}
+                                    disabled={busyAction !== ""}
+                                  >
+                                    <Trash2 size={15} />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </section>
+              );
+            })
+          )}
+        </div>
+      </section>
+      {showArchived && (
+        <section className="panel archived-provider-panel">
+          <div className="panel-header">
+            <div className="panel-title">
+              <h2>已归档 Provider</h2>
+              <p>归档不会删除历史检测和调用记录。</p>
+            </div>
+            <button
+              className="button"
+              type="button"
+              onClick={() => setShowArchived(false)}
+            >
+              收起
+            </button>
+          </div>
+          {archivedGroups.length === 0 ? (
+            <div className="empty-state compact">暂无归档 Provider</div>
+          ) : (
+            <div className="provider-group-list">
+              {archivedGroups.map((group) => (
+                <div className="provider-model-card" key={group.id}>
+                  <div className="provider-model-identity">
+                    <strong>{group.name}</strong>
+                    <span>{group.models.length} 个模型 · 已归档</span>
+                  </div>
+                  <button
+                    className="button"
+                    type="button"
+                    onClick={() => restoreGroup(group)}
+                  >
+                    恢复 Provider
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+      {connectionEditor && (
+        <ProviderConnectionDrawer
+          provider={connectionEditor === "new" ? undefined : connectionEditor}
+          onClose={() => setConnectionEditor(null)}
+          onSave={saveConnection}
+        />
+      )}
+      {modelEditor && (
+        <ProviderModelDrawer
+          provider={modelEditor.group}
+          model={modelEditor.model}
+          onClose={() => setModelEditor(null)}
+          onSave={(input) => saveModel(modelEditor.group, input)}
+        />
+      )}
+      {confirm && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal-panel confirm-panel">
+            <h2>
+              {confirm.kind === "provider" ? "归档 Provider？" : "归档模型？"}
+            </h2>
+            <p>
+              {confirm.kind === "provider"
+                ? `将归档 ${confirm.group.name} 及其 ${confirm.group.models.length} 个模型，历史检测记录会保留。`
+                : `将归档模型 ${confirm.model?.model}。`}
+            </p>
+            {confirm.kind === "provider" && (
+              <Field label={`输入 Provider 名称：${confirm.group.name}`}>
+                <input
+                  className="input"
+                  value={confirmText}
+                  onChange={(event) => setConfirmText(event.target.value)}
+                />
+              </Field>
+            )}
+            <div className="form-actions">
+              <button
+                className="button"
+                type="button"
+                onClick={() => setConfirm(null)}
+              >
+                取消
+              </button>
+              <button
+                className="button danger"
+                type="button"
+                onClick={confirmDelete}
+                disabled={
+                  busyAction !== "" ||
+                  (confirm.kind === "provider" &&
+                    confirmText !== confirm.group.name)
+                }
+              >
+                {busyAction ? "处理中" : "确认归档"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProviderConnectionDrawer({
+  provider,
+  onClose,
+  onSave,
+}: {
+  provider?: AiProviderGroup;
+  onClose: () => void;
+  onSave: (input: ProviderConnectionDraft) => Promise<void>;
+}) {
+  const [form, setForm] = useState<ProviderConnectionDraft>({
+    id: provider?.id,
+    name: provider?.name ?? "NEW_PROVIDER",
+    type: provider?.type ?? "openai_compatible",
+    baseUrl: provider?.baseUrl ?? "https://api.example.com/v1",
+    apiKeyValue: "",
+    proxyUrlEnv: provider?.proxyUrlEnv ?? "",
+    enabled: provider?.enabled ?? true,
+  });
+  const [saving, setSaving] = useState(false);
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      await onSave(form);
+    } catch (error) {
+      window.alert(errorMessage(error, "Provider 保存失败。"));
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <div className="drawer-backdrop" role="presentation">
+      <form className="drawer provider-drawer" onSubmit={submit}>
+        <div className="drawer-header">
+          <div>
+            <h2>{provider ? "编辑 Provider" : "新增 Provider"}</h2>
+            <p>连接配置独立保存；API Key 只写入服务器环境变量。</p>
+          </div>
+          <button
+            className="button icon"
+            type="button"
+            onClick={onClose}
+            aria-label="关闭"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="drawer-content form-stack">
+          <Field label="Provider 名称">
+            <input
+              className="input"
+              required
+              value={form.name}
+              onChange={(event) =>
+                setForm({ ...form, name: event.target.value })
+              }
+            />
+          </Field>
+          <Field label="协议类型">
+            <select
+              className="select"
+              value={form.type}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  type: event.target.value as ProviderConnectionDraft["type"],
+                })
+              }
+            >
+              <option value="openai_compatible">OpenAI Compatible</option>
+              <option value="custom">Custom</option>
+            </select>
+          </Field>
+          <Field label="Base URL">
+            <input
+              className="input"
+              type="url"
+              required
+              value={form.baseUrl}
+              onChange={(event) =>
+                setForm({ ...form, baseUrl: event.target.value })
+              }
+            />
+          </Field>
+          <Field label={provider ? "更新 API Key（可不填）" : "API Key"}>
+            <input
+              className="input"
+              type="password"
+              value={form.apiKeyValue}
+              onChange={(event) =>
+                setForm({ ...form, apiKeyValue: event.target.value })
+              }
+            />
+          </Field>
+          <Field label="出口代理环境变量名">
+            <input
+              className="input"
+              placeholder="SUB2API_PROXY_URL"
+              value={form.proxyUrlEnv}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  proxyUrlEnv: event.target.value.toUpperCase(),
+                })
+              }
+            />
+            <span className="field-hint">
+              值留在服务器 .env.local，支持 http://、https:// 或 socks5://。
+            </span>
+          </Field>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={form.enabled}
+              onChange={(event) =>
+                setForm({ ...form, enabled: event.target.checked })
+              }
+            />
+            启用 Provider
+          </label>
+        </div>
+        <div className="drawer-footer">
+          <button className="button" type="button" onClick={onClose}>
+            取消
+          </button>
+          <button className="button primary" disabled={saving} type="submit">
+            {saving ? "保存中" : "保存连接配置"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function ProviderModelDrawer({
+  provider,
+  model,
+  onClose,
+  onSave,
+}: {
+  provider: AiProviderGroup;
+  model?: AiProvider;
+  onClose: () => void;
+  onSave: (input: ProviderModelDraft) => Promise<void>;
+}) {
+  const [form, setForm] = useState<ProviderModelDraft>({
+    id: model?.id,
+    kind: model?.kind ?? "chat",
+    model: model?.model ?? "model-name",
+    dimensions: model?.dimensions,
+    priority: model?.priority ?? 100,
+    reasoningEffort: model?.reasoningEffort ?? "none",
+    enabled: model?.enabled ?? true,
+    timeoutSeconds: model?.timeoutSeconds,
+    cooldownSeconds: model?.cooldownSeconds ?? 300,
+    cooldownOn: model?.cooldownOn ?? [...DEFAULT_AI_PROVIDER_COOLDOWN_ON],
+  });
+  const [saving, setSaving] = useState(false);
+  function patch(next: Partial<ProviderModelDraft>) {
+    setForm((current) => ({ ...current, ...next }));
+  }
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      await onSave(form);
+    } catch (error) {
+      window.alert(errorMessage(error, "模型保存失败。"));
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <div className="drawer-backdrop" role="presentation">
+      <form className="drawer model-drawer" onSubmit={submit}>
+        <div className="drawer-header">
+          <div>
+            <h2>{model ? "修改模型" : "新增模型"}</h2>
+            <p>Provider：{provider.name} · 连接配置继承自 Provider</p>
+          </div>
+          <button
+            className="button icon"
+            type="button"
+            onClick={onClose}
+            aria-label="关闭"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="drawer-content form-stack">
+          <div className="form-grid two-col">
+            <Field label="模型类型">
+              <select
+                className="select"
+                value={form.kind}
+                onChange={(event) =>
+                  patch({
+                    kind: event.target.value as ProviderModelDraft["kind"],
+                    dimensions:
+                      event.target.value === "embedding"
+                        ? form.dimensions
+                        : undefined,
+                  })
+                }
+              >
+                <option value="chat">Chat</option>
+                <option value="embedding">Embedding</option>
+              </select>
+            </Field>
+            <Field label="模型名称">
+              <input
+                className="input"
+                required
+                value={form.model}
+                onChange={(event) => patch({ model: event.target.value })}
+              />
+            </Field>
+            <Field label="优先级">
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={10000}
+                required
+                value={form.priority}
+                onChange={(event) =>
+                  patch({ priority: Number(event.target.value) })
+                }
+              />
+            </Field>
+            {form.kind === "chat" ? (
+              <Field label="推理程度">
+                <select
+                  className="select"
+                  value={form.reasoningEffort ?? "none"}
+                  onChange={(event) =>
+                    patch({
+                      reasoningEffort: event.target
+                        .value as ProviderModelDraft["reasoningEffort"],
+                    })
+                  }
+                >
+                  <option value="none">不使用</option>
+                  <option value="default">默认</option>
+                  <option value="minimal">minimal</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                </select>
+              </Field>
+            ) : (
+              <Field label="Embedding 维度">
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  required
+                  value={form.dimensions ?? ""}
+                  onChange={(event) =>
+                    patch({ dimensions: Number(event.target.value) })
+                  }
+                />
+              </Field>
+            )}
+            <Field label="超时时间（秒）">
+              <input
+                className="input"
+                type="number"
+                min={1}
+                value={form.timeoutSeconds ?? ""}
+                onChange={(event) =>
+                  patch({
+                    timeoutSeconds: event.target.value
+                      ? Number(event.target.value)
+                      : undefined,
+                  })
+                }
+              />
+            </Field>
+          </div>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={form.enabled}
+              onChange={(event) => patch({ enabled: event.target.checked })}
+            />
+            启用模型
+          </label>
+          <details
+            className="provider-advanced"
+            open={Boolean(model?.cooldownOn)}
+          >
+            <summary>高级故障策略</summary>
+            <div className="form-grid two-col">
+              <Field label="异常冷却时长（秒）">
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={86400}
+                  required
+                  value={form.cooldownSeconds}
+                  onChange={(event) =>
+                    patch({ cooldownSeconds: Number(event.target.value) })
+                  }
+                />
+              </Field>
+              <fieldset className="provider-cooldown-options">
+                <legend>触发冷却的异常</legend>
+                <div className="checkbox-grid">
+                  {AI_PROVIDER_FAILURE_OPTIONS.map((option) => (
+                    <label className="checkbox-row" key={option.value}>
+                      <input
+                        type="checkbox"
+                        checked={form.cooldownOn.includes(option.value)}
+                        onChange={(event) =>
+                          patch({
+                            cooldownOn: event.target.checked
+                              ? [...new Set([...form.cooldownOn, option.value])]
+                              : form.cooldownOn.filter(
+                                  (item) => item !== option.value,
+                                ),
+                          })
+                        }
+                      />
+                      {option.label}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            </div>
+          </details>
+        </div>
+        <div className="drawer-footer">
+          <button className="button" type="button" onClick={onClose}>
+            取消
+          </button>
+          <button className="button primary" disabled={saving} type="submit">
+            {saving ? "保存中" : "保存模型"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function modelStatusKey(model: AiProvider) {
+  if (!model.enabled) return "disabled";
+  return model.availabilityStatus === "available"
+    ? "available"
+    : model.availabilityStatus === "cooldown"
+      ? "cooldown"
+      : "error";
+}
+
+function groupStatusText(group: AiProviderGroup) {
+  if (group.models.length === 0) return "待配置模型";
+  const enabled = group.models.filter((model) => model.enabled);
+  if (enabled.length === 0) return "无可用模型";
+  const available = enabled.filter(
+    (model) => model.availabilityStatus === "available",
+  ).length;
+  if (available === enabled.length) return "全部可用";
+  if (available > 0) return "部分可用";
+  return "不可用";
 }
 
 function KnowledgePanel({
