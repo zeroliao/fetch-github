@@ -1000,6 +1000,17 @@ button {
   color: var(--text);
 }
 
+.checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+  padding: 4px 0;
+}
+
+.checkbox-grid .checkbox-row {
+  min-height: 30px;
+}
+
 .notice {
   grid-column: 1 / -1;
   border: 1px solid var(--border);

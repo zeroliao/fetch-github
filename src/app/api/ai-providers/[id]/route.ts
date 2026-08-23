@@ -20,7 +20,8 @@ export async function PATCH(
   if (auth.response) return auth.response;
 
   const { id } = await context.params;
-  const parsed = patchSchema.safeParse(await request.json());
+  const payload = await request.json();
+  const parsed = patchSchema.safeParse(payload);
 
   if (!parsed.success) {
     return NextResponse.json(
@@ -30,6 +31,16 @@ export async function PATCH(
   }
 
   const { apiKeyValue, ...providerPatch } = parsed.data;
+  for (const field of [
+    "priority",
+    "enabled",
+    "cooldownSeconds",
+    "cooldownOn",
+  ] as const) {
+    if (!(field in payload)) {
+      delete providerPatch[field];
+    }
+  }
   const currentProvider = await getAiProvider(id);
   if (!currentProvider) {
     return NextResponse.json({ error: "AI 配置不存在。" }, { status: 404 });

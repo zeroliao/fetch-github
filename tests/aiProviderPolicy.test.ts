@@ -7,6 +7,7 @@ import {
   orderEligibleProviders,
   providerNeedsManualRecovery,
 } from "../src/server/aiProviderPolicy";
+import { resolveReadyAiProvider } from "../src/server/aiProviderResolver";
 
 function provider(id: string, overrides: Partial<AiProvider> = {}): AiProvider {
   return {
@@ -49,7 +50,7 @@ test("orders eligible providers by priority, creation time, and id", () => {
   );
 });
 
-test("keeps active cooldowns out and returns expired cooldowns to selection", () => {
+test("keeps active and expired cooldowns out until a probe recovers them", () => {
   const result = orderEligibleProviders(
     [
       provider("active", {
@@ -70,8 +71,26 @@ test("keeps active cooldowns out and returns expired cooldowns to selection", ()
 
   assert.deepEqual(
     result.map((item) => item.id),
-    ["expired"],
+    [],
   );
+});
+
+test("expired cooldown is selected only after a successful real probe", async () => {
+  const expired = provider("expired", {
+    availabilityStatus: "cooldown",
+    cooldownUntil: "2026-01-09T23:59:00Z",
+  });
+  let probeCalls = 0;
+  const recovered = await resolveReadyAiProvider(
+    [expired],
+    "chat",
+    async (_id, input) => {
+      probeCalls += 1;
+      return { ...expired, availabilityStatus: input.status };
+    },
+  );
+  assert.equal(probeCalls, 1);
+  assert.equal(recovered?.availabilityStatus, "available");
 });
 
 test("classifies authentication, permission, and invalid configuration as manual recovery", () => {
@@ -144,6 +163,28 @@ test("classifies timeout, network, and server failures as transient cooldowns", 
   }
 });
 
+test("provider cooldown policy controls which failures are automatic", () => {
+  const configured = provider("configured", {
+    cooldownSeconds: 90,
+    cooldownOn: ["timeout"],
+  });
+
+  const timeout = classifyAiProviderFailure(
+    new Error("request timed out"),
+    configured,
+  );
+  assert.equal(timeout.targetAvailabilityStatus, "cooldown");
+  assert.equal(timeout.cooldownSeconds, 90);
+
+  const schema = classifyAiProviderFailure(
+    new Error("ZodError: required field summary is missing"),
+    configured,
+  );
+  assert.equal(schema.targetAvailabilityStatus, "error");
+  assert.equal(schema.retryable, false);
+  assert.equal(isManualRecoveryStatus("error"), true);
+});
+
 test("separates JSON parsing failures from schema failures", () => {
   const parseFailure = classifyAiProviderFailure(
     new SyntaxError("Unexpected token s in JSON at position 1"),
@@ -182,6 +223,7 @@ test("never exposes provider secrets in user-safe output", () => {
 
 test("manual recovery helpers only select persistent unavailable states", () => {
   const manual: ProviderAvailabilityStatus[] = [
+    "error",
     "blocked_auth",
     "blocked_permission",
     "invalid_config",

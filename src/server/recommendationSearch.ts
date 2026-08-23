@@ -3,6 +3,7 @@ import { cosineSimilarity } from "@/lib/semanticGate";
 import type { AiProvider, Recommendation } from "@/lib/types";
 import { callEmbedding } from "@/server/aiClient";
 import { orderEligibleProviders } from "@/server/aiProviderPolicy";
+import { resolveReadyAiProvider } from "@/server/aiProviderResolver";
 import {
   getCachedEmbedding,
   getRepoEmbeddingVector,
@@ -10,6 +11,7 @@ import {
   listProfiles,
   listRecommendations,
   upsertCachedEmbedding,
+  updateAiProviderAvailability,
 } from "@/server/store";
 
 export interface RecommendationSearchResult {
@@ -188,10 +190,13 @@ async function getQueryEmbedding(
     throw new Error("没有可用的发现配置，已改用文本匹配。");
   }
 
-  const providers = explicitProvider
-    ? [explicitProvider]
-    : await listAiProviders();
-  const provider = orderEligibleProviders(providers, "embedding")[0];
+  const provider = explicitProvider
+    ? orderEligibleProviders([explicitProvider], "embedding")[0]
+    : await resolveReadyAiProvider(
+        await listAiProviders(),
+        "embedding",
+        updateAiProviderAvailability,
+      );
   if (!provider) {
     throw new Error("当前没有可用的 Embedding 模型，已改用文本匹配。");
   }

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { classifyAiProviderFailure } from "@/server/aiProviderPolicy";
-import { testProvider } from "@/server/aiClient";
+import { probeAiProvider } from "@/server/aiProviderProbe";
 import { requireAuth } from "@/server/auth";
 import { getAiProvider, updateAiProviderAvailability } from "@/server/store";
 
@@ -25,7 +25,7 @@ export async function POST(
 
   await updateAiProviderAvailability(id, { status: "recovering" });
   try {
-    const result = await testProvider(provider);
+    const result = await probeAiProvider(provider);
     if (!result.ready) {
       throw new Error(
         result.reason === "api_key_missing"
@@ -43,7 +43,7 @@ export async function POST(
       message: "检测通过，模型已恢复为可用状态。",
     });
   } catch (error) {
-    const failure = classifyAiProviderFailure(error);
+    const failure = classifyAiProviderFailure(error, provider);
     const cooldownUntil = failure.cooldownSeconds
       ? new Date(Date.now() + failure.cooldownSeconds * 1000).toISOString()
       : undefined;

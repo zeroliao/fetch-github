@@ -58,6 +58,7 @@ Required fields:
 - `dimensions` for embeddings
 - `rate_limit`
 - `timeout`
+- `cooldown_seconds` and `cooldown_on`
 - `enabled`
 
 Acceptance:
@@ -68,7 +69,9 @@ Acceptance:
 - The provider name is the single user-facing name for the model and its API key environment variable.
 - Provider names must be unique after normalization; the deployment starts from a clean provider store, so no legacy migration is required.
 - Test connection action verifies provider availability without printing secrets.
-- Provider selection is automatic by kind and ascending priority.
+- Test connection action runs the production Chat analysis schema or a batch Embedding shape/dimension probe.
+- Provider selection uses only `available` providers, by kind and ascending priority; an expired cooldown is first checked with a real probe and only a successful probe returns it to `available`.
+- Failure codes outside `cooldown_on` enter manual `error` recovery.
 - The list shows availability status, sanitized unavailable reason, recovery guidance, and cooldown deadline.
 - Persistent unavailable states can return to `available` only after “检测并恢复” succeeds.
 - Delete is a soft delete so historical embedding and LLM foreign keys remain valid.

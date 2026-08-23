@@ -29,6 +29,29 @@ export const providerSchema = z.object({
     .optional(),
   enabled: z.boolean().default(true),
   timeoutSeconds: z.number().int().positive().optional(),
+  cooldownSeconds: z
+    .number()
+    .int()
+    .positive()
+    .max(24 * 60 * 60)
+    .default(300),
+  cooldownOn: z
+    .array(
+      z.enum([
+        "output_parse",
+        "output_schema",
+        "auth",
+        "permission",
+        "rate_limit",
+        "timeout",
+        "server",
+        "network",
+        "invalid_config",
+        "unknown",
+      ]),
+    )
+    .max(10)
+    .default(["rate_limit", "timeout", "server", "network"]),
   rateLimit: z
     .object({
       requestsPerMinute: z.number().int().positive().optional(),

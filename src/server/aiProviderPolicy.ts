@@ -1,20 +1,11 @@
 import type {
   AiProvider,
+  AiProviderFailureCode,
   ProviderAvailabilityStatus,
   ProviderKind,
 } from "@/lib/types";
 
-export type AiFailureCode =
-  | "output_parse"
-  | "output_schema"
-  | "auth"
-  | "permission"
-  | "rate_limit"
-  | "timeout"
-  | "server"
-  | "network"
-  | "invalid_config"
-  | "unknown";
+export type AiFailureCode = AiProviderFailureCode;
 
 export interface AiProviderFailureClassification {
   code: AiFailureCode;
@@ -30,7 +21,7 @@ const DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 60;
 const DEFAULT_TRANSIENT_COOLDOWN_SECONDS = 30;
 const MAX_COOLDOWN_SECONDS = 24 * 60 * 60;
 
-export function classifyAiProviderFailure(
+function classifyDefaultAiProviderFailure(
   error: unknown,
 ): AiProviderFailureClassification {
   const raw = collectErrorText(error);
@@ -131,6 +122,34 @@ export function classifyAiProviderFailure(
   });
 }
 
+export function classifyAiProviderFailure(
+  error: unknown,
+  provider?: Pick<AiProvider, "cooldownOn" | "cooldownSeconds">,
+): AiProviderFailureClassification {
+  const base = classifyDefaultAiProviderFailure(error);
+  if (!provider?.cooldownOn) return base;
+
+  const cooldownOn = new Set(provider.cooldownOn);
+  if (cooldownOn.has(base.code)) {
+    return {
+      ...base,
+      retryable: true,
+      targetAvailabilityStatus: "cooldown",
+      cooldownSeconds:
+        provider.cooldownSeconds ??
+        base.cooldownSeconds ??
+        DEFAULT_TRANSIENT_COOLDOWN_SECONDS,
+    };
+  }
+
+  return {
+    ...base,
+    retryable: false,
+    targetAvailabilityStatus: "error",
+    cooldownSeconds: undefined,
+  };
+}
+
 export function orderEligibleProviders(
   providers: readonly AiProvider[],
   kind: ProviderKind,
@@ -155,12 +174,7 @@ export function orderEligibleProviders(
         return true;
       }
 
-      return (
-        provider.availabilityStatus === "cooldown" &&
-        typeof provider.cooldownUntil === "string" &&
-        isFiniteEpoch(provider.cooldownUntil) &&
-        Date.parse(provider.cooldownUntil) <= nowMs
-      );
+      return false;
     })
     .sort((left, right) => {
       const priorityDifference =
@@ -179,6 +193,7 @@ export function isManualRecoveryStatus(
   status: ProviderAvailabilityStatus,
 ): boolean {
   return (
+    status === "error" ||
     status === "blocked_auth" ||
     status === "blocked_permission" ||
     status === "invalid_config"

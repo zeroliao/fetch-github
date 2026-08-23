@@ -3,7 +3,7 @@ import type { AiProvider, DiscoveryProfile } from "@/lib/types";
 import { buildGitHubSearchQueryPlans } from "./githubSearch";
 import { callChatJson } from "./aiClient";
 import { orderEligibleProviders } from "./aiProviderPolicy";
-import { listAiProviders } from "./store";
+import { listAiProviders, resolveAiProvider } from "./store";
 
 const MAX_KEYWORDS = 10;
 const MAX_TOPICS = 10;
@@ -95,10 +95,9 @@ export async function generateDiscoveryPreferences(input: {
 }
 
 async function resolveChatProvider(explicitProvider?: AiProvider) {
-  const providers = explicitProvider
-    ? [explicitProvider]
-    : await listAiProviders();
-  return orderEligibleProviders(providers, "chat")[0];
+  if (explicitProvider)
+    return orderEligibleProviders([explicitProvider], "chat")[0];
+  return resolveAiProvider("chat");
 }
 
 export function buildDiscoveryPreview(input: {

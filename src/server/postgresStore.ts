@@ -45,8 +45,10 @@ import {
   normalizeChineseLabels,
 } from "@/lib/recommendationText";
 import { calculateFinalScore } from "@/lib/scoring";
+import { DEFAULT_AI_PROVIDER_COOLDOWN_ON } from "@/lib/types";
 import { canonicalizeGitHubRepoUrl } from "@/lib/repoProcessing";
 import { orderEligibleProviders } from "./aiProviderPolicy";
+import { resolveReadyAiProvider } from "./aiProviderResolver";
 import { getPool } from "./db";
 
 interface RepoDocumentInput {
@@ -319,6 +321,8 @@ export async function ensureSeedData() {
           JSON.stringify({
             rateLimit: provider.rateLimit,
             timeoutSeconds: provider.timeoutSeconds,
+            cooldownSeconds: provider.cooldownSeconds,
+            cooldownOn: provider.cooldownOn,
           }),
           provider.enabled,
           provider.createdAt,
@@ -623,6 +627,8 @@ export async function createAiProvider(
       JSON.stringify({
         rateLimit: provider.rateLimit,
         timeoutSeconds: provider.timeoutSeconds,
+        cooldownSeconds: provider.cooldownSeconds,
+        cooldownOn: provider.cooldownOn,
       }),
       provider.enabled,
       provider.createdAt,
@@ -708,6 +714,8 @@ export async function updateAiProvider(
       JSON.stringify({
         rateLimit: nextProvider.rateLimit,
         timeoutSeconds: nextProvider.timeoutSeconds,
+        cooldownSeconds: nextProvider.cooldownSeconds,
+        cooldownOn: nextProvider.cooldownOn,
       }),
       nextProvider.enabled,
     ],
@@ -738,7 +746,12 @@ export async function resolveAiProvider(
   kind: ProviderKind,
   excludedIds: Iterable<string> = [],
 ): Promise<AiProvider | undefined> {
-  return orderEligibleProviders(await listAiProviders(), kind, excludedIds)[0];
+  return resolveReadyAiProvider(
+    await listAiProviders(),
+    kind,
+    updateAiProviderAvailability,
+    excludedIds,
+  );
 }
 
 export async function updateAiProviderAvailability(
@@ -946,16 +959,7 @@ export async function recordScanProviderSuccess(input: {
   );
   await pool.query(
     `update ai_providers
-     set availability_status=case
-           when availability_status='cooldown'
-             and (cooldown_until is null or cooldown_until <= now()) then 'available'
-           else availability_status
-         end,
-         unavailable_code=case when availability_status='cooldown' then null else unavailable_code end,
-         unavailable_reason=case when availability_status='cooldown' then null else unavailable_reason end,
-         recovery_suggestion=case when availability_status='cooldown' then null else recovery_suggestion end,
-         cooldown_until=case when availability_status='cooldown' then null else cooldown_until end,
-         last_checked_at=now(),
+     set last_checked_at=now(),
          updated_at=now()
      where id=$1 and archived_at is null`,
     [input.providerId],
@@ -3176,6 +3180,10 @@ function mapProviderRow(row: Record<string, any>): AiProvider {
     archivedAt: row.archived_at ? toIso(row.archived_at) : undefined,
     rateLimit: config.rateLimit as AiProvider["rateLimit"],
     timeoutSeconds: config.timeoutSeconds as number | undefined,
+    cooldownSeconds: Number(config.cooldownSeconds ?? 300),
+    cooldownOn: Array.isArray(config.cooldownOn)
+      ? (config.cooldownOn as AiProvider["cooldownOn"])
+      : [...DEFAULT_AI_PROVIDER_COOLDOWN_ON],
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
   };

@@ -37,6 +37,7 @@ import {
   classifyAiProviderFailure,
   orderEligibleProviders,
 } from "./aiProviderPolicy";
+import { resolveReadyAiProvider } from "./aiProviderResolver";
 import {
   buildSourceAdapterPlans,
   type SourceAdapterPlan,
@@ -78,6 +79,7 @@ import {
   retryCandidate,
   upgradeRepoDataLevel,
   updateScanJob,
+  updateAiProviderAvailability,
   upsertLlmResult,
   upsertRepoDocument,
   upsertRepoEmbedding,
@@ -1309,7 +1311,12 @@ async function resolveJobProvider(jobId: string, kind: ProviderKind) {
   const excludedIds = states
     .filter((state) => state.exhausted)
     .map((state) => state.providerId);
-  return orderEligibleProviders(await listAiProviders(), kind, excludedIds)[0];
+  return resolveReadyAiProvider(
+    await listAiProviders(),
+    kind,
+    updateAiProviderAvailability,
+    excludedIds,
+  );
 }
 
 async function handleProviderFailure(
@@ -1318,16 +1325,17 @@ async function handleProviderFailure(
   error: unknown,
   attempt: number,
 ) {
-  const classification = classifyAiProviderFailure(error);
+  const classification = classifyAiProviderFailure(error, provider);
   const transientFailure =
     classification.code === "network" ||
     classification.code === "timeout" ||
     classification.code === "server";
   const immediatelyExhausted =
-    classification.code === "auth" ||
-    classification.code === "permission" ||
-    classification.code === "invalid_config" ||
-    (transientFailure && attempt >= MAX_TRANSIENT_PROVIDER_ATTEMPTS);
+    (classification.targetAvailabilityStatus !== undefined &&
+      classification.targetAvailabilityStatus !== "cooldown") ||
+    (classification.targetAvailabilityStatus === "cooldown" &&
+      transientFailure &&
+      attempt >= MAX_TRANSIENT_PROVIDER_ATTEMPTS);
   const retryAfterSeconds = Math.max(1, classification.cooldownSeconds ?? 15);
   const cooldownUntil = classification.cooldownSeconds
     ? new Date(Date.now() + retryAfterSeconds * 1000).toISOString()

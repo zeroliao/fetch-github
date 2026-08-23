@@ -42,9 +42,11 @@ import type {
 } from "@/lib/types";
 import { canonicalizeGitHubRepoUrl } from "@/lib/repoProcessing";
 import { orderEligibleProviders } from "./aiProviderPolicy";
+import { resolveReadyAiProvider } from "./aiProviderResolver";
 import { buildRecommendation } from "./ranking";
 import { isDatabaseAvailable } from "./db";
 import * as postgresStore from "./postgresStore";
+import { DEFAULT_AI_PROVIDER_COOLDOWN_ON } from "@/lib/types";
 
 interface StoreState extends DashboardSnapshot {
   feedback: Feedback[];
@@ -248,6 +250,14 @@ function normalizeProvider(provider: AiProvider): AiProvider {
 function visibleLocalProviders(providers: AiProvider[]) {
   return providers
     .filter((provider) => !provider.archivedAt)
+    .map((provider) => {
+      const normalized = {
+        ...provider,
+        cooldownSeconds: provider.cooldownSeconds ?? 300,
+        cooldownOn: provider.cooldownOn ?? [...DEFAULT_AI_PROVIDER_COOLDOWN_ON],
+      };
+      return normalized;
+    })
     .sort(
       (left, right) =>
         left.priority - right.priority ||
@@ -613,7 +623,12 @@ export async function resolveAiProvider(
   if (await isDatabaseAvailable()) {
     return postgresStore.resolveAiProvider(kind, excludedIds);
   }
-  return orderEligibleProviders(await listAiProviders(), kind, excludedIds)[0];
+  return resolveReadyAiProvider(
+    await listAiProviders(),
+    kind,
+    updateAiProviderAvailability,
+    excludedIds,
+  );
 }
 
 export async function updateAiProviderAvailability(

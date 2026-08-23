@@ -45,8 +45,10 @@ import {
   opportunityActionText,
 } from "@/lib/opportunity";
 import { getRecommendationSummaryZh } from "@/lib/recommendationText";
+import { DEFAULT_AI_PROVIDER_COOLDOWN_ON } from "@/lib/types";
 import type {
   AiProvider,
+  AiProviderFailureCode,
   DashboardSnapshot,
   DiscoveryProfile,
   FeedbackAction,
@@ -2751,6 +2753,8 @@ function ProvidersPanel({
           reasoningEffort:
             input.kind === "chat" ? input.reasoningEffort : undefined,
           enabled: input.enabled,
+          cooldownSeconds: input.cooldownSeconds,
+          cooldownOn: input.cooldownOn,
         }),
       },
     );
@@ -3068,7 +3072,25 @@ interface AiProviderFormValue {
   priority: number;
   reasoningEffort: NonNullable<AiProvider["reasoningEffort"]>;
   enabled: boolean;
+  cooldownSeconds: number;
+  cooldownOn: AiProviderFailureCode[];
 }
+
+const aiFailureOptions: Array<{
+  value: AiProviderFailureCode;
+  label: string;
+}> = [
+  { value: "rate_limit", label: "限流 / 配额" },
+  { value: "timeout", label: "请求超时" },
+  { value: "server", label: "服务端 5xx" },
+  { value: "network", label: "网络错误" },
+  { value: "output_parse", label: "输出解析失败" },
+  { value: "output_schema", label: "输出结构校验失败" },
+  { value: "auth", label: "认证失败" },
+  { value: "permission", label: "权限失败" },
+  { value: "invalid_config", label: "参数 / 配置错误" },
+  { value: "unknown", label: "未知异常" },
+];
 
 function AiProviderDialog({
   provider,
@@ -3094,6 +3116,12 @@ function AiProviderDialog({
     NonNullable<AiProvider["reasoningEffort"]>
   >(provider?.reasoningEffort ?? "default");
   const [enabled, setEnabled] = useState(provider?.enabled ?? true);
+  const [cooldownSeconds, setCooldownSeconds] = useState(
+    provider?.cooldownSeconds ?? 300,
+  );
+  const [cooldownOn, setCooldownOn] = useState<AiProviderFailureCode[]>(
+    provider?.cooldownOn ?? [...DEFAULT_AI_PROVIDER_COOLDOWN_ON],
+  );
   const [message, setMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const isEditing = Boolean(provider);
@@ -3105,6 +3133,14 @@ function AiProviderDialog({
       setModel(nextKind === "chat" ? "chat-model" : "embedding-model");
       setDimensions(nextKind === "embedding" ? 4096 : 1536);
     }
+  }
+
+  function toggleCooldownCode(code: AiProviderFailureCode) {
+    setCooldownOn((current) =>
+      current.includes(code)
+        ? current.filter((item) => item !== code)
+        : [...current, code],
+    );
   }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -3123,6 +3159,8 @@ function AiProviderDialog({
         priority,
         reasoningEffort,
         enabled,
+        cooldownSeconds,
+        cooldownOn,
       });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "AI 配置保存失败。");
@@ -3246,6 +3284,37 @@ function AiProviderDialog({
               />
             </Field>
           )}
+          <Field label="异常冷却条件">
+            <div className="checkbox-grid">
+              {aiFailureOptions.map((option) => (
+                <label className="checkbox-row" key={option.value}>
+                  <input
+                    type="checkbox"
+                    checked={cooldownOn.includes(option.value)}
+                    onChange={() => toggleCooldownCode(option.value)}
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
+            <span className="field-hint">
+              未勾选的异常会进入异常状态，只能通过手动检测并恢复。
+            </span>
+          </Field>
+          <Field label="冷却时间（秒）">
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={86400}
+              step={1}
+              value={cooldownSeconds}
+              onChange={(event) =>
+                setCooldownSeconds(Number(event.target.value))
+              }
+              required
+            />
+          </Field>
           <label className="field checkbox-field">
             <span>状态</span>
             <span className="checkbox-row">
@@ -4605,6 +4674,8 @@ function providerAvailabilityText(status?: AiProvider["availabilityStatus"]) {
       return "可用";
     case "cooldown":
       return "冷却中";
+    case "error":
+      return "异常：手动恢复";
     case "blocked_auth":
       return "认证阻断";
     case "blocked_permission":
@@ -4631,7 +4702,7 @@ function providerRequiresRecovery(provider: AiProvider) {
     "blocked_auth",
     "blocked_permission",
     "invalid_config",
-    "cooldown",
+    "error",
   ].includes(provider.availabilityStatus);
 }
 

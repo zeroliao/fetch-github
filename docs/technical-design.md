@@ -567,7 +567,9 @@ The API key value must never be stored in the database. The provider name is nor
 
 Provider records also store priority, reasoning effort, availability, sanitized failure reason, recovery guidance, and cooldown state. A lower priority value is selected first. The API key value can be written to `.env.local` through the UI, but the database only stores the environment variable name.
 
-Persistent provider states are `blocked_auth`, `blocked_permission`, and `invalid_config`; they require user correction followed by “检测并恢复”. `cooldown` automatically becomes eligible after its deadline. `recovering` prevents selection while a manual probe is in progress.
+Persistent provider states are `blocked_auth`, `blocked_permission`, and `invalid_config`; they require user correction followed by “检测并恢复”. An expired `cooldown` remains unavailable until a real probe succeeds. `recovering` prevents selection while a manual probe is in progress.
+
+Provider policy settings include `cooldown_seconds` and `cooldown_on`. The default cooldown set is rate limit, timeout, server, and network failures. Other failures enter the manual `error` state. After a cooldown deadline, the next model selection performs a minimal real probe; only success promotes the provider to `available`, and only available providers are selected by priority. Provider detection uses the production analysis schema for chat and one minimal embedding input with cardinality/dimension checks.
 
 ## LLM Structured Output
 

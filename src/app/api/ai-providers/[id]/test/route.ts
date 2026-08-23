@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/server/auth";
-import { testProvider } from "@/server/aiClient";
+import { probeAiProvider } from "@/server/aiProviderProbe";
 import { classifyAiProviderFailure } from "@/server/aiProviderPolicy";
 import { getAiProvider } from "@/server/store";
 
@@ -18,8 +18,8 @@ export async function POST(
     return NextResponse.json({ error: "AI 配置不存在。" }, { status: 404 });
   }
 
-  const test = await testProvider(provider).catch((error) => {
-    const failure = classifyAiProviderFailure(error);
+  const test = await probeAiProvider(provider).catch((error) => {
+    const failure = classifyAiProviderFailure(error, provider);
     return {
       ready: false,
       checked: true,

@@ -2,12 +2,32 @@ export type ProviderKind = "chat" | "embedding";
 export type ProviderAvailabilityStatus =
   | "available"
   | "cooldown"
+  | "error"
   | "blocked_auth"
   | "blocked_permission"
   | "invalid_config"
   | "recovering";
 export type ReasoningEffort =
   "default" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export type AiProviderFailureCode =
+  | "output_parse"
+  | "output_schema"
+  | "auth"
+  | "permission"
+  | "rate_limit"
+  | "timeout"
+  | "server"
+  | "network"
+  | "invalid_config"
+  | "unknown";
+
+export const DEFAULT_AI_PROVIDER_COOLDOWN_ON: AiProviderFailureCode[] = [
+  "rate_limit",
+  "timeout",
+  "server",
+  "network",
+];
 export type JobStatus =
   | "pending"
   | "running"
@@ -110,6 +130,8 @@ export interface AiProvider {
   lastCheckedAt?: string;
   recoveredAt?: string;
   cooldownUntil?: string;
+  cooldownSeconds?: number;
+  cooldownOn?: AiProviderFailureCode[];
   archivedAt?: string;
   rateLimit?: {
     requestsPerMinute?: number;

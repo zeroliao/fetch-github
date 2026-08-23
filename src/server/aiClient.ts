@@ -186,7 +186,7 @@ export async function callEmbedding(
   });
 }
 
-export async function testProvider(provider: AiProvider) {
+async function legacyTestProvider(provider: AiProvider) {
   const apiKeyPresent = Boolean(process.env[provider.apiKeyEnv]);
   if (!provider.enabled || !apiKeyPresent) {
     return {
@@ -219,6 +219,11 @@ export async function testProvider(provider: AiProvider) {
     ready: true,
     checked: true,
   };
+}
+
+export async function testProvider(provider: AiProvider) {
+  const { probeAiProvider } = await import("./aiProviderProbe");
+  return probeAiProvider(provider);
 }
 
 function assertProviderReady(provider: AiProvider, kind: AiProvider["kind"]) {

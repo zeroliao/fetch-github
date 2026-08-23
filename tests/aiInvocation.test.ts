@@ -7,6 +7,7 @@ import {
   AiProviderOutputSchemaError,
   callChatJson,
 } from "../src/server/aiClient";
+import { probeAiProvider } from "../src/server/aiProviderProbe";
 import { classifyAiProviderFailure } from "../src/server/aiProviderPolicy";
 import { parseRepoAnalysisResult } from "../src/server/llmAnalysis";
 
@@ -181,6 +182,50 @@ test("invalid model JSON throws a classifiable output_parse error", async () => 
       assert.equal(error.name, "AiProviderOutputParseError");
       assert.equal(error.code, "output_parse");
       assert.equal(classifyAiProviderFailure(error).code, "output_parse");
+      return true;
+    },
+  );
+});
+
+test("provider probe validates the production repository-analysis schema", async () => {
+  process.env[API_KEY_ENV] = "test-secret";
+  let requestBody: Record<string, unknown> | undefined;
+  globalThis.fetch = async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return successfulChatResponse('{"ok":true}');
+  };
+
+  await assert.rejects(probeAiProvider(provider()), (error: unknown) => {
+    assert.ok(error instanceof AiProviderOutputSchemaError);
+    assert.equal(error.code, "output_schema");
+    return true;
+  });
+
+  const messages = requestBody?.messages as Array<Record<string, unknown>>;
+  assert.match(String(messages?.[1]?.content), /opportunity/);
+  assert.deepEqual(requestBody?.response_format, { type: "json_object" });
+});
+
+test("embedding provider probe validates batch cardinality", async () => {
+  process.env[API_KEY_ENV] = "test-secret";
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  await assert.rejects(
+    probeAiProvider(
+      provider({
+        id: "embedding-test",
+        kind: "embedding",
+        model: "embedding-test",
+        dimensions: 3,
+      }),
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof AiProviderOutputSchemaError);
+      assert.match(error.message, /expected 1 vectors, received 0/);
       return true;
     },
   );
