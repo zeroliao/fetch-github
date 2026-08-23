@@ -58,6 +58,13 @@ export class AiProviderConfigurationError extends Error {
   }
 }
 
+export class ProxyTransportConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProxyTransportConfigurationError";
+  }
+}
+
 export class AiProviderTransportError extends Error {
   readonly code: "timeout" | "network";
 
@@ -298,6 +305,9 @@ async function fetchWithTimeout(
     });
   } catch (error) {
     if (error instanceof AiProviderConfigurationError) throw error;
+    if (error instanceof ProxyTransportConfigurationError) {
+      throw new AiProviderConfigurationError(error.message);
+    }
     if (isAbortError(error)) {
       throw new AiProviderTransportError(
         "timeout",
@@ -311,7 +321,7 @@ async function fetchWithTimeout(
   }
 }
 
-async function requestViaProxy(
+export async function requestViaProxy(
   targetUrl: string,
   init: RequestInit,
   proxyUrl: string,
@@ -320,7 +330,7 @@ async function requestViaProxy(
   const target = new URL(targetUrl);
   const proxy = new URL(proxyUrl);
   if (!["http:", "https:", "socks5:", "socks5h:"].includes(proxy.protocol)) {
-    throw new AiProviderConfigurationError(
+    throw new ProxyTransportConfigurationError(
       "出口代理仅支持 http、https、socks5 或 socks5h。",
     );
   }

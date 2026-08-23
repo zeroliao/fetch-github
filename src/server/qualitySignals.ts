@@ -1,6 +1,7 @@
 import { calculateFinalScore, clampScore } from "@/lib/scoring";
 import type { DiscoveryProfile, Recommendation, RepoSummary } from "@/lib/types";
 import { normalizeDiscoverySources, sourceDefinition } from "@/lib/discoverySources";
+import { fetchConfiguredOutbound } from "./outboundFetch";
 
 export interface RepoQualitySignals {
   openssf?: {
@@ -258,20 +259,12 @@ function weightedAverage(items: Array<{ score: number; weight: number }>) {
 }
 
 async function fetchWithTimeout(url: string) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10_000);
-
-  try {
-    return await fetch(url, {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "fetchGithub"
-      },
-      signal: controller.signal
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
+  return fetchConfiguredOutbound(url, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "fetchGithub"
+    }
+  }, 10_000);
 }
 
 function optionalNumber(value: unknown) {

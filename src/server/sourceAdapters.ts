@@ -1,6 +1,7 @@
 import type { DiscoveryProfile, DiscoverySourceId, RepoSummary } from "@/lib/types";
 import { normalizeDiscoverySources, sourceDefinition } from "@/lib/discoverySources";
 import { fetchRepositoryDetails } from "./githubClient";
+import { fetchConfiguredOutbound } from "./outboundFetch";
 
 export interface SourceAdapterPlan {
   sourceId: DiscoverySourceId;
@@ -178,24 +179,18 @@ function mapOssInsightTrendingRow(
 }
 
 async function fetchWithTimeout(input: string | URL, accept: string) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
-
   try {
-    return await fetch(input, {
+    return await fetchConfiguredOutbound(input, {
       headers: {
         Accept: accept,
         "User-Agent": "fetchGithub"
-      },
-      signal: controller.signal
-    });
+      }
+    }, 30_000);
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error("OSS Insight 请求超过 30 秒未响应。");
     }
     throw error;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

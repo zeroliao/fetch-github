@@ -15,7 +15,17 @@ ADMIN_USERNAME=admin
 ADMIN_PASSWORD_HASH=
 GITHUB_TOKEN=
 AI_KNOWLEDGE_BASE_DIR=../ai-knowledge-base
+# Optional shared outbound proxy for GitHub and third-party source requests.
+# For the Sub2API sidecar gateway on the same host:
+FETCHGITHUB_PROXY_URL=socks5://127.0.0.1:32000
 ```
+
+`FETCHGITHUB_PROXY_URL` supports `http://`, `https://`, `socks5://`, and
+`socks5h://`. The Sub2API sidecar gateway is bound to host loopback only; do
+not expose its `31000-32000` ports publicly. To select one concrete sidecar
+node for diagnostics, use its generated local SOCKS port (for example
+`socks5://127.0.0.1:31002`); normal fetchGithub traffic should use the shared
+`32000` gateway so sing-box can choose a healthy generated node.
 
 AI 模型在页面 `AI 模型配置` 中统一填写：
 

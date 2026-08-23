@@ -1,4 +1,5 @@
 import type { RepoSummary } from "@/lib/types";
+import { fetchConfiguredOutbound } from "./outboundFetch";
 
 interface GitHubSearchResponse {
   total_count: number;
@@ -240,26 +241,21 @@ function buildGitHubHeaders(): Record<string, string> {
 
 async function fetchGitHub(input: string | URL, init: RequestInit = {}) {
   const timeoutMs = 30_000;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const headers = new Headers(buildGitHubHeaders());
   if (init.headers) {
     new Headers(init.headers).forEach((value, key) => headers.set(key, value));
   }
 
   try {
-    return await fetch(input, {
+    return await fetchConfiguredOutbound(input, {
       ...init,
       headers,
-      signal: controller.signal,
-    });
+    }, timeoutMs);
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error("GitHub 请求超过 30 秒未响应。");
     }
     throw error;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
