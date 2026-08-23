@@ -17,6 +17,7 @@ import {
 } from "@/lib/recommendationText";
 import type {
   AiProvider,
+  AiProviderGroup,
   AppSettings,
   CachedEmbedding,
   DashboardSnapshot,
@@ -264,6 +265,39 @@ function visibleLocalProviders(providers: AiProvider[]) {
         left.createdAt.localeCompare(right.createdAt) ||
         left.id.localeCompare(right.id),
     );
+}
+
+function groupLocalProviders(providers: AiProvider[]): AiProviderGroup[] {
+  const groups = new Map<string, AiProviderGroup>();
+  for (const provider of visibleLocalProviders(providers)) {
+    const id = provider.providerGroupId ?? `legacy-${provider.id}`;
+    const existing = groups.get(id);
+    if (existing) {
+      existing.models.push(provider);
+      continue;
+    }
+    groups.set(id, {
+      id,
+      name: provider.name,
+      type: provider.type,
+      baseUrl: provider.baseUrl,
+      apiKeyEnv: provider.apiKeyEnv,
+      proxyUrlEnv: provider.proxyUrlEnv,
+      enabled: provider.enabled,
+      models: [provider],
+      createdAt: provider.createdAt,
+      updatedAt: provider.updatedAt,
+    });
+  }
+  return [...groups.values()].map((group) => ({
+    ...group,
+    enabled: group.models.some(
+      (model) => model.groupEnabled !== false && model.enabled,
+    ),
+    models: [...group.models].sort(
+      (left, right) => left.priority - right.priority,
+    ),
+  }));
 }
 
 function normalizeRecommendationState(
@@ -522,6 +556,123 @@ export async function listAiProviders(): Promise<AiProvider[]> {
   }
 
   return visibleLocalProviders((await loadState()).aiProviders);
+}
+
+export async function listAiProviderGroups(): Promise<AiProviderGroup[]> {
+  if (await isDatabaseAvailable()) return postgresStore.listAiProviderGroups();
+  return groupLocalProviders((await loadState()).aiProviders);
+}
+
+export async function createAiProviderGroup(
+  input: Parameters<typeof postgresStore.createAiProviderGroup>[0],
+) {
+  if (await isDatabaseAvailable())
+    return postgresStore.createAiProviderGroup(input);
+  const now = new Date().toISOString();
+  const groupId = crypto.randomUUID();
+  const models = input.models.map((model) => ({
+    ...model,
+    id: model.id ?? crypto.randomUUID(),
+    providerGroupId: groupId,
+    name: input.name,
+    type: input.type,
+    baseUrl: input.baseUrl,
+    apiKeyEnv: input.apiKeyEnv,
+    proxyUrlEnv: input.proxyUrlEnv || undefined,
+    availabilityStatus: "available" as const,
+    createdAt: now,
+    enabled: model.enabled,
+    groupEnabled: input.enabled,
+    updatedAt: now,
+  }));
+  const state = await loadState();
+  state.aiProviders.push(...models);
+  await saveState(state);
+  return {
+    id: groupId,
+    name: input.name,
+    type: input.type,
+    baseUrl: input.baseUrl,
+    apiKeyEnv: input.apiKeyEnv,
+    proxyUrlEnv: input.proxyUrlEnv || undefined,
+    enabled: input.enabled,
+    models,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export async function updateAiProviderGroup(
+  id: string,
+  input: Parameters<typeof postgresStore.updateAiProviderGroup>[1],
+) {
+  if (await isDatabaseAvailable())
+    return postgresStore.updateAiProviderGroup(id, input);
+  const state = await loadState();
+  const current = groupLocalProviders(state.aiProviders).find(
+    (group) => group.id === id,
+  );
+  if (!current) return undefined;
+  const now = new Date().toISOString();
+  const existing = new Map(current.models.map((model) => [model.id, model]));
+  const models = input.models.map((model) => ({
+    ...existing.get(model.id ?? ""),
+    ...model,
+    id: model.id ?? crypto.randomUUID(),
+    providerGroupId: id,
+    name: input.name,
+    type: input.type,
+    baseUrl: input.baseUrl,
+    apiKeyEnv: input.apiKeyEnv,
+    proxyUrlEnv: input.proxyUrlEnv || undefined,
+    availabilityStatus:
+      existing.get(model.id ?? "")?.availabilityStatus ??
+      ("available" as const),
+    enabled: model.enabled,
+    groupEnabled: input.enabled,
+    createdAt: existing.get(model.id ?? "")?.createdAt ?? now,
+    updatedAt: now,
+  }));
+  const ids = new Set(models.map((model) => model.id));
+  state.aiProviders = state.aiProviders.map((provider) =>
+    (provider.providerGroupId ?? `legacy-${provider.id}`) !== id
+      ? provider
+      : ids.has(provider.id)
+        ? models.find((model) => model.id === provider.id)!
+        : { ...provider, enabled: false, archivedAt: now, updatedAt: now },
+  );
+  await saveState(state);
+  return {
+    id,
+    name: input.name,
+    type: input.type,
+    baseUrl: input.baseUrl,
+    apiKeyEnv: input.apiKeyEnv,
+    proxyUrlEnv: input.proxyUrlEnv || undefined,
+    enabled: input.enabled,
+    models,
+    createdAt: current.createdAt,
+    updatedAt: now,
+  };
+}
+
+export async function deleteAiProviderGroup(id: string) {
+  if (await isDatabaseAvailable())
+    return postgresStore.deleteAiProviderGroup(id);
+  const state = await loadState();
+  const now = new Date().toISOString();
+  let deleted = false;
+  state.aiProviders = state.aiProviders.map((provider) => {
+    if (
+      (provider.providerGroupId ?? `legacy-${provider.id}`) !== id ||
+      provider.archivedAt
+    )
+      return provider;
+    deleted = true;
+    return { ...provider, enabled: false, archivedAt: now, updatedAt: now };
+  });
+  await saveState(state);
+  return deleted;
 }
 
 export async function createAiProvider(

@@ -1,5 +1,6 @@
 import type {
   AiProvider,
+  AiProviderGroup,
   AppSettings,
   CachedEmbedding,
   DashboardSnapshot,
@@ -100,7 +101,7 @@ const JOB_SELECT_FIELDS = `id, profile_id, type, status, stage, max_candidates, 
             unchanged_repo_count, candidate_count, failed_candidate_count, started_at, finished_at,
             error_message, error_code, error_resolution, archived_at, created_at`;
 
-const PROVIDER_SELECT_FIELDS = `id, name, kind, type, base_url, api_key_env, model, dimensions,
+const PROVIDER_SELECT_FIELDS = `id, provider_group_id, name, kind, type, base_url, api_key_env, model, dimensions,
             priority, reasoning_effort, availability_status, unavailable_code, unavailable_reason,
             recovery_suggestion, unavailable_at, last_checked_at, recovered_at, cooldown_until,
             archived_at, config_json, enabled, created_at, updated_at`;
@@ -190,6 +191,7 @@ export async function ensureSeedData() {
        add column if not exists error_message text`,
     );
     const providerColumns = [
+      `add column if not exists provider_group_id text`,
       `add column if not exists priority integer not null default 100`,
       `add column if not exists reasoning_effort text`,
       `add column if not exists availability_status text not null default 'available'`,
@@ -205,6 +207,34 @@ export async function ensureSeedData() {
     for (const definition of providerColumns) {
       await client.query(`alter table ai_providers ${definition}`);
     }
+    await client.query(
+      `create table if not exists ai_provider_groups (
+        id text primary key, name text not null, type text not null default 'openai_compatible',
+        base_url text not null, api_key_env text not null unique, proxy_url_env text,
+        enabled boolean not null default true, archived_at timestamptz,
+        created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+      )`,
+    );
+    await client
+      .query(
+        `alter table ai_providers
+       add constraint ai_providers_provider_group_fk
+       foreign key (provider_group_id) references ai_provider_groups(id)
+       not valid`,
+      )
+      .catch((error: unknown) => {
+        if (!String(error).includes("already exists")) throw error;
+      });
+    await client.query(
+      `insert into ai_provider_groups
+        (id, name, type, base_url, api_key_env, enabled, archived_at, created_at, updated_at)
+       select 'legacy-' || id, name, type, base_url, api_key_env, enabled, archived_at, created_at, updated_at
+       from ai_providers where provider_group_id is null
+       on conflict (id) do nothing`,
+    );
+    await client.query(
+      `update ai_providers set provider_group_id='legacy-' || id where provider_group_id is null`,
+    );
     const recommendationColumns = [
       `add column if not exists preference_status text not null default 'pending'`,
       `add column if not exists opportunity_status text not null default 'unassessed'`,
@@ -590,7 +620,8 @@ export async function listAiProviders(): Promise<AiProvider[]> {
      order by priority asc, created_at asc, id asc`,
   );
 
-  return result.rows.map(mapProviderRow);
+  const providers = result.rows.map(mapProviderRow);
+  return hydrateProviderGroups(providers);
 }
 
 export async function createAiProvider(
@@ -607,11 +638,12 @@ export async function createAiProvider(
 
   await getPool().query(
     `insert into ai_providers
-      (id, name, kind, type, base_url, api_key_env, model, dimensions, priority,
+      (id, provider_group_id, name, kind, type, base_url, api_key_env, model, dimensions, priority,
        reasoning_effort, availability_status, config_json, enabled, created_at, updated_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
     [
       provider.id,
+      provider.providerGroupId ?? null,
       provider.name,
       provider.kind,
       provider.type,
@@ -629,6 +661,7 @@ export async function createAiProvider(
         timeoutSeconds: provider.timeoutSeconds,
         cooldownSeconds: provider.cooldownSeconds,
         cooldownOn: provider.cooldownOn,
+        reasoningDisabled: provider.reasoningEffort === "none",
       }),
       provider.enabled,
       provider.createdAt,
@@ -649,7 +682,204 @@ export async function getAiProvider(
     [id],
   );
 
-  return result.rows[0] ? mapProviderRow(result.rows[0]) : undefined;
+  if (!result.rows[0]) return undefined;
+  return (await hydrateProviderGroups([mapProviderRow(result.rows[0])]))[0];
+}
+
+export async function listAiProviderGroups(): Promise<AiProviderGroup[]> {
+  const providers = await listAiProviders();
+  return groupProviders(providers);
+}
+
+export async function createAiProviderGroup(
+  input: Omit<
+    AiProviderGroup,
+    "id" | "apiKeyEnv" | "models" | "createdAt" | "updatedAt"
+  > & {
+    apiKeyEnv: string;
+    models: Array<
+      Pick<
+        AiProvider,
+        | "kind"
+        | "model"
+        | "dimensions"
+        | "priority"
+        | "reasoningEffort"
+        | "enabled"
+        | "timeoutSeconds"
+        | "cooldownSeconds"
+        | "cooldownOn"
+      > & { id?: string }
+    >;
+  },
+): Promise<AiProviderGroup> {
+  const client = await getPool().connect();
+  const groupId = crypto.randomUUID();
+  try {
+    await client.query("begin");
+    const duplicate = await client.query(
+      `select id from ai_provider_groups where api_key_env=$1 and archived_at is null`,
+      [input.apiKeyEnv],
+    );
+    if ((duplicate as { rows: unknown[] }).rows[0]) {
+      throw new Error("PROVIDER_NAME_CONFLICT");
+    }
+    await client.query(
+      `insert into ai_provider_groups
+        (id, name, type, base_url, api_key_env, proxy_url_env, enabled, created_at, updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,now(),now())`,
+      [
+        groupId,
+        input.name,
+        input.type,
+        input.baseUrl,
+        input.apiKeyEnv,
+        input.proxyUrlEnv || null,
+        input.enabled,
+      ],
+    );
+    for (const model of input.models) {
+      await insertProviderModel(client, groupId, input, model);
+    }
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+  return (await listAiProviderGroups()).find((group) => group.id === groupId)!;
+}
+
+export async function updateAiProviderGroup(
+  id: string,
+  input: Omit<
+    AiProviderGroup,
+    "id" | "apiKeyEnv" | "models" | "createdAt" | "updatedAt"
+  > & {
+    apiKeyEnv: string;
+    models: Array<
+      Pick<
+        AiProvider,
+        | "kind"
+        | "model"
+        | "dimensions"
+        | "priority"
+        | "reasoningEffort"
+        | "enabled"
+        | "timeoutSeconds"
+        | "cooldownSeconds"
+        | "cooldownOn"
+      > & { id?: string }
+    >;
+  },
+): Promise<AiProviderGroup | undefined> {
+  const client = await getPool().connect();
+  try {
+    await client.query("begin");
+    const updated = await client.query(
+      `update ai_provider_groups set name=$2, type=$3, base_url=$4, api_key_env=$5,
+         proxy_url_env=$6, enabled=$7, updated_at=now()
+       where id=$1 and archived_at is null returning id`,
+      [
+        id,
+        input.name,
+        input.type,
+        input.baseUrl,
+        input.apiKeyEnv,
+        input.proxyUrlEnv || null,
+        input.enabled,
+      ],
+    );
+    if (!(updated as { rows: unknown[] }).rows[0]) {
+      await client.query("rollback");
+      return undefined;
+    }
+    const existingResult = await client.query(
+      `select id from ai_providers where provider_group_id=$1 and archived_at is null`,
+      [id],
+    );
+    const existingIds = new Set(
+      (existingResult as { rows: Array<{ id: string }> }).rows.map(
+        (row) => row.id,
+      ),
+    );
+    const retainedIds = new Set<string>();
+    for (const model of input.models) {
+      if (model.id && existingIds.has(model.id)) {
+        retainedIds.add(model.id);
+        await client.query(
+          `update ai_providers set name=$2, type=$3, base_url=$4, api_key_env=$5, kind=$6,
+             model=$7, dimensions=$8, priority=$9, reasoning_effort=$10, enabled=$11,
+             config_json=$12, updated_at=now() where id=$1 and provider_group_id=$13`,
+          [
+            model.id,
+            input.name,
+            input.type,
+            input.baseUrl,
+            input.apiKeyEnv,
+            model.kind,
+            model.model,
+            model.kind === "embedding" ? (model.dimensions ?? null) : null,
+            model.priority,
+            normalizeReasoningEffort(model.reasoningEffort),
+            model.enabled,
+            JSON.stringify({
+              timeoutSeconds: model.timeoutSeconds,
+              cooldownSeconds: model.cooldownSeconds,
+              cooldownOn: model.cooldownOn,
+              reasoningDisabled: model.reasoningEffort === "none",
+            }),
+            id,
+          ],
+        );
+      } else {
+        const modelId = await insertProviderModel(client, id, input, model);
+        retainedIds.add(modelId);
+      }
+    }
+    for (const existingId of existingIds) {
+      if (!retainedIds.has(existingId)) {
+        await client.query(
+          `update ai_providers set enabled=false, archived_at=now(), updated_at=now() where id=$1`,
+          [existingId],
+        );
+      }
+    }
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+  return (await listAiProviderGroups()).find((group) => group.id === id);
+}
+
+export async function deleteAiProviderGroup(id: string) {
+  const client = await getPool().connect();
+  try {
+    await client.query("begin");
+    const result = await client.query(
+      `update ai_provider_groups set enabled=false, archived_at=now(), updated_at=now()
+       where id=$1 and archived_at is null returning id`,
+      [id],
+    );
+    if ((result as { rows: unknown[] }).rows[0]) {
+      await client.query(
+        `update ai_providers set enabled=false, archived_at=now(), updated_at=now()
+         where provider_group_id=$1 and archived_at is null`,
+        [id],
+      );
+    }
+    await client.query("commit");
+    return Boolean((result as { rows: unknown[] }).rows[0]);
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function updateAiProvider(
@@ -716,6 +946,7 @@ export async function updateAiProvider(
         timeoutSeconds: nextProvider.timeoutSeconds,
         cooldownSeconds: nextProvider.cooldownSeconds,
         cooldownOn: nextProvider.cooldownOn,
+        reasoningDisabled: nextProvider.reasoningEffort === "none",
       }),
       nextProvider.enabled,
     ],
@@ -3159,6 +3390,7 @@ function mapProviderRow(row: Record<string, any>): AiProvider {
 
   return {
     id: row.id,
+    providerGroupId: row.provider_group_id ?? undefined,
     name: row.name,
     kind: row.kind,
     type: row.type,
@@ -3167,8 +3399,10 @@ function mapProviderRow(row: Record<string, any>): AiProvider {
     model: row.model,
     dimensions: row.dimensions ?? undefined,
     priority: Number(row.priority ?? 100),
-    reasoningEffort: row.reasoning_effort ?? "default",
-    enabled: row.enabled,
+    reasoningEffort: config.reasoningDisabled
+      ? "none"
+      : (row.reasoning_effort ?? "default"),
+    enabled: (config.modelEnabled as boolean | undefined) ?? row.enabled,
     availabilityStatus: row.availability_status ?? "available",
     unavailableCode: row.unavailable_code ?? undefined,
     unavailableReason: row.unavailable_reason ?? undefined,
@@ -3187,6 +3421,134 @@ function mapProviderRow(row: Record<string, any>): AiProvider {
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
   };
+}
+
+async function hydrateProviderGroups(
+  providers: AiProvider[],
+): Promise<AiProvider[]> {
+  if (providers.length === 0) return [];
+  const result = await getPool().query(
+    `select id, name, type, base_url, api_key_env, proxy_url_env, enabled
+     from ai_provider_groups where archived_at is null`,
+  );
+  const groups = new Map(
+    result.rows.map((row) => [String(row.id), row] as const),
+  );
+  return providers
+    .map((provider) => {
+      const group = provider.providerGroupId
+        ? groups.get(provider.providerGroupId)
+        : undefined;
+      if (!group) return provider;
+      return {
+        ...provider,
+        name: group.name,
+        type: group.type,
+        baseUrl: group.base_url,
+        apiKeyEnv: group.api_key_env,
+        proxyUrlEnv: group.proxy_url_env ?? undefined,
+        groupEnabled: Boolean(group.enabled),
+      };
+    })
+    .filter(
+      (provider) =>
+        !provider.providerGroupId || groups.has(provider.providerGroupId),
+    );
+}
+
+function groupProviders(providers: AiProvider[]): AiProviderGroup[] {
+  const grouped = new Map<string, AiProviderGroup>();
+  for (const model of providers) {
+    const id = model.providerGroupId ?? `legacy-${model.id}`;
+    const current = grouped.get(id);
+    if (current) {
+      current.models.push(model);
+      continue;
+    }
+    grouped.set(id, {
+      id,
+      name: model.name,
+      type: model.type,
+      baseUrl: model.baseUrl,
+      apiKeyEnv: model.apiKeyEnv,
+      proxyUrlEnv: model.proxyUrlEnv,
+      enabled: model.enabled,
+      models: [model],
+      createdAt: model.createdAt,
+      updatedAt: model.updatedAt,
+    });
+  }
+  return [...grouped.values()]
+    .map((group) => ({
+      ...group,
+      enabled: group.models.some(
+        (model) => model.groupEnabled !== false && model.enabled,
+      ),
+      models: [...group.models].sort(
+        (left, right) =>
+          left.priority - right.priority ||
+          left.createdAt.localeCompare(right.createdAt),
+      ),
+    }))
+    .sort(
+      (left, right) =>
+        left.name.localeCompare(right.name) || left.id.localeCompare(right.id),
+    );
+}
+
+async function insertProviderModel(
+  queryRunner: QueryRunner,
+  groupId: string,
+  group: Pick<
+    AiProviderGroup,
+    "name" | "type" | "baseUrl" | "apiKeyEnv" | "enabled"
+  >,
+  model: Pick<
+    AiProvider,
+    | "kind"
+    | "model"
+    | "dimensions"
+    | "priority"
+    | "reasoningEffort"
+    | "enabled"
+    | "timeoutSeconds"
+    | "cooldownSeconds"
+    | "cooldownOn"
+  > & { id?: string },
+) {
+  const id = model.id ?? crypto.randomUUID();
+  await queryRunner.query(
+    `insert into ai_providers
+      (id, provider_group_id, name, kind, type, base_url, api_key_env, model, dimensions,
+       priority, reasoning_effort, availability_status, config_json, enabled, created_at, updated_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'available',$12,$13,now(),now())`,
+    [
+      id,
+      groupId,
+      group.name,
+      model.kind,
+      group.type,
+      group.baseUrl,
+      group.apiKeyEnv,
+      model.model,
+      model.kind === "embedding" ? (model.dimensions ?? null) : null,
+      model.priority,
+      normalizeReasoningEffort(model.reasoningEffort),
+      JSON.stringify({
+        modelEnabled: model.enabled,
+        timeoutSeconds: model.timeoutSeconds,
+        cooldownSeconds: model.cooldownSeconds,
+        cooldownOn: model.cooldownOn,
+        reasoningDisabled: model.reasoningEffort === "none",
+      }),
+      model.enabled,
+    ],
+  );
+  return id;
+}
+
+function normalizeReasoningEffort(value: AiProvider["reasoningEffort"]) {
+  return !value || value === "default" || value === "none" ? null : value;
 }
 
 function mapRepoProcessingRow(row: Record<string, any>): RepoProcessing {

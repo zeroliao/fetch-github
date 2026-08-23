@@ -209,9 +209,160 @@ export function parseRepoAnalysisResult(value: unknown): RepoAnalysisResult {
   const parsed = repoAnalysisResultSchema.safeParse(value);
   if (parsed.success) return parsed.data;
 
-  const issueSummary = parsed.error.issues
+  const normalized = normalizeRepoAnalysisResult(value);
+  const normalizedParsed = repoAnalysisResultSchema.safeParse(normalized);
+  if (normalizedParsed.success) return normalizedParsed.data;
+
+  const issueSummary = normalizedParsed.error.issues
     .slice(0, 8)
     .map((issue) => `${issue.path.join(".") || "root"}:${issue.code}`)
     .join(", ");
   throw new AiProviderOutputSchemaError(issueSummary);
+}
+
+const OPPORTUNITY_ACTIONS = new Set([
+  "observe",
+  "track",
+  "validate",
+  "build",
+  "ignore",
+] as const);
+
+function normalizeRepoAnalysisResult(value: unknown) {
+  const source = asRecord(value);
+  const opportunity = asRecord(source.opportunity);
+  const sourceWithoutAliases = { ...source };
+  for (const alias of [
+    "targetUsers",
+    "coreFeatures",
+    "isMatch",
+    "matchScore",
+    "matchedPreferences",
+    "recommendationReason",
+  ]) {
+    delete sourceWithoutAliases[alias];
+  }
+  return {
+    ...sourceWithoutAliases,
+    summary:
+      source.summary === undefined
+        ? undefined
+        : normalizeText(source.summary, "未提供项目摘要"),
+    categories: normalizeList(source.categories),
+    target_users: normalizeList(source.target_users ?? source.targetUsers),
+    core_features: normalizeList(source.core_features ?? source.coreFeatures),
+    maturity:
+      source.maturity === undefined
+        ? undefined
+        : normalizeText(source.maturity, "unknown"),
+    is_match: normalizeBoolean(source.is_match ?? source.isMatch),
+    match_score: normalizeScore(source.match_score ?? source.matchScore),
+    confidence: normalizeScore(source.confidence),
+    matched_preferences: normalizeList(
+      source.matched_preferences ?? source.matchedPreferences,
+    ),
+    risks: normalizeList(source.risks),
+    recommendation_reason:
+      source.recommendation_reason === undefined &&
+      source.recommendationReason === undefined
+        ? undefined
+        : normalizeText(
+            source.recommendation_reason ?? source.recommendationReason,
+            "暂无推荐理由",
+          ),
+    opportunity: {
+      ...opportunity,
+      type: normalizeText(opportunity.type, "general"),
+      score: normalizeScore(opportunity.score),
+      monetizationScore: normalizeScore(opportunity.monetizationScore),
+      growthSignal: normalizeScore(opportunity.growthSignal),
+      executionFit: normalizeScore(opportunity.executionFit),
+      differentiationSpace: normalizeScore(opportunity.differentiationSpace),
+      technicalQuality: normalizeScore(opportunity.technicalQuality),
+      targetCustomers: normalizeList(opportunity.targetCustomers),
+      monetizationPaths: normalizeList(opportunity.monetizationPaths),
+      validationSteps: normalizeList(opportunity.validationSteps),
+      suggestedAction: normalizeAction(opportunity.suggestedAction),
+      evidence: normalizeList(opportunity.evidence),
+    },
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function normalizeText(value: unknown, fallback = ""): string {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return fallback;
+}
+
+function normalizeList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => normalizeText(item, ""))
+      .filter(Boolean)
+      .slice(0, 30);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return value
+      .split(/[,，;；\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 30);
+  }
+  return [];
+}
+
+function normalizeBoolean(value: unknown): unknown {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "y", "是", "匹配", "符合"].includes(normalized)) {
+      return true;
+    }
+    if (
+      ["false", "0", "no", "n", "否", "不匹配", "不符合"].includes(normalized)
+    ) {
+      return false;
+    }
+  }
+  return value;
+}
+
+function normalizeScore(value: unknown): unknown {
+  if (value === undefined) return undefined;
+  if (value === null) return 0.5;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : value;
+  }
+  return value;
+}
+
+function normalizeAction(
+  value: unknown,
+): "observe" | "track" | "validate" | "build" | "ignore" | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (OPPORTUNITY_ACTIONS.has(normalized as never)) {
+      return normalized as
+        "observe" | "track" | "validate" | "build" | "ignore";
+    }
+    if (/build|构建|开发|实现/.test(normalized)) return "build";
+    if (/track|跟踪|关注/.test(normalized)) return "track";
+    if (/valid|验证|测试|试验/.test(normalized)) return "validate";
+    if (/ignore|忽略|跳过|不推荐/.test(normalized)) return "ignore";
+  }
+  return "observe";
 }

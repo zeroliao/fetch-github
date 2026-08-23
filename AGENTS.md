@@ -1,8 +1,14 @@
 # Project Instructions
 
+## Rule Inheritance
+
+- Global Codex rules apply automatically.
+- This file contains project-specific facts and constraints only.
+- Project rules may add detail but must not weaken global safety, authorization, or verification requirements.
+
 ## Project Overview
 
-- 项目用户界面和面向用户的文档尽量使用中文；代码标识、API 字段、命令和技术术语保留英文。
+- 面向用户的界面和文档默认使用中文。
 - `fetchGithub` is a Next.js + TypeScript GitHub discovery, analysis, recommendation, and knowledge-sync application.
 - The web/API layer and Node.js worker share PostgreSQL + pgvector persistence, with a JSON-file fallback for local degraded operation.
 - The system discovers repositories through continuous scheduled/manual scans, configurable preferences, GitHub context, embeddings, third-party LLM analysis, scoring, and user feedback.
@@ -80,9 +86,12 @@ When package, build, or test configuration is added, update this table with comm
 - Repository names and GitHub action buttons must open the repository `html_url` in a new tab with `rel="noopener noreferrer"`.
 - Prefer dense, tool-focused tables for recommendation lists; use drawers or panels for detailed summaries and reasons.
 
-## Verification
+## Project Documentation
 
-- For documentation-only edits, run `git diff --check`.
-- Run the most targeted available tests first, then `pnpm typecheck`, `pnpm test`, and `pnpm build` for shared workflow changes.
-- For changes touching shared logic, scan jobs, scoring, AI providers, persistence, or user workflows, run broader validation once commands exist.
-- If validation commands are unavailable, state that clearly in the final response and do not claim tests passed.
+- 发布和文档收尾遵循全局规则；项目具体步骤见 `docs/version-management.md`。
+- 产品需求：`docs/prd.md`
+- MVP 规格：`docs/mvp-spec.md`
+- 技术设计：`docs/technical-design.md`
+- 本地设置：`docs/local-setup.md`
+- 功能收尾审计：`docs/feature-closure-audit.md`
+- 单版本证据：`docs/releases/<version>.md`

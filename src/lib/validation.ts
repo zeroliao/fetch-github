@@ -25,7 +25,7 @@ export const providerSchema = z.object({
   dimensions: z.number().int().positive().optional(),
   priority: z.number().int().min(1).max(10000).default(100),
   reasoningEffort: z
-    .enum(["default", "minimal", "low", "medium", "high", "xhigh"])
+    .enum(["none", "default", "minimal", "low", "medium", "high", "xhigh"])
     .optional(),
   enabled: z.boolean().default(true),
   timeoutSeconds: z.number().int().positive().optional(),
@@ -59,6 +59,59 @@ export const providerSchema = z.object({
     })
     .optional(),
 });
+
+export const providerGroupSchema = z
+  .object({
+    name: z.string().trim().min(1).max(100),
+    type: z.enum(["openai_compatible", "custom"]).default("openai_compatible"),
+    baseUrl: z.string().url(),
+    apiKeyValue: z.string().optional(),
+    proxyUrlEnv: z
+      .string()
+      .trim()
+      .regex(/^[A-Z_][A-Z0-9_]*$/, "代理环境变量名格式不正确。")
+      .optional()
+      .or(z.literal("")),
+    enabled: z.boolean().default(true),
+    models: z
+      .array(
+        z.object({
+          id: z.string().uuid().optional(),
+          kind: z.enum(["chat", "embedding"]),
+          model: z.string().trim().min(1).max(200),
+          dimensions: z.number().int().positive().optional(),
+          priority: z.number().int().min(1).max(10000).default(100),
+          reasoningEffort: z
+            .enum([
+              "none",
+              "default",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+            ])
+            .optional(),
+          enabled: z.boolean().default(true),
+          timeoutSeconds: z.number().int().positive().optional(),
+          cooldownSeconds: z.number().int().positive().max(86400).default(300),
+          cooldownOn: providerSchema.shape.cooldownOn,
+        }),
+      )
+      .min(1, "至少配置一个模型。")
+      .max(50),
+  })
+  .superRefine((value, context) => {
+    value.models.forEach((model, index) => {
+      if (model.kind === "embedding" && !model.dimensions) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["models", index, "dimensions"],
+          message: "Embedding 模型必须填写向量维度。",
+        });
+      }
+    });
+  });
 
 export const profileSchema = z.object({
   name: z.string().min(1),

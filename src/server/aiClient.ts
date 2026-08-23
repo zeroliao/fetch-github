@@ -1,4 +1,9 @@
 import type { AiProvider } from "@/lib/types";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { connect as netConnect, type Socket } from "node:net";
+import { connect as tlsConnect } from "node:tls";
+import { URL } from "node:url";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -109,7 +114,11 @@ export async function callChatJsonWithUsage(
     response_format: { type: "json_object" },
   };
   const reasoningEffort = options.provider.reasoningEffort;
-  if (reasoningEffort && reasoningEffort !== "default") {
+  if (
+    reasoningEffort &&
+    reasoningEffort !== "default" &&
+    reasoningEffort !== "none"
+  ) {
     body.reasoning_effort = reasoningEffort;
   } else {
     body.temperature = options.temperature ?? 0.2;
@@ -134,14 +143,15 @@ export async function callChatJsonWithUsage(
     );
   }
 
-  try {
-    return {
-      data: JSON.parse(content) as unknown,
-      usage: normalizeUsage(readRecord(data)?.usage),
-    };
-  } catch {
+  const parsedContent = extractJsonContent(content);
+  if (parsedContent === undefined) {
     throw new AiProviderOutputParseError();
   }
+
+  return {
+    data: parsedContent,
+    usage: normalizeUsage(readRecord(data)?.usage),
+  };
 }
 
 export async function callEmbedding(
@@ -236,6 +246,9 @@ function assertProviderReady(provider: AiProvider, kind: AiProvider["kind"]) {
   if (!provider.enabled) {
     throw new AiProviderConfigurationError("provider is disabled");
   }
+  if (provider.groupEnabled === false) {
+    throw new AiProviderConfigurationError("provider group is disabled");
+  }
 
   if (!process.env[provider.apiKeyEnv]) {
     throw new AiProviderConfigurationError(
@@ -273,11 +286,18 @@ async function fetchWithTimeout(
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    const proxyUrl = provider.proxyUrlEnv
+      ? process.env[provider.proxyUrlEnv]
+      : undefined;
+    if (proxyUrl) {
+      return await requestViaProxy(url, init, proxyUrl, timeoutMs);
+    }
     return await fetch(url, {
       ...init,
       signal: controller.signal,
     });
   } catch (error) {
+    if (error instanceof AiProviderConfigurationError) throw error;
     if (isAbortError(error)) {
       throw new AiProviderTransportError(
         "timeout",
@@ -289,6 +309,234 @@ async function fetchWithTimeout(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function requestViaProxy(
+  targetUrl: string,
+  init: RequestInit,
+  proxyUrl: string,
+  timeoutMs: number,
+): Promise<Response> {
+  const target = new URL(targetUrl);
+  const proxy = new URL(proxyUrl);
+  if (!["http:", "https:", "socks5:", "socks5h:"].includes(proxy.protocol)) {
+    throw new AiProviderConfigurationError(
+      "出口代理仅支持 http、https、socks5 或 socks5h。",
+    );
+  }
+  const headers = Object.fromEntries(new Headers(init.headers).entries());
+  const body =
+    typeof init.body === "string" ? Buffer.from(init.body) : undefined;
+  let socket = proxy.protocol.startsWith("socks5")
+    ? await connectSocks5(proxy, target, timeoutMs)
+    : await connectHttpProxy(proxy, target, timeoutMs);
+  if (target.protocol === "https:") {
+    socket = await secureSocket(socket, target.hostname, timeoutMs);
+  }
+  const transport = target.protocol === "https:" ? httpsRequest : httpRequest;
+  const response = await new Promise<{
+    status: number;
+    headers: Record<string, string>;
+    body: Buffer;
+  }>((resolve, reject) => {
+    const request = transport(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || undefined,
+        path: `${target.pathname}${target.search}`,
+        method: init.method ?? "GET",
+        headers,
+        agent: false,
+        createConnection: () => socket,
+      },
+      (incoming) => {
+        const chunks: Buffer[] = [];
+        incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        incoming.on("end", () =>
+          resolve({
+            status: incoming.statusCode ?? 502,
+            headers: Object.fromEntries(
+              Object.entries(incoming.headers).map(([key, value]) => [
+                key,
+                Array.isArray(value) ? value.join(", ") : String(value ?? ""),
+              ]),
+            ),
+            body: Buffer.concat(chunks),
+          }),
+        );
+        incoming.on("error", reject);
+      },
+    );
+    request.setTimeout(timeoutMs, () =>
+      request.destroy(new Error("ETIMEDOUT")),
+    );
+    request.on("error", reject);
+    if (body) request.write(body);
+    request.end();
+  });
+  return new Response(new Uint8Array(response.body), {
+    status: response.status,
+    headers: response.headers,
+  });
+}
+
+async function connectHttpProxy(
+  proxy: URL,
+  target: URL,
+  timeoutMs: number,
+): Promise<Socket> {
+  const socket = await openSocket(
+    proxy.hostname,
+    Number(proxy.port || (proxy.protocol === "https:" ? 443 : 80)),
+    timeoutMs,
+    proxy.protocol === "https:",
+  );
+  await new Promise<void>((resolve, reject) => {
+    const lines = [
+      `CONNECT ${target.hostname}:${target.port || (target.protocol === "https:" ? 443 : 80)} HTTP/1.1`,
+      `Host: ${target.hostname}:${target.port || (target.protocol === "https:" ? 443 : 80)}`,
+    ];
+    if (proxy.username || proxy.password)
+      lines.push(
+        `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString("base64")}`,
+      );
+    socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+    let data = "";
+    const onData = (chunk: Buffer) => {
+      data += chunk.toString("latin1");
+      if (!data.includes("\r\n\r\n")) return;
+      socket.off("data", onData);
+      const status = Number(data.split("\r\n", 1)[0]?.split(" ")[1]);
+      if (status >= 200 && status < 300) resolve();
+      else
+        reject(
+          new Error(
+            `HTTP proxy CONNECT failed with ${status || "unknown status"}`,
+          ),
+        );
+    };
+    socket.on("data", onData);
+    socket.on("error", reject);
+  });
+  return socket;
+}
+
+async function connectSocks5(
+  proxy: URL,
+  target: URL,
+  timeoutMs: number,
+): Promise<Socket> {
+  const socket = await openSocket(
+    proxy.hostname,
+    Number(proxy.port || 1080),
+    timeoutMs,
+    false,
+  );
+  const username = proxy.username
+    ? Buffer.from(decodeURIComponent(proxy.username))
+    : undefined;
+  const password = proxy.password
+    ? Buffer.from(decodeURIComponent(proxy.password))
+    : undefined;
+  await writeAndRead(socket, Buffer.from([5, 1, username ? 2 : 0]), 2);
+  if (username && password) {
+    const auth = Buffer.concat([
+      Buffer.from([1, username.length]),
+      username,
+      Buffer.from([password.length]),
+      password,
+    ]);
+    await writeAndRead(socket, auth, 2);
+  }
+  const host = Buffer.from(target.hostname);
+  const port = Number(target.port || (target.protocol === "https:" ? 443 : 80));
+  const connect = Buffer.concat([
+    Buffer.from([5, 1, 0, 3, host.length]),
+    host,
+    Buffer.from([port >> 8, port & 255]),
+  ]);
+  const reply = await writeAndRead(socket, connect, 4);
+  if (reply[1] !== 0)
+    throw new Error(`SOCKS5 proxy CONNECT failed with ${reply[1]}`);
+  return socket;
+}
+
+async function openSocket(
+  hostname: string,
+  port: number,
+  timeoutMs: number,
+  tls: boolean,
+): Promise<Socket> {
+  return await new Promise((resolve, reject) => {
+    const socket = (
+      tls
+        ? tlsConnect({ host: hostname, port, servername: hostname })
+        : netConnect({ host: hostname, port })
+    ) as Socket;
+    const timer = setTimeout(
+      () => socket.destroy(new Error("ETIMEDOUT")),
+      timeoutMs,
+    );
+    if (tls)
+      socket.once("secureConnect", () => {
+        clearTimeout(timer);
+        resolve(socket);
+      });
+    else
+      socket.once("connect", () => {
+        clearTimeout(timer);
+        resolve(socket);
+      });
+    socket.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+async function secureSocket(
+  socket: Socket,
+  servername: string,
+  timeoutMs: number,
+): Promise<Socket> {
+  return await new Promise((resolve, reject) => {
+    const secure = tlsConnect({ socket, servername }) as Socket;
+    const timer = setTimeout(
+      () => secure.destroy(new Error("ETIMEDOUT")),
+      timeoutMs,
+    );
+    secure.once("secureConnect", () => {
+      clearTimeout(timer);
+      resolve(secure);
+    });
+    secure.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+async function writeAndRead(
+  socket: Socket,
+  payload: Buffer,
+  bytes: number,
+): Promise<Buffer> {
+  return await new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const onData = (chunk: Buffer) => {
+      chunks.push(chunk);
+      size += chunk.length;
+      if (size >= bytes) {
+        socket.off("data", onData);
+        resolve(Buffer.concat(chunks).subarray(0, size));
+      }
+    };
+    socket.on("data", onData);
+    socket.once("error", reject);
+    socket.write(payload);
+  });
 }
 
 async function throwForProviderResponse(
@@ -323,6 +571,61 @@ function readChatContent(value: unknown): unknown {
   const choices = readRecord(value)?.choices;
   if (!Array.isArray(choices)) return undefined;
   return readRecord(readRecord(choices[0])?.message)?.content;
+}
+
+/**
+ * OpenAI-compatible gateways sometimes prepend a short explanation or wrap
+ * JSON in a markdown fence despite response_format=json_object. Accept only
+ * a complete JSON value, never arbitrary text, before schema validation.
+ */
+function extractJsonContent(content: string): unknown | undefined {
+  const trimmed = content.trim();
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    // Continue with balanced-object extraction below.
+  }
+
+  const unfenced = trimmed
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  if (unfenced !== trimmed) {
+    try {
+      return JSON.parse(unfenced) as unknown;
+    } catch {
+      // Continue with balanced-object extraction below.
+    }
+  }
+
+  for (let start = 0; start < trimmed.length; start += 1) {
+    if (trimmed[start] !== "{") continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < trimmed.length; index += 1) {
+      const character = trimmed[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') {
+        inString = true;
+      } else if (character === "{") {
+        depth += 1;
+      } else if (character === "}" && --depth === 0) {
+        try {
+          return JSON.parse(trimmed.slice(start, index + 1)) as unknown;
+        } catch {
+          break;
+        }
+      }
+    }
+  }
+
+  return undefined;
 }
 
 function readRecord(value: unknown): Record<string, unknown> | undefined {

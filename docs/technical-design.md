@@ -241,17 +241,23 @@ candidate_queue
 ### AI And Scoring
 
 ```text
-ai_providers
+ai_provider_groups
 - id
 - name
-- kind              # chat | embedding
 - type              # openai_compatible | custom
 - base_url
-- api_key_env                 # unique provider-scoped env var name
+- api_key_env                 # unique group-scoped env var name
+- proxy_url_env               # optional server-side HTTP/SOCKS URL env name
+- enabled
+
+ai_providers                    # one model per row; historical FK owner
+- id
+- provider_group_id
+- kind              # chat | embedding
 - model
 - dimensions
-- priority
-- reasoning_effort
+- priority                      # model priority within its Provider group
+- reasoning_effort             # none | default | minimal | low | medium | high | xhigh
 - availability_status
 - unavailable_code
 - unavailable_reason
@@ -540,7 +546,7 @@ resource_policy:
 
 ## AI Provider Design
 
-Chat and embedding providers are independent and profiles do not bind provider IDs.
+Chat and embedding models are independent and profiles do not bind concrete model IDs. A Provider group owns shared Base URL, API key environment reference, and optional sub2api HTTP/SOCKS egress proxy; each model owns priority, reasoning mode, dimensions, enabled state, and health rotation.
 
 ```yaml
 ai:
@@ -565,7 +571,7 @@ ai:
 
 The API key value must never be stored in the database. The provider name is normalized into the single API key environment variable name, and names must be unique. Renaming a provider requires entering its API key again because the environment variable name changes.
 
-Provider records also store priority, reasoning effort, availability, sanitized failure reason, recovery guidance, and cooldown state. A lower priority value is selected first. The API key value can be written to `.env.local` through the UI, but the database only stores the environment variable name.
+Model records store priority, reasoning effort, availability, sanitized failure reason, recovery guidance, and cooldown state. A lower model priority value is selected first. The API key value and proxy URL are never stored in the database; only their environment variable names are stored.
 
 Persistent provider states are `blocked_auth`, `blocked_permission`, and `invalid_config`; they require user correction followed by “检测并恢复”. An expired `cooldown` remains unavailable until a real probe succeeds. `recovering` prevents selection while a manual probe is in progress.
 
@@ -632,7 +638,7 @@ Track:
 ## Current Implementation Status
 
 - GitHub context uses `GITHUB_TOKEN` from environment or `.env.local`; plaintext tokens are not stored in the database.
-- AI providers use OpenAI-compatible third-party APIs with separate chat and embedding provider records.
+- AI Providers use shared Provider groups with multiple chat/embedding model records, model-level priority, optional reasoning suppression, and optional sub2api-compatible HTTP/SOCKS egress proxy references.
 - UI is implemented with Next.js client components, project CSS, and `lucide-react` icons.
 - Production deployment currently runs web and worker systemd services behind `github.zero007.chat`.
 - The local `ai-knowledge-base` write adapter and cost dashboard are implemented. FastGPT integration, a richer context-match audit table, cache-hit reporting, and broader automated API tests remain future work.

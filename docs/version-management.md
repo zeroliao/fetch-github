@@ -170,6 +170,18 @@ https://github.zero007.chat/api/dashboard
 5. 推送 `main` 和 tag。
 6. 清理或归档不再使用的 `dev/<version>`。
 
+### 7.5 文档对齐与知识收尾
+
+通用发布与知识收尾约束由全局 Codex 规则定义；本节只规定 `fetchGithub` 的版本记录、部署和文档落地步骤。
+
+每次提交和部署都必须根据版本记录和当前会话记录检查当前版本是否需要同步到长期设计文档，不能只依据测试通过或服务重启成功判断完成。版本记录和会话记录是同步清单与变更线索，不是未经核实的事实来源；最终以代码、配置、数据库和真实运行态为准：
+
+1. 先从 `docs/releases/<version>.md` 和当前会话记录提取变更、决策、风险、验证结果和未决事项，形成待核对清单。
+2. 提交前，用候选 diff、配置和测试结果逐项核实清单，再判断是否需要把稳定且可复用的变化同步到 PRD/需求、MVP spec、技术设计、本地配置、功能审计或 `AGENTS.md`。只影响本版本的过程细节保留在 release 记录中，不强行复制到所有长期文档。
+3. 部署前，确认 release 记录中的候选 commit、版本号、数据库迁移要求、验证命令、回滚目标和线上检查项与实际候选一致；未执行的检查必须标记为 `pending`，不得写成通过。
+4. 部署后，用真实运行态回填 release 记录：服务器 commit、`db:init` 或无需迁移的证据、生产 build、web/worker 状态、关键日志、鉴权响应和核心页面/API 路径。每项事实标记为 `verified-current`、`changed-and-verified`、`pending`、`out-of-scope` 或 `not-applicable`。
+5. 收尾时分别确认 `draft`、PR、`merged`、`deployed`、`live verified`、`knowledge closed` 和 `cleaned` 状态；代码部署成功不等于文档或知识收尾完成。发现版本记录、会话、文档与运行态冲突时，先修正长期文档或记录未决差异，再宣布版本完成。
+
 ### 8. 失败或取消
 
 部署失败：

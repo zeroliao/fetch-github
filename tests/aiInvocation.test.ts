@@ -88,6 +88,23 @@ test("default reasoning mode omits reasoning_effort and keeps temperature", asyn
   assert.equal(requestBody?.temperature, 0);
 });
 
+test("disabled reasoning mode omits reasoning_effort and keeps temperature", async () => {
+  process.env[API_KEY_ENV] = "test-secret";
+  let requestBody: Record<string, unknown> | undefined;
+  globalThis.fetch = async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return successfulChatResponse('{"ok":true}');
+  };
+
+  await callChatJson({
+    provider: provider({ reasoningEffort: "none" }),
+    messages: [{ role: "user", content: "return JSON" }],
+  });
+
+  assert.equal(Object.hasOwn(requestBody ?? {}, "reasoning_effort"), false);
+  assert.equal(requestBody?.temperature, 0.2);
+});
+
 test("each provider resolves the API key from its own env name", async () => {
   const firstEnv = "FETCH_GITHUB_FIRST_PROVIDER_KEY";
   const secondEnv = "FETCH_GITHUB_SECOND_PROVIDER_KEY";
@@ -187,6 +204,20 @@ test("invalid model JSON throws a classifiable output_parse error", async () => 
   );
 });
 
+test("chat JSON extraction accepts a provider prefix and markdown fence", async () => {
+  process.env[API_KEY_ENV] = "test-secret";
+  globalThis.fetch = async () =>
+    successfulChatResponse('分析如下：\n```json\n{"ok":true}\n```');
+
+  assert.deepEqual(
+    await callChatJson({
+      provider: provider(),
+      messages: [{ role: "user", content: "return JSON" }],
+    }),
+    { ok: true },
+  );
+});
+
 test("provider probe validates the production repository-analysis schema", async () => {
   process.env[API_KEY_ENV] = "test-secret";
   let requestBody: Record<string, unknown> | undefined;
@@ -266,7 +297,6 @@ test("repo analysis accepts the complete strict output schema", () => {
 test("repo analysis rejects missing, invalid, and unknown output fields", () => {
   for (const invalid of [
     { ...validAnalysis, summary: undefined },
-    { ...validAnalysis, match_score: "0.82" },
     { ...validAnalysis, extra: "unexpected" },
   ]) {
     assert.throws(
@@ -280,4 +310,22 @@ test("repo analysis rejects missing, invalid, and unknown output fields", () => 
       },
     );
   }
+});
+
+test("repo analysis normalizes compatible provider field representations", () => {
+  const normalized = parseRepoAnalysisResult({
+    ...validAnalysis,
+    is_match: "true",
+    match_score: "0.82",
+    opportunity: {
+      ...validAnalysis.opportunity,
+      technicalQuality: null,
+      suggestedAction: "monitor",
+    },
+  });
+
+  assert.equal(normalized.is_match, true);
+  assert.equal(normalized.match_score, 0.82);
+  assert.equal(normalized.opportunity?.technicalQuality, 0.5);
+  assert.equal(normalized.opportunity?.suggestedAction, "observe");
 });

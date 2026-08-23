@@ -44,18 +44,15 @@ Acceptance:
 
 ### F2. AI Provider Management
 
-User can configure chat and embedding providers separately.
+User can configure chat and embedding models under shared Provider groups.
 
 Required fields:
 
-- `name`
-- `kind`: `chat` or `embedding`
-- `base_url`
-- `api_key_env` (derived from the provider name)
-- `model`
-- `priority`
-- `reasoning_effort` for chat providers
-- `dimensions` for embeddings
+- Provider group `name`, `type`, `base_url`, and `api_key_env` (derived from the group name)
+- Optional `proxy_url_env`, referencing a server-side HTTP/SOCKS URL such as a sub2api sidecar endpoint
+- One or more models with `kind`, `model`, model-level `priority`, `enabled`, and failure policy
+- `reasoning_effort` for chat models; `none` means do not send `reasoning_effort`
+- `dimensions` for embedding models
 - `rate_limit`
 - `timeout`
 - `cooldown_seconds` and `cooldown_on`
@@ -66,11 +63,11 @@ Acceptance:
 - Chat provider cannot be selected as an embedding provider.
 - Embedding provider cannot be selected as a chat provider.
 - API key value is not stored, only `api_key_env`.
-- The provider name is the single user-facing name for the model and its API key environment variable.
-- Provider names must be unique after normalization; the deployment starts from a clean provider store, so no legacy migration is required.
+- The Provider group name is the user-facing connection name and determines its API key environment variable; model names are independent within the group.
+- Provider names must be unique after normalization; existing single-model records migrate into one-model legacy groups.
 - Test connection action verifies provider availability without printing secrets.
 - Test connection action runs the production Chat analysis schema or a batch Embedding shape/dimension probe.
-- Provider selection uses only `available` providers, by kind and ascending priority; an expired cooldown is first checked with a real probe and only a successful probe returns it to `available`.
+- Provider selection uses only `available` models, by kind and ascending model priority; an expired cooldown is first checked with a real probe and only a successful probe returns it to `available`.
 - Failure codes outside `cooldown_on` enter manual `error` recovery.
 - The list shows availability status, sanitized unavailable reason, recovery guidance, and cooldown deadline.
 - Persistent unavailable states can return to `available` only after “检测并恢复” succeeds.

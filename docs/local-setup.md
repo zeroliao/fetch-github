@@ -47,7 +47,7 @@ pnpm dev
 pnpm db:reset-opportunity
 ```
 
-该命令会清空扫描、推荐、GitHub 关联、AI provider 记录、会话和应用状态，然后创建默认禁用的 Chat / Embedding provider 占位配置；不会删除 `.env.local` 中的 API Key 或管理员密码哈希。
+该命令会清空扫描、推荐、GitHub 关联、AI Provider 组/模型记录、会话和应用状态，然后创建默认禁用的 Chat / Embedding 模型占位配置；不会删除 `.env.local` 中的 API Key、代理 URL 或管理员密码哈希。Provider 的出口代理通过 `proxy_url_env` 引用服务器 `.env.local` 中的 HTTP/SOCKS 地址，sub2api sidecar 可使用其本机监听端口。
 
 访问地址：
 

@@ -164,6 +164,7 @@ export function orderEligibleProviders(
       if (
         provider.kind !== kind ||
         !provider.enabled ||
+        provider.groupEnabled === false ||
         provider.archivedAt ||
         excluded.has(provider.id)
       ) {

@@ -8,7 +8,7 @@ export type ProviderAvailabilityStatus =
   | "invalid_config"
   | "recovering";
 export type ReasoningEffort =
-  "default" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  "none" | "default" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type AiProviderFailureCode =
   | "output_parse"
@@ -112,11 +112,14 @@ export interface DiscoverySourceConfig {
 
 export interface AiProvider {
   id: string;
+  providerGroupId?: string;
+  groupEnabled?: boolean;
   name: string;
   kind: ProviderKind;
   type: "openai_compatible" | "custom";
   baseUrl: string;
   apiKeyEnv: string;
+  proxyUrlEnv?: string;
   model: string;
   dimensions?: number;
   priority: number;
@@ -138,6 +141,19 @@ export interface AiProvider {
     tokensPerMinute?: number;
   };
   timeoutSeconds?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AiProviderGroup {
+  id: string;
+  name: string;
+  type: "openai_compatible" | "custom";
+  baseUrl: string;
+  apiKeyEnv: string;
+  proxyUrlEnv?: string;
+  enabled: boolean;
+  models: AiProvider[];
   createdAt: string;
   updatedAt: string;
 }

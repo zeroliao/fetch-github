@@ -1,4 +1,4 @@
-/** Uses the provider name as the single stable API key env name. */
+/** Uses the Provider group name as the single stable API key env name. */
 export function providerNameToApiKeyEnv(name: string): string {
   const normalized = name
     .trim()
@@ -8,7 +8,7 @@ export function providerNameToApiKeyEnv(name: string): string {
     .toUpperCase();
 
   if (!normalized || !/^[A-Z_][A-Z0-9_]*$/.test(normalized)) {
-    throw new Error("模型名称必须包含可用于 API Key 环境变量的字符。");
+    throw new Error("Provider 名称必须包含可用于 API Key 环境变量的字符。");
   }
 
   return normalized;

@@ -439,6 +439,34 @@ button {
   vertical-align: top;
 }
 
+.provider-group-row td {
+  background: var(--surface-muted, #f3f6f8);
+  border-top: 1px solid var(--border);
+  color: var(--text);
+  white-space: normal;
+}
+
+.provider-model-editor {
+  grid-column: 1 / -1;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.provider-model-row {
+  display: grid;
+  grid-template-columns: 110px minmax(160px, 1fr) 90px 130px 90px 64px;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+@media (max-width: 720px) {
+  .provider-model-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
 .provider-table .provider-actions-cell .action-row {
   align-items: flex-start;
   gap: 8px;

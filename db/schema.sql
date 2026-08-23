@@ -190,6 +190,19 @@ CREATE TABLE IF NOT EXISTS repo_processing (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS ai_provider_groups (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'openai_compatible',
+  base_url TEXT NOT NULL,
+  api_key_env TEXT NOT NULL UNIQUE,
+  proxy_url_env TEXT,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  archived_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS resource_events (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL REFERENCES discovery_jobs(id) ON DELETE CASCADE,
@@ -463,6 +476,18 @@ ALTER TABLE ai_providers
   ADD COLUMN IF NOT EXISTS cooldown_until TIMESTAMPTZ;
 ALTER TABLE ai_providers
   ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+ALTER TABLE ai_providers
+  ADD COLUMN IF NOT EXISTS provider_group_id TEXT REFERENCES ai_provider_groups(id);
+INSERT INTO ai_provider_groups
+  (id, name, type, base_url, api_key_env, enabled, archived_at, created_at, updated_at)
+SELECT
+  'legacy-' || id, name, type, base_url, api_key_env, enabled, archived_at, created_at, updated_at
+FROM ai_providers
+WHERE provider_group_id IS NULL
+ON CONFLICT (id) DO NOTHING;
+UPDATE ai_providers
+SET provider_group_id = 'legacy-' || id
+WHERE provider_group_id IS NULL;
 ALTER TABLE recommendations
   ADD COLUMN IF NOT EXISTS preference_status TEXT NOT NULL DEFAULT 'pending';
 ALTER TABLE recommendations
@@ -524,4 +549,5 @@ ON CONFLICT (canonical_url) DO NOTHING;
 CREATE INDEX IF NOT EXISTS idx_repo_processing_status ON repo_processing(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_provider_health_events_provider ON provider_health_events(provider_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_providers_selection ON ai_providers(kind, enabled, availability_status, priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_providers_group ON ai_providers(provider_group_id, kind, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_recommendations_profile ON recommendations(profile_id, final_score DESC);
