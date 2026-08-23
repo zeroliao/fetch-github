@@ -195,13 +195,15 @@ CREATE TABLE IF NOT EXISTS ai_provider_groups (
   name TEXT NOT NULL,
   type TEXT NOT NULL DEFAULT 'openai_compatible',
   base_url TEXT NOT NULL,
-  api_key_env TEXT NOT NULL UNIQUE,
+  api_key_env TEXT NOT NULL,
   proxy_url_env TEXT,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   archived_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE ai_provider_groups
+  DROP CONSTRAINT IF EXISTS ai_provider_groups_api_key_env_key;
 
 CREATE TABLE IF NOT EXISTS resource_events (
   id TEXT PRIMARY KEY,

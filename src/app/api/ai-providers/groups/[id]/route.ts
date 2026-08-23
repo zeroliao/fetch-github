@@ -47,6 +47,7 @@ export async function PATCH(
     );
   }
   if (
+    apiKeyEnv !== current.apiKeyEnv &&
     (await listAiProviderGroups()).some(
       (group) => group.id !== id && group.apiKeyEnv === apiKeyEnv,
     )
