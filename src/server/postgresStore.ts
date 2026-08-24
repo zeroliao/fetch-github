@@ -1118,7 +1118,11 @@ export async function updateAiProviderAvailability(
       input.recoverySuggestion ?? null,
     ],
   );
-  return mapProviderRow(result.rows[0]);
+  // Availability updates return a model row, but connection-level settings
+  // (including the outbound proxy env name) live on the Provider group.
+  // Hydrate the group before returning so detection responses do not erase
+  // those settings from the client state or subsequent model calls.
+  return (await hydrateProviderGroups([mapProviderRow(result.rows[0])]))[0];
 }
 
 export async function listScanProviderStates(

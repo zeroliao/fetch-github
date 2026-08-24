@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AiProvider } from "../src/lib/types";
 import {
+  AiProviderConfigurationError,
   AiProviderHttpError,
   AiProviderOutputParseError,
   AiProviderOutputSchemaError,
@@ -232,6 +233,25 @@ test("provider probe validates minimal structured chat output", async () => {
   const messages = requestBody?.messages as Array<Record<string, unknown>>;
   assert.match(String(messages?.[0]?.content), /ok/);
   assert.deepEqual(requestBody?.response_format, { type: "json_object" });
+});
+
+test("provider probe applies the configured proxy env", async () => {
+  process.env[API_KEY_ENV] = "test-secret";
+  const proxyEnv = "FETCH_GITHUB_AI_INVOCATION_TEST_PROXY";
+  const previousProxy = process.env[proxyEnv];
+  try {
+    process.env[proxyEnv] = "ftp://127.0.0.1:3128";
+    await assert.rejects(
+      probeAiProvider(provider({ proxyUrlEnv: proxyEnv })),
+      (error: unknown) => {
+        assert.ok(error instanceof AiProviderConfigurationError);
+        return true;
+      },
+    );
+  } finally {
+    if (previousProxy === undefined) delete process.env[proxyEnv];
+    else process.env[proxyEnv] = previousProxy;
+  }
 });
 
 test("provider probe rejects non-probe structured chat output", async () => {
