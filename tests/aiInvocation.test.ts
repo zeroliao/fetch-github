@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createServer as createHttpServer } from "node:http";
+import { createServer as createNetServer, connect as connectNet } from "node:net";
 import test from "node:test";
 import type { AiProvider } from "../src/lib/types";
 import {
@@ -7,6 +9,7 @@ import {
   AiProviderOutputParseError,
   AiProviderOutputSchemaError,
   callChatJson,
+  requestViaProxy,
 } from "../src/server/aiClient";
 import { probeAiProvider } from "../src/server/aiProviderProbe";
 import { classifyAiProviderFailure } from "../src/server/aiProviderPolicy";
@@ -254,6 +257,55 @@ test("provider probe applies the configured proxy env", async () => {
   }
 });
 
+test("proxy transport reuses its SOCKS tunnel instead of opening a direct connection", async () => {
+  const target = createHttpServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"ok":true}');
+  });
+  const targetPort = await listen(target);
+
+  const proxy = createNetServer((client) => {
+    client.once("data", (greeting) => {
+      assert.deepEqual([...greeting], [5, 1, 0]);
+      client.write(Buffer.from([5, 0]));
+      client.once("data", (request) => {
+        const payload = Buffer.isBuffer(request) ? request : Buffer.from(request);
+        assert.equal(payload[0], 5);
+        assert.equal(payload[1], 1);
+        assert.equal(payload[3], 3);
+        const hostLength = payload[4] ?? 0;
+        assert.equal(
+          payload.subarray(5, 5 + hostLength).toString(),
+          "fetchgithub-proxy-test.invalid",
+        );
+
+        const upstream = connectNet({ host: "127.0.0.1", port: targetPort });
+        upstream.once("connect", () => {
+          client.write(Buffer.from([5, 0, 0, 1, 0, 0, 0, 0, 0, 0]));
+          client.pipe(upstream);
+          upstream.pipe(client);
+        });
+        upstream.once("error", (error) => client.destroy(error));
+      });
+    });
+  });
+  const proxyPort = await listen(proxy);
+
+  try {
+    const response = await requestViaProxy(
+      `http://fetchgithub-proxy-test.invalid:${targetPort}/probe`,
+      {},
+      `socks5://127.0.0.1:${proxyPort}`,
+      5_000,
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+  } finally {
+    await close(proxy);
+    await close(target);
+  }
+});
+
 test("provider probe rejects non-probe structured chat output", async () => {
   process.env[API_KEY_ENV] = "test-secret";
   globalThis.fetch = async () => successfulChatResponse('{"ok":false}');
@@ -264,6 +316,27 @@ test("provider probe rejects non-probe structured chat output", async () => {
     return true;
   });
 });
+
+function listen(server: ReturnType<typeof createNetServer> | ReturnType<typeof createHttpServer>) {
+  return new Promise<number>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        reject(new Error("Expected a TCP server address."));
+        return;
+      }
+      resolve(address.port);
+    });
+  });
+}
+
+function close(server: ReturnType<typeof createNetServer> | ReturnType<typeof createHttpServer>) {
+  return new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
 
 test("embedding provider probe validates batch cardinality", async () => {
   process.env[API_KEY_ENV] = "test-secret";

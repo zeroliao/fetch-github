@@ -1,6 +1,6 @@
 import type { AiProvider } from "@/lib/types";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { connect as netConnect, type Socket } from "node:net";
 import { connect as tlsConnect } from "node:tls";
 import { URL } from "node:url";
@@ -344,51 +344,69 @@ export async function requestViaProxy(
     socket = await secureSocket(socket, target.hostname, timeoutMs);
   }
   const transport = target.protocol === "https:" ? httpsRequest : httpRequest;
-  const response = await new Promise<{
-    status: number;
-    headers: Record<string, string>;
-    body: Buffer;
-  }>((resolve, reject) => {
-    const request = transport(
-      {
-        protocol: target.protocol,
-        hostname: target.hostname,
-        port: target.port || undefined,
-        path: `${target.pathname}${target.search}`,
-        method: init.method ?? "GET",
-        headers,
-        agent: false,
-        createConnection: () => socket,
-      },
-      (incoming) => {
-        const chunks: Buffer[] = [];
-        incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-        incoming.on("end", () =>
-          resolve({
-            status: incoming.statusCode ?? 502,
-            headers: Object.fromEntries(
-              Object.entries(incoming.headers).map(([key, value]) => [
-                key,
-                Array.isArray(value) ? value.join(", ") : String(value ?? ""),
-              ]),
-            ),
-            body: Buffer.concat(chunks),
-          }),
-        );
-        incoming.on("error", reject);
-      },
-    );
-    request.setTimeout(timeoutMs, () =>
-      request.destroy(new Error("ETIMEDOUT")),
-    );
-    request.on("error", reject);
-    if (body) request.write(body);
-    request.end();
-  });
-  return new Response(new Uint8Array(response.body), {
-    status: response.status,
-    headers: response.headers,
-  });
+  const agent = createSocketAgent(target.protocol, socket);
+  try {
+    const response = await new Promise<{
+      status: number;
+      headers: Record<string, string>;
+      body: Buffer;
+    }>((resolve, reject) => {
+      const request = transport(
+        {
+          protocol: target.protocol,
+          hostname: target.hostname,
+          port: target.port || undefined,
+          path: `${target.pathname}${target.search}`,
+          method: init.method ?? "GET",
+          headers,
+          // `agent: false` creates a new default Agent, which opens a direct
+          // connection and ignores the SOCKS/CONNECT tunnel prepared above.
+          agent,
+        },
+        (incoming) => {
+          const chunks: Buffer[] = [];
+          incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+          incoming.on("end", () =>
+            resolve({
+              status: incoming.statusCode ?? 502,
+              headers: Object.fromEntries(
+                Object.entries(incoming.headers).map(([key, value]) => [
+                  key,
+                  Array.isArray(value) ? value.join(", ") : String(value ?? ""),
+                ]),
+              ),
+              body: Buffer.concat(chunks),
+            }),
+          );
+          incoming.on("error", reject);
+        },
+      );
+      request.setTimeout(timeoutMs, () =>
+        request.destroy(new Error("ETIMEDOUT")),
+      );
+      request.on("error", reject);
+      if (body) request.write(body);
+      request.end();
+    });
+    return new Response(new Uint8Array(response.body), {
+      status: response.status,
+      headers: response.headers,
+    });
+  } finally {
+    agent.destroy();
+  }
+}
+
+function createSocketAgent(protocol: string, socket: Socket) {
+  const agent =
+    protocol === "https:"
+      ? new HttpsAgent({ keepAlive: false, maxSockets: 1 })
+      : new HttpAgent({ keepAlive: false, maxSockets: 1 });
+  agent.createConnection = (_options, callback) => {
+    if (callback) queueMicrotask(() => callback(null, socket));
+    return socket;
+  };
+  return agent;
 }
 
 async function connectHttpProxy(
