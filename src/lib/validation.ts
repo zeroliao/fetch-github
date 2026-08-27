@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { normalizeOpportunityProfile } from "./opportunity";
+import { MAX_AI_PROVIDER_MODELS } from "./types";
 
 const discoverySourceIdSchema = z.enum([
   "github_search_preferences",
@@ -112,7 +113,7 @@ export const providerGroupSchema = z
       .optional()
       .or(z.literal("")),
     enabled: z.boolean().default(true),
-    models: z.array(providerModelSchema).max(50),
+    models: z.array(providerModelSchema).max(MAX_AI_PROVIDER_MODELS),
   })
   .superRefine((value, context) => {
     value.models.forEach((model, index) => {

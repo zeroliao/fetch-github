@@ -1,4 +1,5 @@
 export type ProviderKind = "chat" | "embedding";
+export const MAX_AI_PROVIDER_MODELS = 500;
 export type ProviderAvailabilityStatus =
   | "available"
   | "cooldown"

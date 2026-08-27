@@ -661,13 +661,11 @@ export async function updateAiProviderGroup(
     createdAt: existing.get(model.id ?? "")?.createdAt ?? now,
     updatedAt: now,
   }));
-  const ids = new Set(models.map((model) => model.id));
-  state.aiProviders = state.aiProviders.map((provider) =>
-    (provider.providerGroupId ?? `legacy-${provider.id}`) !== id
-      ? provider
-      : ids.has(provider.id)
-        ? models.find((model) => model.id === provider.id)!
-        : { ...provider, enabled: false, archivedAt: now, updatedAt: now },
+  state.aiProviders = mergeLocalProviderGroupModels(
+    state.aiProviders,
+    id,
+    models,
+    now,
   );
   await saveState(state);
   return {
@@ -682,6 +680,29 @@ export async function updateAiProviderGroup(
     createdAt: current.createdAt,
     updatedAt: now,
   };
+}
+
+export function mergeLocalProviderGroupModels(
+  providers: AiProvider[],
+  groupId: string,
+  models: AiProvider[],
+  updatedAt: string,
+): AiProvider[] {
+  const replacementById = new Map(models.map((model) => [model.id, model]));
+  const existingIds = new Set(providers.map((provider) => provider.id));
+  const updated = providers.map((provider) => {
+    if ((provider.providerGroupId ?? `legacy-${provider.id}`) !== groupId)
+      return provider;
+    return (
+      replacementById.get(provider.id) ?? {
+        ...provider,
+        enabled: false,
+        archivedAt: updatedAt,
+        updatedAt,
+      }
+    );
+  });
+  return [...updated, ...models.filter((model) => !existingIds.has(model.id))];
 }
 
 type AiProviderModelInput = Pick<

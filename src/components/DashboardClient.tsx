@@ -14,6 +14,7 @@ import {
   ChevronRight,
   Compass,
   Database,
+  Download,
   ExternalLink,
   EyeOff,
   Eye,
@@ -33,6 +34,7 @@ import {
   ThumbsUp,
   Trash2,
   ClipboardCheck,
+  Upload,
   X,
 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
@@ -3904,6 +3906,38 @@ function ProvidersPanelV2({
     }
   }
 
+  function exportModels(group: AiProviderGroup, format: "json" | "xlsx") {
+    const link = document.createElement("a");
+    link.href = `/api/ai-providers/groups/${group.id}/models/transfer?format=${format}`;
+    link.download = `${group.name}-models.${format}`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  async function importModels(group: AiProviderGroup, file: File) {
+    setBusyAction(`${group.id}:import`);
+    setMessage("正在导入模型...");
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch(
+        `/api/ai-providers/groups/${group.id}/models/transfer`,
+        { method: "POST", body: formData },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(readApiError(body, "模型导入失败。"));
+      if (body.group) updateGroupModels(body.group);
+      setMessage(
+        `模型导入完成：新增 ${body.imported ?? 0} 个，跳过 ${body.skipped ?? 0} 个重复模型。`,
+      );
+    } catch (error) {
+      setMessage(errorMessage(error, "模型导入失败。"));
+    } finally {
+      setBusyAction("");
+    }
+  }
+
   async function confirmDelete() {
     if (!confirm) return;
     setBusyAction(
@@ -4098,6 +4132,45 @@ function ProvidersPanelV2({
                             onClick={() => setModelEditor({ group })}
                           >
                             <Plus size={14} /> 新增模型
+                          </button>
+                          <label
+                            className="button"
+                            title="导入 JSON 或 XLSX 模型文件"
+                          >
+                            <Upload size={14} /> 导入模型
+                            <input
+                              type="file"
+                              accept=".json,application/json,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                              hidden
+                              disabled={busyAction !== ""}
+                              onChange={(event) => {
+                                const file = event.target.files?.[0];
+                                event.target.value = "";
+                                if (file) void importModels(group, file);
+                              }}
+                            />
+                          </label>
+                          <button
+                            className="button"
+                            type="button"
+                            onClick={() => exportModels(group, "json")}
+                            disabled={
+                              busyAction !== "" || group.models.length === 0
+                            }
+                            title="导出 JSON 模型文件"
+                          >
+                            <Download size={14} /> 导出 JSON
+                          </button>
+                          <button
+                            className="button"
+                            type="button"
+                            onClick={() => exportModels(group, "xlsx")}
+                            disabled={
+                              busyAction !== "" || group.models.length === 0
+                            }
+                            title="导出 XLSX 模型文件"
+                          >
+                            <Download size={14} /> 导出 XLSX
                           </button>
                         </div>
                       </div>
