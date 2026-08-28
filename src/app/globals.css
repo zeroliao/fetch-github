@@ -861,6 +861,74 @@ button {
   padding: 0 18px;
 }
 
+.proxy-check-table-wrap .repo-table {
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.proxy-check-table-wrap th,
+.proxy-check-table-wrap td {
+  padding: 11px 12px;
+  overflow-wrap: anywhere;
+}
+
+.proxy-check-table-wrap th:nth-child(1),
+.proxy-check-table-wrap td:nth-child(1) {
+  width: 27%;
+}
+
+.proxy-check-table-wrap th:nth-child(2),
+.proxy-check-table-wrap td:nth-child(2) {
+  width: 25%;
+}
+
+.proxy-check-table-wrap td:nth-child(3) {
+  width: 14%;
+}
+
+.proxy-check-table-wrap th:nth-child(4),
+.proxy-check-table-wrap td:nth-child(4) {
+  width: 14%;
+}
+
+.proxy-check-table-wrap th:nth-child(5),
+.proxy-check-table-wrap td:nth-child(5) {
+  width: 20%;
+}
+
+.proxy-check-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-muted);
+  padding: 12px 18px;
+}
+
+.proxy-check-target {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.proxy-check-target-label,
+.proxy-check-control > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.proxy-check-controls {
+  display: flex;
+  gap: 10px;
+}
+
+.proxy-check-control {
+  display: grid;
+  gap: 4px;
+  min-width: 130px;
+}
+
 .proxy-check-table-wrap code {
   font-size: 12px;
 }
@@ -1793,6 +1861,20 @@ textarea:focus-visible {
 
   .proxy-check-table-wrap {
     padding: 0 12px;
+  }
+
+  .proxy-check-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .proxy-check-controls {
+    flex-wrap: wrap;
+  }
+
+  .proxy-check-control {
+    flex: 1 1 140px;
   }
 
   .provider-card-header {

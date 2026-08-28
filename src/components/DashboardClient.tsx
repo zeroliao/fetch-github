@@ -3651,6 +3651,9 @@ type ProxyCheckRow = {
   error?: string;
 };
 
+type ProxyCheckStatusFilter = "all" | ProxyCheckRow["status"];
+type ProxyCheckSort = "default" | "elapsed-asc" | "elapsed-desc";
+
 function ProvidersPanelV2({
   providers,
   onChanged,
@@ -3687,6 +3690,10 @@ function ProvidersPanelV2({
   const [proxyCheckRows, setProxyCheckRows] = useState<ProxyCheckRow[]>([]);
   const [proxyCheckOpen, setProxyCheckOpen] = useState(false);
   const [proxyChecking, setProxyChecking] = useState(false);
+  const [proxyCheckStatus, setProxyCheckStatus] =
+    useState<ProxyCheckStatusFilter>("all");
+  const [proxyCheckSort, setProxyCheckSort] =
+    useState<ProxyCheckSort>("default");
 
   const liveGroups = useMemo(() => {
     const groups = new Map<string, AiProviderGroup>();
@@ -3746,6 +3753,23 @@ function ProvidersPanelV2({
 
   const selectedGroup =
     groups.find((group) => group.id === selectedGroupId) ?? null;
+
+  const visibleProxyCheckRows = useMemo(() => {
+    const filtered = proxyCheckRows.filter(
+      (row) => proxyCheckStatus === "all" || row.status === proxyCheckStatus,
+    );
+    if (proxyCheckSort === "default") return filtered;
+    return [...filtered].sort((a, b) => {
+      const aElapsed = a.elapsedMs ?? Number.POSITIVE_INFINITY;
+      const bElapsed = b.elapsedMs ?? Number.POSITIVE_INFINITY;
+      if (aElapsed !== bElapsed) {
+        return proxyCheckSort === "elapsed-asc"
+          ? aElapsed - bElapsed
+          : bElapsed - aElapsed;
+      }
+      return a.proxyEnv.localeCompare(b.proxyEnv);
+    });
+  }, [proxyCheckRows, proxyCheckSort, proxyCheckStatus]);
 
   useEffect(() => {
     if (!proxyCheckOpen) return;
@@ -3937,6 +3961,8 @@ function ProvidersPanelV2({
     setProxyCheckOpen(true);
     setProxyChecking(true);
     setProxyCheckRows([]);
+    setProxyCheckStatus("all");
+    setProxyCheckSort("default");
     try {
       const listResponse = await fetch("/api/ai-providers/proxy-check");
       const entries = await listResponse.json().catch(() => []);
@@ -4524,13 +4550,64 @@ function ProvidersPanelV2({
                 <X size={17} />
               </button>
             </div>
+            <div className="proxy-check-toolbar">
+              <div className="proxy-check-target">
+                <span className="proxy-check-target-label">检测目标</span>
+                <strong>
+                  {proxyCheckRows[0]?.providerName ?? "当前 Provider"}
+                  {proxyCheckRows[0]?.model
+                    ? ` / ${proxyCheckRows[0].model}`
+                    : ""}
+                </strong>
+              </div>
+              <div className="proxy-check-controls">
+                <label className="proxy-check-control">
+                  <span>状态</span>
+                  <select
+                    className="select"
+                    value={proxyCheckStatus}
+                    onChange={(event) =>
+                      setProxyCheckStatus(
+                        event.target.value as ProxyCheckStatusFilter,
+                      )
+                    }
+                  >
+                    <option value="all">全部</option>
+                    <option value="connected">已连通</option>
+                    <option value="failed">未连通</option>
+                    <option value="checking">检测中</option>
+                    <option value="pending">等待中</option>
+                  </select>
+                </label>
+                <label className="proxy-check-control">
+                  <span>连通时间</span>
+                  <select
+                    className="select"
+                    value={proxyCheckSort}
+                    onChange={(event) =>
+                      setProxyCheckSort(event.target.value as ProxyCheckSort)
+                    }
+                  >
+                    <option value="default">默认顺序</option>
+                    <option value="elapsed-asc">从低到高</option>
+                    <option value="elapsed-desc">从高到低</option>
+                  </select>
+                </label>
+              </div>
+            </div>
             <div className="table-wrap module-scroll proxy-check-table-wrap">
               <table className="repo-table">
+                <colgroup>
+                  <col className="proxy-col-env" />
+                  <col className="proxy-col-address" />
+                  <col className="proxy-col-status" />
+                  <col className="proxy-col-time" />
+                  <col className="proxy-col-detail" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>环境变量</th>
                     <th>出口地址</th>
-                    <th>Provider / 模型</th>
                     <th>状态</th>
                     <th>连通时间</th>
                     <th>详情</th>
@@ -4539,26 +4616,19 @@ function ProvidersPanelV2({
                 <tbody>
                   {proxyCheckRows.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="muted">
+                      <td colSpan={5} className="muted">
                         {proxyChecking
                           ? "正在读取代理环境变量..."
                           : "未发现代理环境变量或没有启用 Provider"}
                       </td>
                     </tr>
                   ) : (
-                    proxyCheckRows.map((row) => (
+                    visibleProxyCheckRows.map((row) => (
                       <tr key={row.id}>
                         <td>
                           <code>{row.proxyEnv}</code>
                         </td>
-                        <td>
-                          {row.address}
-                          {row.port ? `:${row.port}` : ""}
-                        </td>
-                        <td>
-                          {row.providerName}
-                          <span className="muted"> / {row.model}</span>
-                        </td>
+                        <td>{row.address}</td>
                         <td>
                           <span
                             className={`status ${row.status === "connected" ? "tracked" : row.status === "failed" ? "hidden" : "new"}`}
@@ -4583,6 +4653,14 @@ function ProvidersPanelV2({
                       </tr>
                     ))
                   )}
+                  {proxyCheckRows.length > 0 &&
+                    visibleProxyCheckRows.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="muted">
+                          没有符合当前筛选条件的检测结果
+                        </td>
+                      </tr>
+                    )}
                 </tbody>
               </table>
             </div>

@@ -87,7 +87,7 @@ export async function POST(request: Request) {
       target.search = "";
       const response = await requestViaProxy(
         target.toString(),
-        { method: "HEAD" },
+        { method: "GET" },
         entry.value,
         Math.min(10, provider.timeoutSeconds ?? 10) * 1000,
       );
