@@ -21,6 +21,7 @@ import {
   GitBranch,
   LogOut,
   LockKeyhole,
+  Network,
   Pencil,
   Play,
   Plus,
@@ -3636,6 +3637,20 @@ type ProviderModelDraft = {
   cooldownOn: AiProviderFailureCode[];
 };
 
+type ProxyCheckRow = {
+  id: string;
+  proxyEnv: string;
+  address: string;
+  port?: number;
+  providerId: string;
+  providerName: string;
+  model: string;
+  status: "pending" | "checking" | "connected" | "failed";
+  elapsedMs?: number;
+  statusCode?: number;
+  error?: string;
+};
+
 function ProvidersPanelV2({
   providers,
   onChanged,
@@ -3669,6 +3684,9 @@ function ProvidersPanelV2({
   const [statusFilter, setStatusFilter] = useState("all");
   const [busyAction, setBusyAction] = useState("");
   const [message, setMessage] = useState("");
+  const [proxyCheckRows, setProxyCheckRows] = useState<ProxyCheckRow[]>([]);
+  const [proxyCheckOpen, setProxyCheckOpen] = useState(false);
+  const [proxyChecking, setProxyChecking] = useState(false);
 
   const liveGroups = useMemo(() => {
     const groups = new Map<string, AiProviderGroup>();
@@ -3728,6 +3746,15 @@ function ProvidersPanelV2({
 
   const selectedGroup =
     groups.find((group) => group.id === selectedGroupId) ?? null;
+
+  useEffect(() => {
+    if (!proxyCheckOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setProxyCheckOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [proxyCheckOpen]);
 
   function openConfirm(value: {
     kind: "provider" | "model";
@@ -3903,6 +3930,84 @@ function ProvidersPanelV2({
       setMessage(errorMessage(error, "Provider 批量检测失败。"));
     } finally {
       setBusyAction("");
+    }
+  }
+
+  async function checkEnvProxies(group: AiProviderGroup) {
+    setProxyCheckOpen(true);
+    setProxyChecking(true);
+    setProxyCheckRows([]);
+    try {
+      const listResponse = await fetch("/api/ai-providers/proxy-check");
+      const entries = await listResponse.json().catch(() => []);
+      if (!listResponse.ok)
+        throw new Error(readApiError(entries, "读取代理环境变量失败"));
+      const provider =
+        group.models.find((model) => model.enabled) ?? group.models[0];
+      if (!provider) return;
+      const initialRows: ProxyCheckRow[] = entries.map(
+        (entry: { name: string; address: string; port?: number }) => ({
+          id: `${entry.name}:${provider.id}`,
+          proxyEnv: entry.name,
+          address: entry.address,
+          port: entry.port,
+          providerName: provider.name,
+          providerId: provider.id,
+          model: provider.model,
+          status: "pending" as const,
+        }),
+      );
+      setProxyCheckRows(initialRows);
+      if (initialRows.length === 0) return;
+      for (const entry of entries as Array<{ name: string }>) {
+        setProxyCheckRows((current) =>
+          current.map((row) =>
+            row.proxyEnv === entry.name ? { ...row, status: "checking" } : row,
+          ),
+        );
+        const response = await fetch("/api/ai-providers/proxy-check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            proxyEnv: entry.name,
+            providerId: provider.id,
+          }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          setProxyCheckRows((current) =>
+            current.map((row) =>
+              row.proxyEnv === entry.name
+                ? {
+                    ...row,
+                    status: "failed",
+                    error: readApiError(body, "检测失败"),
+                  }
+                : row,
+            ),
+          );
+          continue;
+        }
+        setProxyCheckRows((current) =>
+          current.map((row) => {
+            const result = body.results?.find(
+              (item: { proxyEnv: string }) => item.proxyEnv === row.proxyEnv,
+            );
+            if (row.proxyEnv !== entry.name || !result) return row;
+            return {
+              ...row,
+              status: result.connected ? "connected" : "failed",
+              elapsedMs: result.elapsedMs,
+              statusCode: result.statusCode,
+              error: result.error,
+            };
+          }),
+        );
+      }
+    } catch (error) {
+      setMessage(errorMessage(error, "代理连通性检测失败"));
+    } finally {
+      setProxyChecking(false);
     }
   }
 
@@ -4097,6 +4202,15 @@ function ProvidersPanelV2({
                         title="检测全部启用模型"
                       >
                         <RefreshCw size={14} /> 检测全部
+                      </button>
+                      <button
+                        className="button"
+                        type="button"
+                        onClick={() => void checkEnvProxies(group)}
+                        disabled={busyAction !== "" || proxyChecking}
+                        title="检测此 Provider 绑定的出口代理"
+                      >
+                        <Network size={14} /> 检测 env 代理
                       </button>
                       <button
                         className="button"
@@ -4380,6 +4494,105 @@ function ProvidersPanelV2({
                 }
               >
                 {busyAction ? "处理中" : "确认归档"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {proxyCheckOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal-panel wide-modal proxy-check-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="proxy-check-title"
+          >
+            <div className="panel-header">
+              <div className="panel-title">
+                <h2 id="proxy-check-title">出口代理连通性检测</h2>
+                <p>
+                  检测服务器 `.env.local` / `.env` 中的代理环境变量到已启用
+                  Provider 的连接。
+                </p>
+              </div>
+              <button
+                className="button icon"
+                type="button"
+                onClick={() => setProxyCheckOpen(false)}
+                aria-label="关闭"
+              >
+                <X size={17} />
+              </button>
+            </div>
+            <div className="table-wrap module-scroll proxy-check-table-wrap">
+              <table className="repo-table">
+                <thead>
+                  <tr>
+                    <th>环境变量</th>
+                    <th>出口地址</th>
+                    <th>Provider / 模型</th>
+                    <th>状态</th>
+                    <th>连通时间</th>
+                    <th>详情</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {proxyCheckRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="muted">
+                        {proxyChecking
+                          ? "正在读取代理环境变量..."
+                          : "未发现代理环境变量或没有启用 Provider"}
+                      </td>
+                    </tr>
+                  ) : (
+                    proxyCheckRows.map((row) => (
+                      <tr key={row.id}>
+                        <td>
+                          <code>{row.proxyEnv}</code>
+                        </td>
+                        <td>
+                          {row.address}
+                          {row.port ? `:${row.port}` : ""}
+                        </td>
+                        <td>
+                          {row.providerName}
+                          <span className="muted"> / {row.model}</span>
+                        </td>
+                        <td>
+                          <span
+                            className={`status ${row.status === "connected" ? "tracked" : row.status === "failed" ? "hidden" : "new"}`}
+                          >
+                            {row.status === "checking"
+                              ? "检测中"
+                              : row.status === "connected"
+                                ? "已连通"
+                                : row.status === "failed"
+                                  ? "未连通"
+                                  : "等待中"}
+                          </span>
+                        </td>
+                        <td>
+                          {row.elapsedMs != null ? `${row.elapsedMs} ms` : "-"}
+                        </td>
+                        <td className="muted">
+                          {row.statusCode
+                            ? `HTTP ${row.statusCode}`
+                            : (row.error ?? "-")}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="modal-actions">
+              <button
+                className="button"
+                type="button"
+                onClick={() => setProxyCheckOpen(false)}
+              >
+                关闭
               </button>
             </div>
           </div>
