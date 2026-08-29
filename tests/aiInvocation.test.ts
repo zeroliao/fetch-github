@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { createServer as createHttpServer } from "node:http";
-import { createServer as createNetServer, connect as connectNet } from "node:net";
+import {
+  createServer as createNetServer,
+  connect as connectNet,
+} from "node:net";
 import test from "node:test";
 import type { AiProvider } from "../src/lib/types";
 import {
@@ -9,6 +12,7 @@ import {
   AiProviderOutputParseError,
   AiProviderOutputSchemaError,
   callChatJson,
+  fetchWithTimeout,
   requestViaProxy,
 } from "../src/server/aiClient";
 import { probeAiProvider } from "../src/server/aiProviderProbe";
@@ -245,7 +249,7 @@ test("provider probe applies the configured proxy env", async () => {
   try {
     process.env[proxyEnv] = "ftp://127.0.0.1:3128";
     await assert.rejects(
-      probeAiProvider(provider({ proxyUrlEnv: proxyEnv })),
+      probeAiProvider(provider({ proxyAddresses: [process.env[proxyEnv]!] })),
       (error: unknown) => {
         assert.ok(error instanceof AiProviderConfigurationError);
         return true;
@@ -269,7 +273,9 @@ test("proxy transport reuses its SOCKS tunnel instead of opening a direct connec
       assert.deepEqual([...greeting], [5, 1, 0]);
       client.write(Buffer.from([5, 0]));
       client.once("data", (request) => {
-        const payload = Buffer.isBuffer(request) ? request : Buffer.from(request);
+        const payload = Buffer.isBuffer(request)
+          ? request
+          : Buffer.from(request);
         assert.equal(payload[0], 5);
         assert.equal(payload[1], 1);
         assert.equal(payload[3], 3);
@@ -306,6 +312,70 @@ test("proxy transport reuses its SOCKS tunnel instead of opening a direct connec
   }
 });
 
+test("provider outbound requests fail over to the next proxy node", async () => {
+  const target = createHttpServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("ok");
+  });
+  const targetPort = await listen(target);
+  const proxy = createNetServer((client) => {
+    client.once("data", (greeting) => {
+      if (greeting[0] !== 5) return client.destroy();
+      client.write(Buffer.from([5, 0]));
+      client.once("data", () => {
+        const upstream = connectNet({ host: "127.0.0.1", port: targetPort });
+        upstream.once("connect", () => {
+          client.write(Buffer.from([5, 0, 0, 1, 0, 0, 0, 0, 0, 0]));
+          client.pipe(upstream);
+          upstream.pipe(client);
+        });
+        upstream.once("error", (error) => client.destroy(error));
+      });
+    });
+  });
+  const proxyPort = await listen(proxy);
+
+  try {
+    const response = await fetchWithTimeout(
+      "http://provider.invalid/probe",
+      {},
+      provider({
+        proxyAddresses: [
+          "socks5://127.0.0.1:1",
+          `socks5://127.0.0.1:${proxyPort}`,
+        ],
+      }),
+    );
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "ok");
+  } finally {
+    await close(proxy);
+    await close(target);
+  }
+});
+
+test("provider outbound requests fall back to direct fetch when proxies fail", async () => {
+  const direct = new Response("direct", { status: 200 });
+  globalThis.fetch = async () => direct;
+  const response = await fetchWithTimeout(
+    "https://provider.invalid/probe",
+    {},
+    provider({ proxyAddresses: ["socks5://127.0.0.1:1"] }),
+  );
+  assert.equal(response, direct);
+});
+
+test("provider outbound requests reject malformed proxy addresses", async () => {
+  await assert.rejects(
+    fetchWithTimeout(
+      "https://provider.invalid/probe",
+      {},
+      provider({ proxyAddresses: ["not-a-proxy"] }),
+    ),
+    (error: unknown) => error instanceof AiProviderConfigurationError,
+  );
+});
+
 test("provider probe rejects non-probe structured chat output", async () => {
   process.env[API_KEY_ENV] = "test-secret";
   globalThis.fetch = async () => successfulChatResponse('{"ok":false}');
@@ -317,7 +387,10 @@ test("provider probe rejects non-probe structured chat output", async () => {
   });
 });
 
-function listen(server: ReturnType<typeof createNetServer> | ReturnType<typeof createHttpServer>) {
+function listen(
+  server:
+    ReturnType<typeof createNetServer> | ReturnType<typeof createHttpServer>,
+) {
   return new Promise<number>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
@@ -332,7 +405,10 @@ function listen(server: ReturnType<typeof createNetServer> | ReturnType<typeof c
   });
 }
 
-function close(server: ReturnType<typeof createNetServer> | ReturnType<typeof createHttpServer>) {
+function close(
+  server:
+    ReturnType<typeof createNetServer> | ReturnType<typeof createHttpServer>,
+) {
   return new Promise<void>((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });

@@ -196,7 +196,7 @@ CREATE TABLE IF NOT EXISTS ai_provider_groups (
   type TEXT NOT NULL DEFAULT 'openai_compatible',
   base_url TEXT NOT NULL,
   api_key_env TEXT NOT NULL,
-  proxy_url_env TEXT,
+  proxy_addresses JSONB NOT NULL DEFAULT '[]'::jsonb,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   archived_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

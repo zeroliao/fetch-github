@@ -49,7 +49,7 @@ User can configure chat and embedding models under shared Provider groups.
 Required fields:
 
 - Provider group `name`, `type`, `base_url`, and `api_key_env` (derived from the group name)
-- Optional `proxy_url_env`, referencing a server-side HTTP/SOCKS URL such as a sub2api sidecar endpoint
+- Optional `proxy_addresses`, containing one or more validated Sing-box HTTP/SOCKS endpoint addresses. Nodes are tested against the Provider `base_url`, ordered by latency, and tried in that order with direct-connect fallback.
 - One or more models with `kind`, `model`, model-level `priority`, `enabled`, and failure policy
 - `reasoning_effort` for chat models; `none` means do not send `reasoning_effort`
 - `dimensions` for embedding models

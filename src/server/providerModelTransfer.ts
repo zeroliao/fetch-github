@@ -34,7 +34,7 @@ export type PortableProviderModel = Omit<
   | "createdAt"
   | "updatedAt"
   | "groupEnabled"
-  | "proxyUrlEnv"
+  | "proxyAddresses"
   | "unavailableCode"
   | "unavailableReason"
   | "recoverySuggestion"

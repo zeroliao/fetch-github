@@ -15,17 +15,9 @@ ADMIN_USERNAME=admin
 ADMIN_PASSWORD_HASH=
 GITHUB_TOKEN=
 AI_KNOWLEDGE_BASE_DIR=../ai-knowledge-base
-# Optional shared outbound proxy for GitHub and third-party source requests.
-# For the Sub2API sidecar gateway on the same host:
-FETCHGITHUB_PROXY_URL=socks5://127.0.0.1:32000
 ```
 
-`FETCHGITHUB_PROXY_URL` supports `http://`, `https://`, `socks5://`, and
-`socks5h://`. The Sub2API sidecar gateway is bound to host loopback only; do
-not expose its `31000-32000` ports publicly. To select one concrete sidecar
-node for diagnostics, use its generated local SOCKS port (for example
-`socks5://127.0.0.1:31002`); normal fetchGithub traffic should use the shared
-`32000` gateway so sing-box can choose a healthy generated node.
+Provider 出口代理不再通过 `.env.local` 配置。请确保服务器上的 Sing-box 服务已运行，并在 Provider 编辑抽屉中刷新节点、填写 Base URL 后执行连通性检测；检测通过的节点按耗时升序展示，可多选并按顺序尝试，全部失败时直连兜底。
 
 AI 模型在页面 `AI 模型配置` 中统一填写：
 
@@ -57,7 +49,7 @@ pnpm dev
 pnpm db:reset-opportunity
 ```
 
-该命令会清空扫描、推荐、GitHub 关联、AI Provider 组/模型记录、会话和应用状态，然后创建默认禁用的 Chat / Embedding 模型占位配置；不会删除 `.env.local` 中的 API Key、代理 URL 或管理员密码哈希。Provider 的出口代理通过 `proxy_url_env` 引用服务器 `.env.local` 中的 HTTP/SOCKS 地址，sub2api sidecar 可使用其本机监听端口。
+该命令会清空扫描、推荐、GitHub 关联、AI Provider 组/模型记录、会话和应用状态，然后创建默认禁用的 Chat / Embedding 模型占位配置；不会删除 `.env.local` 中的 API Key 或管理员密码哈希。
 
 访问地址：
 

@@ -120,7 +120,7 @@ export interface AiProvider {
   type: "openai_compatible" | "custom";
   baseUrl: string;
   apiKeyEnv: string;
-  proxyUrlEnv?: string;
+  proxyAddresses?: string[];
   model: string;
   dimensions?: number;
   priority: number;
@@ -152,7 +152,7 @@ export interface AiProviderGroup {
   type: "openai_compatible" | "custom";
   baseUrl: string;
   apiKeyEnv: string;
-  proxyUrlEnv?: string;
+  proxyAddresses?: string[];
   enabled: boolean;
   models: AiProvider[];
   createdAt: string;

@@ -2,6 +2,18 @@ import { z } from "zod";
 import { normalizeOpportunityProfile } from "./opportunity";
 import { MAX_AI_PROVIDER_MODELS } from "./types";
 
+const proxyAddressSchema = z
+  .string()
+  .trim()
+  .url()
+  .refine(
+    (value) =>
+      ["http:", "https:", "socks5:", "socks5h:"].includes(
+        new URL(value).protocol,
+      ),
+    { message: "代理地址仅支持 http、https、socks5 或 socks5h。" },
+  );
+
 const discoverySourceIdSchema = z.enum([
   "github_search_preferences",
   "github_topics",
@@ -91,12 +103,7 @@ export const providerConnectionSchema = z.object({
   type: z.enum(["openai_compatible", "custom"]).default("openai_compatible"),
   baseUrl: z.string().url(),
   apiKeyValue: z.string().optional(),
-  proxyUrlEnv: z
-    .string()
-    .trim()
-    .regex(/^[A-Z_][A-Z0-9_]*$/, "代理环境变量名格式不正确。")
-    .optional()
-    .or(z.literal("")),
+  proxyAddresses: z.array(proxyAddressSchema).max(32).optional().default([]),
   enabled: z.boolean().default(true),
 });
 
@@ -106,12 +113,7 @@ export const providerGroupSchema = z
     type: z.enum(["openai_compatible", "custom"]).default("openai_compatible"),
     baseUrl: z.string().url(),
     apiKeyValue: z.string().optional(),
-    proxyUrlEnv: z
-      .string()
-      .trim()
-      .regex(/^[A-Z_][A-Z0-9_]*$/, "代理环境变量名格式不正确。")
-      .optional()
-      .or(z.literal("")),
+    proxyAddresses: z.array(proxyAddressSchema).max(32).optional().default([]),
     enabled: z.boolean().default(true),
     models: z.array(providerModelSchema).max(MAX_AI_PROVIDER_MODELS),
   })

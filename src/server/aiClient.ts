@@ -281,7 +281,7 @@ function normalizeUsage(value: unknown): Record<string, unknown> {
     : {};
 }
 
-async function fetchWithTimeout(
+export async function fetchWithTimeout(
   url: string,
   init: RequestInit,
   provider: AiProvider,
@@ -293,11 +293,16 @@ async function fetchWithTimeout(
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const proxyUrl = provider.proxyUrlEnv
-      ? process.env[provider.proxyUrlEnv]
-      : undefined;
-    if (proxyUrl) {
-      return await requestViaProxy(url, init, proxyUrl, timeoutMs);
+    for (const proxyUrl of provider.proxyAddresses ?? []) {
+      try {
+        return await requestViaProxy(url, init, proxyUrl, timeoutMs);
+      } catch (error) {
+        if (error instanceof ProxyTransportConfigurationError) {
+          throw new AiProviderConfigurationError(error.message);
+        }
+        // A failed node is expected during failover. Continue with the next
+        // configured node, then let the direct request provide the fallback.
+      }
     }
     return await fetch(url, {
       ...init,
@@ -327,8 +332,14 @@ export async function requestViaProxy(
   proxyUrl: string,
   timeoutMs: number,
 ): Promise<Response> {
-  const target = new URL(targetUrl);
-  const proxy = new URL(proxyUrl);
+  let target: URL;
+  let proxy: URL;
+  try {
+    target = new URL(targetUrl);
+    proxy = new URL(proxyUrl);
+  } catch {
+    throw new ProxyTransportConfigurationError("出口代理地址无效。");
+  }
   if (!["http:", "https:", "socks5:", "socks5h:"].includes(proxy.protocol)) {
     throw new ProxyTransportConfigurationError(
       "出口代理仅支持 http、https、socks5 或 socks5h。",

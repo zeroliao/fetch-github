@@ -210,10 +210,18 @@ export async function ensureSeedData() {
     await client.query(
       `create table if not exists ai_provider_groups (
         id text primary key, name text not null, type text not null default 'openai_compatible',
-        base_url text not null, api_key_env text not null unique, proxy_url_env text,
+        base_url text not null, api_key_env text not null unique,
+        proxy_addresses jsonb not null default '[]'::jsonb,
         enabled boolean not null default true, archived_at timestamptz,
         created_at timestamptz not null default now(), updated_at timestamptz not null default now()
       )`,
+    );
+    await client.query(
+      `alter table ai_provider_groups
+       add column if not exists proxy_addresses jsonb not null default '[]'::jsonb`,
+    );
+    await client.query(
+      `alter table ai_provider_groups drop column if exists proxy_url_env`,
     );
     await client
       .query(
@@ -662,6 +670,7 @@ export async function createAiProvider(
         cooldownSeconds: provider.cooldownSeconds,
         cooldownOn: provider.cooldownOn,
         reasoningDisabled: provider.reasoningEffort === "none",
+        proxyAddresses: provider.proxyAddresses ?? [],
       }),
       provider.enabled,
       provider.createdAt,
@@ -690,7 +699,7 @@ export async function listAiProviderGroups(): Promise<AiProviderGroup[]> {
   const providers = await listAiProviders();
   const groups = groupProviders(providers);
   const result = await getPool().query(
-    `select id, name, type, base_url, api_key_env, proxy_url_env, enabled, created_at, updated_at
+    `select id, name, type, base_url, api_key_env, proxy_addresses, enabled, created_at, updated_at
      from ai_provider_groups where archived_at is null`,
   );
   const existing = new Set(groups.map((group) => group.id));
@@ -702,7 +711,7 @@ export async function listAiProviderGroups(): Promise<AiProviderGroup[]> {
       type: row.type,
       baseUrl: row.base_url,
       apiKeyEnv: row.api_key_env,
-      proxyUrlEnv: row.proxy_url_env ?? undefined,
+      proxyAddresses: normalizeProxyAddresses(row.proxy_addresses),
       enabled: Boolean(row.enabled),
       models: [],
       createdAt: toIso(row.created_at),
@@ -716,7 +725,7 @@ export async function listArchivedAiProviderGroups(): Promise<
   AiProviderGroup[]
 > {
   const result = await getPool().query(
-    `select id, name, type, base_url, api_key_env, proxy_url_env, enabled, created_at, updated_at
+    `select id, name, type, base_url, api_key_env, proxy_addresses, enabled, created_at, updated_at
      from ai_provider_groups where archived_at is not null order by updated_at desc`,
   );
   const groups: AiProviderGroup[] = [];
@@ -731,7 +740,7 @@ export async function listArchivedAiProviderGroups(): Promise<
       type: row.type,
       baseUrl: row.base_url,
       apiKeyEnv: row.api_key_env,
-      proxyUrlEnv: row.proxy_url_env ?? undefined,
+      proxyAddresses: normalizeProxyAddresses(row.proxy_addresses),
       enabled: false,
       models: models.rows.map(mapProviderRow),
       createdAt: toIso(row.created_at),
@@ -776,7 +785,7 @@ export async function createAiProviderGroup(
     }
     await client.query(
       `insert into ai_provider_groups
-        (id, name, type, base_url, api_key_env, proxy_url_env, enabled, created_at, updated_at)
+        (id, name, type, base_url, api_key_env, proxy_addresses, enabled, created_at, updated_at)
        values ($1,$2,$3,$4,$5,$6,$7,now(),now())`,
       [
         groupId,
@@ -784,7 +793,7 @@ export async function createAiProviderGroup(
         input.type,
         input.baseUrl,
         input.apiKeyEnv,
-        input.proxyUrlEnv || null,
+        JSON.stringify(input.proxyAddresses ?? []),
         input.enabled,
       ],
     );
@@ -829,7 +838,7 @@ export async function updateAiProviderGroup(
     await client.query("begin");
     const updated = await client.query(
       `update ai_provider_groups set name=$2, type=$3, base_url=$4, api_key_env=$5,
-         proxy_url_env=$6, enabled=$7, updated_at=now()
+         proxy_addresses=$6, enabled=$7, updated_at=now()
        where id=$1 and archived_at is null returning id`,
       [
         id,
@@ -837,7 +846,7 @@ export async function updateAiProviderGroup(
         input.type,
         input.baseUrl,
         input.apiKeyEnv,
-        input.proxyUrlEnv || null,
+        JSON.stringify(input.proxyAddresses ?? []),
         input.enabled,
       ],
     );
@@ -1025,6 +1034,7 @@ export async function updateAiProvider(
         cooldownSeconds: nextProvider.cooldownSeconds,
         cooldownOn: nextProvider.cooldownOn,
         reasoningDisabled: nextProvider.reasoningEffort === "none",
+        proxyAddresses: nextProvider.proxyAddresses ?? [],
       }),
       nextProvider.enabled,
     ],
@@ -1119,7 +1129,7 @@ export async function updateAiProviderAvailability(
     ],
   );
   // Availability updates return a model row, but connection-level settings
-  // (including the outbound proxy env name) live on the Provider group.
+  // (including the ordered outbound proxy addresses) live on the Provider group.
   // Hydrate the group before returning so detection responses do not erase
   // those settings from the client state or subsequent model calls.
   return (await hydrateProviderGroups([mapProviderRow(result.rows[0])]))[0];
@@ -3500,9 +3510,18 @@ function mapProviderRow(row: Record<string, any>): AiProvider {
     cooldownOn: Array.isArray(config.cooldownOn)
       ? (config.cooldownOn as AiProvider["cooldownOn"])
       : [...DEFAULT_AI_PROVIDER_COOLDOWN_ON],
+    proxyAddresses: normalizeProxyAddresses(config.proxyAddresses),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
   };
+}
+
+function normalizeProxyAddresses(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is string =>
+      typeof item === "string" && item.trim().length > 0,
+  );
 }
 
 async function hydrateProviderGroups(
@@ -3510,7 +3529,7 @@ async function hydrateProviderGroups(
 ): Promise<AiProvider[]> {
   if (providers.length === 0) return [];
   const result = await getPool().query(
-    `select id, name, type, base_url, api_key_env, proxy_url_env, enabled
+    `select id, name, type, base_url, api_key_env, proxy_addresses, enabled
      from ai_provider_groups where archived_at is null`,
   );
   const groups = new Map(
@@ -3528,7 +3547,7 @@ async function hydrateProviderGroups(
         type: group.type,
         baseUrl: group.base_url,
         apiKeyEnv: group.api_key_env,
-        proxyUrlEnv: group.proxy_url_env ?? undefined,
+        proxyAddresses: normalizeProxyAddresses(group.proxy_addresses),
         groupEnabled: Boolean(group.enabled),
       };
     })
@@ -3553,7 +3572,7 @@ function groupProviders(providers: AiProvider[]): AiProviderGroup[] {
       type: model.type,
       baseUrl: model.baseUrl,
       apiKeyEnv: model.apiKeyEnv,
-      proxyUrlEnv: model.proxyUrlEnv,
+      proxyAddresses: model.proxyAddresses,
       enabled: model.enabled,
       models: [model],
       createdAt: model.createdAt,
@@ -3583,7 +3602,7 @@ async function insertProviderModel(
   groupId: string,
   group: Pick<
     AiProviderGroup,
-    "name" | "type" | "baseUrl" | "apiKeyEnv" | "enabled"
+    "name" | "type" | "baseUrl" | "apiKeyEnv" | "proxyAddresses" | "enabled"
   >,
   model: Pick<
     AiProvider,
@@ -3622,6 +3641,7 @@ async function insertProviderModel(
         cooldownSeconds: model.cooldownSeconds,
         cooldownOn: model.cooldownOn,
         reasoningDisabled: model.reasoningEffort === "none",
+        proxyAddresses: group.proxyAddresses ?? [],
       }),
       model.enabled,
     ],

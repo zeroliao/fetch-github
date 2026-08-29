@@ -103,7 +103,7 @@ export async function POST(request: Request, context: Params) {
       type: group.type,
       baseUrl: group.baseUrl,
       apiKeyEnv: group.apiKeyEnv,
-      proxyUrlEnv: group.proxyUrlEnv,
+      proxyAddresses: group.proxyAddresses,
       enabled: group.enabled,
       models: nextModels,
     });

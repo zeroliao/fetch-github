@@ -4,19 +4,16 @@ import { resolveConfiguredProxyURL } from "../src/server/outboundFetch";
 
 test("configured outbound proxy prefers the direct fetchGithub URL", () => {
   const previous = {
-    direct: process.env.FETCHGITHUB_PROXY_URL,
-    envName: process.env.FETCHGITHUB_PROXY_URL_ENV,
+    envName: process.env.GITHUB_PROXY_URL_ENV,
     sub2api: process.env.SUB2API_PROXY_URL,
-    github: process.env.GITHUB_PROXY_URL
+    github: process.env.GITHUB_PROXY_URL,
   };
   try {
-    process.env.FETCHGITHUB_PROXY_URL = "socks5://127.0.0.1:31000";
-    process.env.FETCHGITHUB_PROXY_URL_ENV = "SUB2API_PROXY_URL";
+    process.env.GITHUB_PROXY_URL_ENV = "SUB2API_PROXY_URL";
     process.env.SUB2API_PROXY_URL = "socks5://127.0.0.1:31001";
-    assert.equal(resolveConfiguredProxyURL(), "socks5://127.0.0.1:31000");
+    assert.equal(resolveConfiguredProxyURL(), "socks5://127.0.0.1:31001");
   } finally {
-    restore("FETCHGITHUB_PROXY_URL", previous.direct);
-    restore("FETCHGITHUB_PROXY_URL_ENV", previous.envName);
+    restore("GITHUB_PROXY_URL_ENV", previous.envName);
     restore("SUB2API_PROXY_URL", previous.sub2api);
     restore("GITHUB_PROXY_URL", previous.github);
   }
@@ -24,18 +21,15 @@ test("configured outbound proxy prefers the direct fetchGithub URL", () => {
 
 test("configured outbound proxy resolves an indirection environment variable", () => {
   const previous = {
-    direct: process.env.FETCHGITHUB_PROXY_URL,
-    envName: process.env.FETCHGITHUB_PROXY_URL_ENV,
-    target: process.env.SUB2API_PROXY_URL
+    envName: process.env.GITHUB_PROXY_URL_ENV,
+    target: process.env.SUB2API_PROXY_URL,
   };
   try {
-    delete process.env.FETCHGITHUB_PROXY_URL;
-    process.env.FETCHGITHUB_PROXY_URL_ENV = "SUB2API_PROXY_URL";
+    process.env.GITHUB_PROXY_URL_ENV = "SUB2API_PROXY_URL";
     process.env.SUB2API_PROXY_URL = "socks5://127.0.0.1:31002";
     assert.equal(resolveConfiguredProxyURL(), "socks5://127.0.0.1:31002");
   } finally {
-    restore("FETCHGITHUB_PROXY_URL", previous.direct);
-    restore("FETCHGITHUB_PROXY_URL_ENV", previous.envName);
+    restore("GITHUB_PROXY_URL_ENV", previous.envName);
     restore("SUB2API_PROXY_URL", previous.target);
   }
 });

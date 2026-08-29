@@ -851,86 +851,39 @@ button {
   width: min(760px, 100%);
 }
 
-.proxy-check-modal {
-  width: min(980px, 100%);
+.proxy-node-options {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  max-height: 280px;
+  overflow-y: auto;
 }
 
-.proxy-check-table-wrap {
-  max-height: min(60vh, 560px);
-  overflow: auto;
-  padding: 0 18px;
+.proxy-node-option {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-height: 52px;
+  padding: 8px 10px;
 }
 
-.proxy-check-table-wrap .repo-table {
+.proxy-node-option > span:nth-child(2) {
+  display: grid;
+  gap: 2px;
   min-width: 0;
-  table-layout: fixed;
 }
 
-.proxy-check-table-wrap th,
-.proxy-check-table-wrap td {
-  padding: 11px 12px;
+.proxy-node-option small {
   overflow-wrap: anywhere;
 }
 
-.proxy-check-table-wrap th:nth-child(1),
-.proxy-check-table-wrap td:nth-child(1) {
-  width: 27%;
-}
-
-.proxy-check-table-wrap th:nth-child(2),
-.proxy-check-table-wrap td:nth-child(2) {
-  width: 25%;
-}
-
-.proxy-check-table-wrap td:nth-child(3) {
-  width: 14%;
-}
-
-.proxy-check-table-wrap th:nth-child(4),
-.proxy-check-table-wrap td:nth-child(4) {
-  width: 14%;
-}
-
-.proxy-check-table-wrap th:nth-child(5),
-.proxy-check-table-wrap td:nth-child(5) {
-  width: 20%;
-}
-
-.proxy-check-toolbar {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-muted);
-  padding: 12px 18px;
-}
-
-.proxy-check-target {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.proxy-check-target-label,
-.proxy-check-control > span {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.proxy-check-controls {
-  display: flex;
-  gap: 10px;
-}
-
-.proxy-check-control {
-  display: grid;
-  gap: 4px;
-  min-width: 130px;
-}
-
-.proxy-check-table-wrap code {
-  font-size: 12px;
+.proxy-node-option.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .modal-actions {
@@ -1853,28 +1806,6 @@ textarea:focus-visible {
 
   .nav-button {
     min-height: 44px;
-  }
-
-  .proxy-check-modal {
-    width: 100%;
-  }
-
-  .proxy-check-table-wrap {
-    padding: 0 12px;
-  }
-
-  .proxy-check-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .proxy-check-controls {
-    flex-wrap: wrap;
-  }
-
-  .proxy-check-control {
-    flex: 1 1 140px;
   }
 
   .provider-card-header {

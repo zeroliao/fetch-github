@@ -1,18 +1,16 @@
 import { requestViaProxy } from "./aiClient";
 
 export function resolveConfiguredProxyURL() {
-  const direct = process.env.FETCHGITHUB_PROXY_URL?.trim();
-  if (direct) return direct;
-
-  const envName =
-    process.env.FETCHGITHUB_PROXY_URL_ENV?.trim() ||
-    process.env.GITHUB_PROXY_URL_ENV?.trim();
+  const envName = process.env.GITHUB_PROXY_URL_ENV?.trim();
   if (envName) {
     const value = process.env[envName]?.trim();
     if (value) return value;
   }
 
-  return process.env.SUB2API_PROXY_URL?.trim() || process.env.GITHUB_PROXY_URL?.trim();
+  return (
+    process.env.SUB2API_PROXY_URL?.trim() ||
+    process.env.GITHUB_PROXY_URL?.trim()
+  );
 }
 
 export async function fetchConfiguredOutbound(

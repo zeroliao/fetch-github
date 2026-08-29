@@ -247,7 +247,7 @@ ai_provider_groups
 - type              # openai_compatible | custom
 - base_url
 - api_key_env                 # unique group-scoped env var name
-- proxy_url_env               # optional server-side HTTP/SOCKS URL env name
+- proxy_addresses             # ordered Sing-box HTTP/SOCKS endpoint addresses; direct connection is the fallback
 - enabled
 
 ai_providers                    # one model per row; historical FK owner
