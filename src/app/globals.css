@@ -1223,6 +1223,11 @@ button {
 .stack {
   display: grid;
   gap: 16px;
+  min-width: 0;
+}
+
+.jobs-panel {
+  min-width: 0;
 }
 
 .collapsible-header {
@@ -1243,6 +1248,42 @@ button {
 .collapsible-panel > .table-wrap {
   max-height: 360px;
   overflow: auto;
+}
+
+.jobs-panel-header {
+  align-items: stretch;
+}
+
+.jobs-panel-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 1;
+  min-width: 0;
+  gap: 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+.jobs-panel-toggle:hover {
+  color: var(--accent-strong);
+}
+
+.jobs-panel-toggle:focus-visible {
+  border-radius: 4px;
+}
+
+.jobs-panel-content {
+  height: 360px;
+  min-width: 0;
+  overflow: auto;
+}
+
+.jobs-panel-notice {
+  margin: 12px 16px 0;
 }
 
 .form-grid {
@@ -1882,6 +1923,18 @@ textarea:focus-visible {
 
   .filter-row > * {
     flex: 1 1 140px;
+  }
+
+  .jobs-panel-header {
+    align-items: flex-start;
+  }
+
+  .jobs-panel-toggle {
+    align-items: flex-start;
+  }
+
+  .jobs-panel-content {
+    height: 300px;
   }
 }
 

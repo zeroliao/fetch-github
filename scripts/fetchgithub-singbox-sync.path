@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the Sub2API Sing-box config for fetchGithub metadata updates
+
+[Path]
+PathChanged=/opt/sub2api-deploy/sing-box/config.json
+Unit=fetchgithub-singbox-sync.service
+
+[Install]
+WantedBy=multi-user.target

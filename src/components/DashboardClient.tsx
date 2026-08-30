@@ -2237,6 +2237,7 @@ function JobsPanel({
 }) {
   const [message, setMessage] = useState("");
   const [busyJobId, setBusyJobId] = useState("");
+  const [open, setOpen] = useState(true);
   const hasActiveJobs = jobs.some((job) =>
     [
       "pending",
@@ -2317,14 +2318,28 @@ function JobsPanel({
 
   return (
     <div className="stack">
-      <section className="panel">
-        <div className="panel-header">
-          <div className="panel-title">
-            <h2>扫描周期与恢复</h2>
-            <p>
-              扫描周期是内部执行记录，仅在需要查看进度、处理异常或恢复时使用。
-            </p>
-          </div>
+      <section className="panel jobs-panel">
+        <div className="panel-header jobs-panel-header">
+          <button
+            className="jobs-panel-toggle"
+            type="button"
+            onClick={() => setOpen((current) => !current)}
+            aria-expanded={open}
+            aria-controls="scan-cycle-panel-content"
+            aria-label={`${open ? "收起" : "展开"}扫描周期与恢复`}
+          >
+            <div className="panel-title">
+              <h2>扫描周期与恢复</h2>
+              <p>
+                扫描周期是内部执行记录，仅在需要查看进度、处理异常或恢复时使用。
+              </p>
+            </div>
+            {open ? (
+              <ChevronDown size={16} aria-hidden="true" />
+            ) : (
+              <ChevronRight size={16} aria-hidden="true" />
+            )}
+          </button>
           <button
             className="button"
             type="button"
@@ -2338,154 +2353,162 @@ function JobsPanel({
             {busyJobId === "refresh" ? "刷新中" : "刷新"}
           </button>
         </div>
-        <div className="table-wrap">
+        <div
+          id="scan-cycle-panel-content"
+          className="jobs-panel-content"
+          hidden={!open}
+        >
           {message && (
-            <div className="notice" role="status">
+            <div className="notice jobs-panel-notice" role="status">
               {message}
             </div>
           )}
-          <table className="repo-table">
-            <thead>
-              <tr>
-                <th>任务</th>
-                <th>状态</th>
-                <th>阶段</th>
-                <th>已抓取</th>
-                <th>新增项目</th>
-                <th>更新项目</th>
-                <th>未变化</th>
-                <th>候选项目</th>
-                <th>失败项目</th>
-                <th>已处理</th>
-                <th>已分析</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.length === 0 ? (
+          <div className="jobs-panel-table">
+            <table className="repo-table">
+              <thead>
                 <tr>
-                  <td colSpan={12} className="muted">
-                    暂无扫描任务
-                  </td>
+                  <th>任务</th>
+                  <th>状态</th>
+                  <th>阶段</th>
+                  <th>已抓取</th>
+                  <th>新增项目</th>
+                  <th>更新项目</th>
+                  <th>未变化</th>
+                  <th>候选项目</th>
+                  <th>失败项目</th>
+                  <th>已处理</th>
+                  <th>已分析</th>
+                  <th>操作</th>
                 </tr>
-              ) : (
-                jobs.map((job) => (
-                  <Fragment key={job.id}>
-                    <tr>
-                      <td>{job.type}</td>
-                      <td
-                        title={
-                          job.statusReason ?? job.errorMessage ?? undefined
-                        }
-                      >
-                        <span className={`status ${job.status}`}>
-                          {job.status}
-                        </span>
-                        {(job.statusReason || job.errorMessage) && (
-                          <div className="muted">
-                            {job.statusReason ?? job.errorMessage}
-                          </div>
-                        )}
-                        {job.status === "exception" &&
-                          !job.statusReason &&
-                          !job.errorMessage && (
+              </thead>
+              <tbody>
+                {jobs.length === 0 ? (
+                  <tr>
+                    <td colSpan={12} className="muted">
+                      暂无扫描任务
+                    </td>
+                  </tr>
+                ) : (
+                  jobs.map((job) => (
+                    <Fragment key={job.id}>
+                      <tr>
+                        <td>{job.type}</td>
+                        <td
+                          title={
+                            job.statusReason ?? job.errorMessage ?? undefined
+                          }
+                        >
+                          <span className={`status ${job.status}`}>
+                            {job.status}
+                          </span>
+                          {(job.statusReason || job.errorMessage) && (
                             <div className="muted">
-                              同类型 AI 模型均不可用，扫描已停止。
+                              {job.statusReason ?? job.errorMessage}
                             </div>
                           )}
-                      </td>
-                      <td>{job.stage}</td>
-                      <td>{job.fetchedCount}</td>
-                      <td>{job.newRepoCount}</td>
-                      <td>{job.updatedRepoCount}</td>
-                      <td>{job.unchangedRepoCount}</td>
-                      <td>{job.candidateCount}</td>
-                      <td>{job.failedCandidateCount}</td>
-                      <td>{job.processedCount}</td>
-                      <td>{job.analyzedCount}</td>
-                      <td>
-                        <div className="action-row">
-                          {canPauseJob(job.status) && (
-                            <button
-                              className="button"
-                              disabled={busyJobId === job.id}
-                              onClick={() => void updateJob(job.id, "pause")}
-                              type="button"
-                            >
-                              {busyJobId === job.id ? "处理中" : "暂停"}
-                            </button>
-                          )}
-                          {canResumeJob(job.status) && (
-                            <button
-                              className="button"
-                              disabled={busyJobId === job.id}
-                              onClick={() => void updateJob(job.id, "resume")}
-                              type="button"
-                            >
-                              {busyJobId === job.id
-                                ? "恢复中"
-                                : job.status === "exception"
-                                  ? "处理后恢复"
-                                  : "恢复"}
-                            </button>
-                          )}
-                          {canCompleteJob(job.status) && (
-                            <button
-                              className="button"
-                              disabled={busyJobId === job.id}
-                              onClick={() => void updateJob(job.id, "complete")}
-                              type="button"
-                            >
-                              {busyJobId === job.id ? "处理中" : "完成"}
-                            </button>
-                          )}
-                          {canArchiveJob(job.status) && (
-                            <button
-                              className="button"
-                              disabled={busyJobId === job.id}
-                              onClick={() => void archiveJob(job.id)}
-                              type="button"
-                            >
-                              {busyJobId === job.id ? "归档中" : "归档"}
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                    {(job.errorResolution ||
-                      job.status === "failed" ||
-                      job.status === "exception") && (
-                      <tr className="job-error-row">
-                        <td colSpan={12}>
-                          <div className="job-error" role="alert">
-                            <AlertTriangle size={17} aria-hidden="true" />
-                            <div>
-                              <strong>
-                                {job.errorMessage ?? job.statusReason}
-                                {job.status === "exception" &&
-                                  !job.errorMessage &&
-                                  !job.statusReason &&
-                                  "同类型 AI 模型均不可用，扫描已进入异常状态。"}
-                              </strong>
-                              {job.errorResolution && (
-                                <p>
-                                  <span>处理建议：</span>
-                                  {job.errorResolution}
-                                </p>
-                              )}
-                              {job.errorCode && (
-                                <small>错误码：{job.errorCode}</small>
-                              )}
-                            </div>
+                          {job.status === "exception" &&
+                            !job.statusReason &&
+                            !job.errorMessage && (
+                              <div className="muted">
+                                同类型 AI 模型均不可用，扫描已停止。
+                              </div>
+                            )}
+                        </td>
+                        <td>{job.stage}</td>
+                        <td>{job.fetchedCount}</td>
+                        <td>{job.newRepoCount}</td>
+                        <td>{job.updatedRepoCount}</td>
+                        <td>{job.unchangedRepoCount}</td>
+                        <td>{job.candidateCount}</td>
+                        <td>{job.failedCandidateCount}</td>
+                        <td>{job.processedCount}</td>
+                        <td>{job.analyzedCount}</td>
+                        <td>
+                          <div className="action-row">
+                            {canPauseJob(job.status) && (
+                              <button
+                                className="button"
+                                disabled={busyJobId === job.id}
+                                onClick={() => void updateJob(job.id, "pause")}
+                                type="button"
+                              >
+                                {busyJobId === job.id ? "处理中" : "暂停"}
+                              </button>
+                            )}
+                            {canResumeJob(job.status) && (
+                              <button
+                                className="button"
+                                disabled={busyJobId === job.id}
+                                onClick={() => void updateJob(job.id, "resume")}
+                                type="button"
+                              >
+                                {busyJobId === job.id
+                                  ? "恢复中"
+                                  : job.status === "exception"
+                                    ? "处理后恢复"
+                                    : "恢复"}
+                              </button>
+                            )}
+                            {canCompleteJob(job.status) && (
+                              <button
+                                className="button"
+                                disabled={busyJobId === job.id}
+                                onClick={() =>
+                                  void updateJob(job.id, "complete")
+                                }
+                                type="button"
+                              >
+                                {busyJobId === job.id ? "处理中" : "完成"}
+                              </button>
+                            )}
+                            {canArchiveJob(job.status) && (
+                              <button
+                                className="button"
+                                disabled={busyJobId === job.id}
+                                onClick={() => void archiveJob(job.id)}
+                                type="button"
+                              >
+                                {busyJobId === job.id ? "归档中" : "归档"}
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
-                    )}
-                  </Fragment>
-                ))
-              )}
-            </tbody>
-          </table>
+                      {(job.errorResolution ||
+                        job.status === "failed" ||
+                        job.status === "exception") && (
+                        <tr className="job-error-row">
+                          <td colSpan={12}>
+                            <div className="job-error" role="alert">
+                              <AlertTriangle size={17} aria-hidden="true" />
+                              <div>
+                                <strong>
+                                  {job.errorMessage ?? job.statusReason}
+                                  {job.status === "exception" &&
+                                    !job.errorMessage &&
+                                    !job.statusReason &&
+                                    "同类型 AI 模型均不可用，扫描已进入异常状态。"}
+                                </strong>
+                                {job.errorResolution && (
+                                  <p>
+                                    <span>处理建议：</span>
+                                    {job.errorResolution}
+                                  </p>
+                                )}
+                                {job.errorCode && (
+                                  <small>错误码：{job.errorCode}</small>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </section>
     </div>

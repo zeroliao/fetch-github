@@ -52,6 +52,27 @@ test("parses HTTP, SOCKS, and mixed inbounds with defaults", () => {
   );
 });
 
+test("normalizes wildcard listen addresses to the local endpoint", () => {
+  const nodes = parseSingboxProxyNodes(
+    JSON.stringify({
+      inbounds: [
+        { type: "socks", listen: "0.0.0.0", listen_port: 31000 },
+        { type: "http", listen: "::", listen_port: 31001 },
+        { type: "mixed", listen: "*", listen_port: 31002 },
+      ],
+    }),
+  );
+
+  assert.deepEqual(
+    nodes.map(({ address, host }) => ({ address, host })),
+    [
+      { address: "socks5://127.0.0.1:31000", host: "127.0.0.1" },
+      { address: "http://127.0.0.1:31001", host: "127.0.0.1" },
+      { address: "socks5://127.0.0.1:31002", host: "127.0.0.1" },
+    ],
+  );
+});
+
 test("skips invalid ports and unsupported inbound types and de-duplicates nodes", () => {
   const nodes = parseSingboxProxyNodes(
     JSON.stringify({

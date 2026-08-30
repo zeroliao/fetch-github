@@ -20,6 +20,14 @@ function configCandidates() {
   ].filter((value): value is string => Boolean(value));
 }
 
+function normalizeListenHost(value: unknown): string {
+  const host = String(value ?? "127.0.0.1").trim();
+  if (!host || host === "0.0.0.0" || host === "::" || host === "*") {
+    return "127.0.0.1";
+  }
+  return host;
+}
+
 function stripJsonc(content: string): string {
   let output = "";
   let inString = false;
@@ -83,7 +91,7 @@ export function parseSingboxProxyNodes(content: string): SingboxProxyNode[] {
     const port = Number((inbound as any).listen_port);
     if (!protocol || !Number.isInteger(port) || port <= 0 || port > 65535)
       continue;
-    const rawHost = String((inbound as any).listen || "127.0.0.1");
+    const rawHost = normalizeListenHost((inbound as any).listen);
     const host =
       rawHost.includes(":") && !rawHost.startsWith("[")
         ? `[${rawHost}]`

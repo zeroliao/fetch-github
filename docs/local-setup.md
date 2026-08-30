@@ -19,6 +19,8 @@ AI_KNOWLEDGE_BASE_DIR=../ai-knowledge-base
 
 Provider 出口代理不再通过 `.env.local` 配置。请确保服务器上的 Sing-box 服务已运行，并在 Provider 编辑抽屉中刷新节点、填写 Base URL 后执行连通性检测；检测通过的节点按耗时升序展示，可多选并按顺序尝试，全部失败时直连兜底。
 
+生产环境如果 Sing-box 运行在独立容器中，应将 `SINGBOX_CONFIG_PATH` 指向由部署脚本生成的、只包含 `inbounds` 元数据且对 Web 服务用户可读的文件，不要直接放开包含节点凭据的原始配置权限。
+
 AI 模型在页面 `AI 模型配置` 中统一填写：
 
 ```text

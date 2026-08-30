@@ -1,0 +1,7 @@
+[Unit]
+Description=Export metadata-only Sing-box inbounds for fetchGithub
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/sub2api-deploy/scripts/sync-fetchgithub-singbox-inbounds.py --source /opt/sub2api-deploy/sing-box/config.json --target /opt/sub2api-deploy/sing-box/fetchgithub-inbounds.json
